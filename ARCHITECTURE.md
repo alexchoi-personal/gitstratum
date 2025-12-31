@@ -79,7 +79,7 @@ GitStratum is a distributed Git hosting system designed for high-throughput CI/C
 │    │  │ CF: refs     │  │   │  │ CF: refs     │  │   │  │ CF: refs     │  │           │
 │    │  │ CF: config   │  │   │  │ CF: config   │  │   │  │ CF: config   │  │           │
 │    │  │ CF: graph    │  │   │  │ CF: graph    │  │   │  │ CF: graph    │  │           │
-│    │  │ CF: pack_cache│ │   │  │ CF: pack_cache│ │   │  │ CF: pack_cache│ │           │
+│    │  │ CF: obj_index│  │   │  │ CF: obj_index│  │   │  │ CF: obj_index│  │           │
 │    │  └──────────────┘  │   │  └──────────────┘  │   │  └──────────────┘  │           │
 │    │  In-Memory Cache   │   │  In-Memory Cache   │   │  In-Memory Cache   │           │
 │    └────────────────────┘   └────────────────────┘   └────────────────────┘           │
@@ -104,6 +104,7 @@ GitStratum is a distributed Git hosting system designed for high-throughput CI/C
 │    │  │ ──────────── │  │   │  │ ──────────── │  │   │  │ ──────────── │  │           │
 │    │  │ CF: objects  │  │   │  │ CF: objects  │  │   │  │ CF: objects  │  │           │
 │    │  │ CF: deltas   │  │   │  │ CF: deltas   │  │   │  │ CF: deltas   │  │           │
+│    │  │ CF: pack_cache│ │   │  │ CF: pack_cache│ │   │  │ CF: pack_cache│ │           │
 │    │  └──────────────┘  │   │  └──────────────┘  │   │  └──────────────┘  │           │
 │    │  Hot Object Cache  │   │  Hot Object Cache  │   │  Hot Object Cache  │           │
 │    │  Delta Engine      │   │  Delta Engine      │   │  Delta Engine      │           │
@@ -162,7 +163,7 @@ The Frontend Cluster handles all Git protocol interactions with clients. It is s
 
 ### 2. Control Plane Cluster
 
-The Control Plane Cluster manages cluster-wide state using Raft consensus. It provides strongly consistent operations for auth, rate limiting, and cluster membership.
+The Control Plane Cluster manages cluster-wide state using Raft consensus. It is the "brain" that provides topology and coordination information to Frontend nodes. Metadata and Object clusters are simple request/response services that don't need this coordination.
 
 **Responsibilities:**
 - Raft consensus for cluster state
@@ -178,6 +179,13 @@ The Control Plane Cluster manages cluster-wide state using Raft consensus. It pr
 - Feature flags
 - Global configuration
 
+**Information Provided to Frontend:**
+- Hash ring topology (which objects live on which shards)
+- Node health status and latency metrics
+- In-flight request counts per node (for load balancing)
+- Replica locations for each object
+- Rate limit decisions and quotas
+
 **Caching & Optimization:**
 - Auth decision cache (5min TTL) - avoids repeated token validation
 - Rate limit state in Raft state machine - consistent across cluster
@@ -189,14 +197,13 @@ The Control Plane Cluster manages cluster-wide state using Raft consensus. It pr
 
 ### 3. Metadata Cluster
 
-The Metadata Cluster stores repository metadata including references, configuration, and commit graphs. Data is partitioned by repository ID and replicated for durability.
+The Metadata Cluster is a simple request/response service that stores repository metadata including references, configuration, and commit graphs. It doesn't coordinate fetching—it just responds to requests from Frontend. Data is partitioned by repository ID and replicated for durability.
 
 **Responsibilities:**
 - Reference storage (branches, tags, HEAD)
 - Repository configuration
 - Repository statistics
 - Commit graph storage (ancestry queries)
-- Pack cache (pre-computed packs)
 - Object location index (object -> nodes mapping)
 - Hook configuration
 - Access patterns and analytics
@@ -204,49 +211,50 @@ The Metadata Cluster stores repository metadata including references, configurat
 **Caching & Optimization:**
 - Hot refs in-memory cache (per-node LRU)
 - Commit graph cache for fast ancestry queries
-- Pack manifests cache (object lists for common refs)
 - Bloom filters for ref existence checks
 - Write-behind for statistics updates (batched)
 - Partitioned by repo_id for locality
 - Read replicas for hot repositories
 - Prefix compression for refs
-- Background pack precomputation for hot repos
 
 **RocksDB Column Families:**
 - `refs` - Reference storage: `{repo_id}:{ref_name}` -> `ObjectId`
 - `repo_config` - Repository configuration
 - `repo_stats` - Repository statistics (clone count, push count, etc.)
 - `commit_graph` - Commit ancestry for fast negotiation
-- `pack_cache` - Pre-computed pack files with TTL
 - `object_index` - Object location: `{oid}` -> `Vec<NodeId>`
 
 ### 4. Object Cluster
 
-The Object Cluster stores raw Git objects (blobs, trees, commits, tags). Objects are distributed across nodes using consistent hashing.
+The Object Cluster is a simple request/response service that stores raw Git objects (blobs, trees, commits, tags). It doesn't coordinate fetching—Frontend handles parallel fetching using topology info from Control Plane. Objects are distributed across nodes using consistent hashing.
 
 **Responsibilities:**
 - Raw object/blob storage
 - Object compression (zlib/zstd)
 - Delta computation and storage
 - Object replication (write to N nodes)
+- Pack cache (pre-computed packs for CI/CD)
 - Garbage collection
 - Integrity verification (SHA verification)
 - Tiered storage (hot/cold)
 
 **Caching & Optimization:**
 - Hot objects LRU cache (decompressed) - avoids repeated decompression
+- Pack cache for repeated CI/CD clones (95%+ hit rate)
 - Pre-computed deltas for common bases
 - Delta base cache
 - Recent writes buffer
 - Batch reads with prefetch (tree objects)
 - Locality-aware reads (nearest replica)
 - Background delta computation
+- Background pack precomputation for hot repos
 - Streaming compression
 - Tiered storage: SSD (hot) -> HDD (cold)
 
 **RocksDB Column Families:**
 - `objects` - Raw object storage: `{oid}` -> `compressed_blob`
 - `deltas` - Delta storage: `{oid}:{base_oid}` -> `delta_data`
+- `pack_cache` - Pre-computed pack files with TTL: `{repo_id}:{ref}:{depth}` -> `pack_data`
 
 ## Request Flows
 
@@ -266,19 +274,19 @@ CI Runner              Frontend           Control Plane        Metadata         
    │                      │ ─────────────────────── GetRefs ────▶ │                  │
    │                      │ ◀──────────────────── refs map ───── │                  │
    │                      │                     │                 │                  │
-   │                      │ ───────────────────── CheckPackCache ▶│                  │
+   │                      │ ─────────────────────────────────── CheckPackCache ───▶│
    │                      │                     │                 │                  │
-   │                      │             ┌───────┴───────┐         │                  │
-   │                      │             │  CACHE HIT    │         │                  │
-   │                      │             │  (95% of CI)  │         │                  │
-   │                      │             └───────┬───────┘         │                  │
-   │                      │ ◀─────────────── pack data ────────── │                  │
+   │                      │                     │       ┌─────────┴─────────┐       │
+   │                      │                     │       │    CACHE HIT      │       │
+   │                      │                     │       │    (95% of CI)    │       │
+   │                      │                     │       └─────────┬─────────┘       │
+   │                      │ ◀────────────────────────────────── pack data ─────────│
    │ ◀── stream pack ──── │                     │                 │                  │
    │                      │                     │                 │                  │
-   │                      │             ┌───────┴───────┐         │                  │
-   │                      │             │  CACHE MISS   │         │                  │
-   │                      │             └───────┬───────┘         │                  │
-   │                      │ ◀────────────── object list ──────── │                  │
+   │                      │                     │       ┌─────────┴─────────┐       │
+   │                      │                     │       │    CACHE MISS     │       │
+   │                      │                     │       └─────────┬─────────┘       │
+   │                      │ ◀────────────── GetObjectLocations ─▶ │                  │
    │                      │                     │                 │                  │
    │                      │ ── GetHashRing ───▶ │                 │                  │
    │                      │ ◀── ring topology ─ │                 │                  │
@@ -288,7 +296,7 @@ CI Runner              Frontend           Control Plane        Metadata         
    │                      │                     │                 │                  │
    │                      │  [assemble pack]    │                 │                  │
    │                      │                     │                 │                  │
-   │                      │ ──────────────────── StorePackCache ─▶│                  │
+   │                      │ ─────────────────────────────────── StorePackCache ────▶│
    │ ◀── stream pack ──── │                     │                 │                  │
    │                      │                     │                 │                  │
    │                      │ ── LogAudit(async)▶ │                 │                  │
@@ -326,6 +334,191 @@ CI Runner              Frontend           Control Plane        Metadata         
    │                      │                     │                 │                  │
    │                      │ ── LogAudit(async)▶ │                 │                  │
 ```
+
+## Parallel Object Fetching
+
+The Frontend implements all parallel fetching strategies, using topology and health information provided by the Control Plane. Metadata and Object clusters are simple request/response services—they don't coordinate fetching.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            CONTROL PLANE                                     │
+│  Provides to Frontend:                                                       │
+│  • Hash ring topology (object → shard mapping)                              │
+│  • Node health & latency metrics                                            │
+│  • In-flight request counts per node                                        │
+│  • Rate limit decisions                                                      │
+│  • Replica locations for each object                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼ watches/polls
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              FRONTEND                                        │
+│  Implements:                                                                 │
+│  • Shard-aware batching        • Request coalescing                         │
+│  • Streaming assembly          • Locality-aware reads                       │
+│  • Connection pooling          • Prefetch hints                             │
+│  • Pack cache checks                                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │                               │
+                    ▼                               ▼
+┌───────────────────────────────┐   ┌───────────────────────────────┐
+│        METADATA CLUSTER        │   │         OBJECT CLUSTER         │
+│   Simple Request/Response      │   │    Simple Request/Response     │
+│                                │   │                                │
+│   GetRefs(repo) → refs         │   │   GetObjects(oids) → objects   │
+│   UpdateRefs(repo, updates)    │   │   StoreObjects(objects)        │
+│   GetObjectLocations(oids)     │   │   CheckPackCache(key) → pack   │
+└───────────────────────────────┘   └───────────────────────────────┘
+```
+
+The Frontend uses several strategies to maximize throughput:
+
+### 1. Shard-Aware Batching
+
+Objects are grouped by their target shard based on the hash ring, then fetched in parallel batches:
+
+```
+Objects needed: [A, B, C, D, E, F, G, H]
+                    │
+                    ▼ hash ring lookup
+                    │
+    ┌───────────────┼───────────────┐
+    ▼               ▼               ▼
+Shard 1: [A, C, F]  Shard 2: [B, D, G]  Shard 3: [E, H]
+    │               │               │
+    ▼               ▼               ▼
+Single batch req    Single batch req    Single batch req
+    │               │               │
+    └───────────────┴───────────────┘
+                    │
+                    ▼
+            Parallel responses
+```
+
+This reduces round trips from N (one per object) to num_shards (one per shard).
+
+### 2. Streaming Assembly with Bounded Parallelism
+
+Pack assembly starts immediately as objects arrive—no waiting for all objects:
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Shard 1    │     │  Shard 2    │     │  Shard 3    │
+│   stream    │     │   stream    │     │   stream    │
+└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+       │                   │                   │
+       └───────────────────┴───────────────────┘
+                           │
+                           ▼
+              ┌─────────────────────────┐
+              │   Bounded Channel (64)  │  ◀── backpressure
+              └────────────┬────────────┘
+                           │
+                           ▼
+              ┌─────────────────────────┐
+              │     Pack Assembler      │
+              │  (streaming to client)  │
+              └─────────────────────────┘
+```
+
+Bounded channels (e.g., 64 objects in flight) provide backpressure to avoid memory exhaustion.
+
+### 3. Connection Pool per Shard
+
+Persistent gRPC connection pools to each object node eliminate connection setup latency:
+
+```
+Frontend Node
+┌────────────────────────────────────────────────────┐
+│                  Connection Pools                   │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐│
+│  │ Object Node 1│ │ Object Node 2│ │ Object Node N││
+│  │  10 conns    │ │  10 conns    │ │  10 conns    ││
+│  └──────────────┘ └──────────────┘ └──────────────┘│
+└────────────────────────────────────────────────────┘
+
+Pool sizing: connections_per_node × num_object_nodes
+Example: 10 × 20 nodes = 200 total connections
+```
+
+### 4. Request Coalescing
+
+Concurrent clone requests for overlapping objects are deduplicated:
+
+```
+Clone Request 1: needs [A, B, C]  ─┐
+                                   │
+Clone Request 2: needs [A, D]     ─┼──▶ Coalescer ──▶ Single fetch [A, B, C, D]
+                                   │                          │
+Clone Request 3: needs [B, C]     ─┘                          │
+                                                              ▼
+                                                     Fan out results:
+                                                     Request 1 ◀── [A, B, C]
+                                                     Request 2 ◀── [A, D]
+                                                     Request 3 ◀── [B, C]
+```
+
+### 5. Locality-Aware Reads
+
+With replication factor 3, each object exists on 3 nodes. The Frontend selects the optimal replica:
+
+```
+Object X replicated on: [Node 2, Node 7, Node 15]
+
+Selection criteria:
+  Node 2:  latency=2ms,  in_flight=50  → score = 2 + (50 × 0.1) = 7
+  Node 7:  latency=5ms,  in_flight=10  → score = 5 + (10 × 0.1) = 6  ◀── winner
+  Node 15: latency=1ms,  in_flight=100 → score = 1 + (100 × 0.1) = 11
+
+Formula: score = latency_ms + (in_flight_requests × penalty_factor)
+```
+
+### 6. Prefetch Hints
+
+When fetching a tree object, its child OIDs become known. These are speculatively prefetched:
+
+```
+Fetch tree T1
+     │
+     ▼
+T1 contains: [blob B1, blob B2, tree T2]
+     │
+     ├──▶ Prefetch B1, B2, T2 immediately
+     │    (before client explicitly requests them)
+     │
+     ▼
+T2 contains: [blob B3, blob B4]
+     │
+     └──▶ Prefetch B3, B4
+```
+
+### 7. Pack Cache Check First
+
+Before fetching individual objects, check for a pre-computed pack:
+
+```
+Clone Request (ref=main, depth=1)
+     │
+     ▼
+┌─────────────────────────────┐
+│  Check Object Cluster       │
+│  pack_cache CF              │
+│  key: {repo}:{ref}:{depth}  │
+└──────────────┬──────────────┘
+               │
+       ┌───────┴───────┐
+       │               │
+   CACHE HIT       CACHE MISS
+   (95% CI/CD)     (5% CI/CD)
+       │               │
+       ▼               ▼
+  Return pack     Fetch individual
+  immediately     objects, then
+  (~1 request)    cache result
+                  (~1000s requests)
+```
+
+For CI/CD workloads with repeated clones of the same ref, pack cache achieves 95%+ hit rate.
 
 ## Crate Structure
 
@@ -466,12 +659,6 @@ gitstratum-cluster/
 │       │   ├── commit_graph.rs    # Commit ancestry
 │       │   ├── reachability.rs    # Reachability queries
 │       │   └── cache.rs           # Graph cache
-│       ├── pack_cache/
-│       │   ├── mod.rs
-│       │   ├── storage.rs         # Pack cache storage
-│       │   ├── precompute.rs      # Background precomputation
-│       │   ├── invalidation.rs    # Cache invalidation
-│       │   └── ttl.rs             # TTL management
 │       ├── object_index/
 │       │   ├── mod.rs
 │       │   └── location.rs        # Object -> nodes mapping
@@ -504,6 +691,12 @@ gitstratum-cluster/
 │       │   ├── hot_objects.rs     # Decompressed LRU
 │       │   ├── write_buffer.rs    # Recent writes
 │       │   └── prefetch.rs        # Related object prefetch
+│       ├── pack_cache/
+│       │   ├── mod.rs
+│       │   ├── storage.rs         # Pack cache storage
+│       │   ├── precompute.rs      # Background precomputation
+│       │   ├── invalidation.rs    # Cache invalidation
+│       │   └── ttl.rs             # TTL management
 │       ├── replication/
 │       │   ├── mod.rs
 │       │   ├── writer.rs          # Multi-node writes
@@ -598,7 +791,6 @@ spec:
       size: 100Gi
     cache:
       hotRefsSize: 100000
-      packCacheTtl: "5m"
       commitGraphSize: 50000
 
   # Object Cluster - consistent hash ring
@@ -612,6 +804,7 @@ spec:
       size: 500Gi
     cache:
       hotObjectsSize: "2Gi"
+      packCacheTtl: "5m"
       deltaCache: true
     gc:
       schedule: "0 2 * * *"
@@ -664,11 +857,13 @@ Each cluster exposes Prometheus metrics:
 
 ### Metadata Metrics
 - `gitstratum_metadata_refs_total` - Total refs stored
-- `gitstratum_metadata_pack_cache_size_bytes` - Pack cache size
-- `gitstratum_metadata_pack_cache_hit_ratio` - Cache hit ratio
+- `gitstratum_metadata_commit_graph_size` - Commit graph entries
+- `gitstratum_metadata_refs_cache_hit_ratio` - Refs cache hit ratio
 
 ### Object Metrics
 - `gitstratum_object_stored_bytes` - Total stored bytes
 - `gitstratum_object_read_bytes_total` - Bytes read
 - `gitstratum_object_compression_ratio` - Compression efficiency
+- `gitstratum_object_pack_cache_size_bytes` - Pack cache size
+- `gitstratum_object_pack_cache_hit_ratio` - Pack cache hit ratio
 - `gitstratum_object_gc_objects_collected` - GC collected objects
