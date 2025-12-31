@@ -1,11 +1,10 @@
 use openraft::storage::Adaptor;
 use openraft::{
-    BasicNode, Entry, EntryPayload, LogId, LogState, RaftLogReader, RaftSnapshotBuilder,
-    RaftStorage, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership, Vote,
+    BasicNode, Entry, EntryPayload, LogId, LogState, RaftLogReader, RaftStorage, Snapshot,
+    SnapshotMeta, StorageError, StorageIOError, StoredMembership, Vote,
 };
 use parking_lot::RwLock as ParkingLotRwLock;
 use rocksdb::{Options, DB};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::io::Cursor;
@@ -13,113 +12,32 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::ControlPlaneError;
-use crate::locks::LockInfo;
-use crate::state::{ClusterStateSnapshot, ExtendedNodeInfo, NodeType, RefLockKey};
+use crate::membership::ClusterStateSnapshot;
+use crate::raft::log::LogReader;
+use crate::raft::state_machine::{
+    apply_request, Response, StateMachineData, StateMachineSnapshotBuilder, StoredSnapshot,
+};
 
 pub type NodeId = u64;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Request {
-    AddNode {
-        node: ExtendedNodeInfo,
-    },
-    RemoveNode {
-        node_id: String,
-        node_type: NodeType,
-    },
-    SetNodeState {
-        node_id: String,
-        node_type: NodeType,
-        state: gitstratum_hashring::NodeState,
-    },
-    AcquireLock {
-        key: RefLockKey,
-        lock: LockInfo,
-    },
-    ReleaseLock {
-        lock_id: String,
-    },
-    CleanupExpiredLocks,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Response {
-    Success,
-    NodeAdded,
-    NodeRemoved { found: bool },
-    NodeStateSet { found: bool },
-    LockAcquired { lock_id: String },
-    LockNotAcquired { reason: String },
-    LockReleased { found: bool },
-    LocksCleanedUp { count: usize },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct StoredSnapshot {
-    pub meta: SnapshotMeta<NodeId, BasicNode>,
-    pub data: Vec<u8>,
-}
-
 openraft::declare_raft_types!(
     pub TypeConfig:
-        D = Request,
-        R = Response,
+        D = super::state_machine::Request,
+        R = super::state_machine::Response,
         NodeId = NodeId,
         Node = BasicNode,
         Entry = Entry<TypeConfig>,
         SnapshotData = Cursor<Vec<u8>>,
 );
 
-pub struct StateMachineData {
-    pub last_applied: Option<LogId<NodeId>>,
-    pub last_membership: StoredMembership<NodeId, BasicNode>,
-    pub state: ClusterStateSnapshot,
-}
-
-impl Default for StateMachineData {
-    fn default() -> Self {
-        Self {
-            last_applied: None,
-            last_membership: StoredMembership::default(),
-            state: ClusterStateSnapshot::new(),
-        }
-    }
-}
-
-pub struct StateMachineSnapshotBuilder {
-    data: StateMachineData,
-}
-
-impl RaftSnapshotBuilder<TypeConfig> for StateMachineSnapshotBuilder {
-    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
-        let data = serde_json::to_vec(&self.data.state)
-            .map_err(|e| StorageIOError::write_snapshot(None, &e))?;
-
-        let meta = SnapshotMeta {
-            last_log_id: self.data.last_applied,
-            last_membership: self.data.last_membership.clone(),
-            snapshot_id: format!(
-                "{}-{}",
-                self.data.last_applied.map(|l| l.index).unwrap_or(0),
-                uuid::Uuid::new_v4()
-            ),
-        };
-
-        Ok(Snapshot {
-            meta,
-            snapshot: Box::new(Cursor::new(data)),
-        })
-    }
-}
-
 pub struct ControlPlaneStore {
-    sm_data: ParkingLotRwLock<StateMachineData>,
-    snapshot: ParkingLotRwLock<Option<StoredSnapshot>>,
-    vote: ParkingLotRwLock<Option<Vote<NodeId>>>,
-    committed: ParkingLotRwLock<Option<LogId<NodeId>>>,
-    logs: ParkingLotRwLock<BTreeMap<u64, Entry<TypeConfig>>>,
-    last_purged: ParkingLotRwLock<Option<LogId<NodeId>>>,
-    db: Option<Arc<DB>>,
+    pub(crate) sm_data: ParkingLotRwLock<StateMachineData>,
+    pub(crate) snapshot: ParkingLotRwLock<Option<StoredSnapshot>>,
+    pub(crate) vote: ParkingLotRwLock<Option<Vote<NodeId>>>,
+    pub(crate) committed: ParkingLotRwLock<Option<LogId<NodeId>>>,
+    pub(crate) logs: ParkingLotRwLock<BTreeMap<u64, Entry<TypeConfig>>>,
+    pub(crate) last_purged: ParkingLotRwLock<Option<LogId<NodeId>>>,
+    pub(crate) db: Option<Arc<DB>>,
 }
 
 impl ControlPlaneStore {
@@ -181,96 +99,16 @@ impl ControlPlaneStore {
         self.sm_data.read().state.clone()
     }
 
-    fn log_key(index: u64) -> Vec<u8> {
+    pub(crate) fn log_key(index: u64) -> Vec<u8> {
         let mut key = b"log:".to_vec();
         key.extend_from_slice(&index.to_be_bytes());
         key
-    }
-
-    pub fn apply_request(state: &mut ClusterStateSnapshot, request: &Request) -> Response {
-        match request {
-            Request::AddNode { node } => {
-                state.add_node(node.clone());
-                Response::NodeAdded
-            }
-            Request::RemoveNode { node_id, node_type } => {
-                let found = state.remove_node(node_id, *node_type).is_some();
-                Response::NodeRemoved { found }
-            }
-            Request::SetNodeState {
-                node_id,
-                node_type,
-                state: node_state,
-            } => {
-                let found = state.set_node_state(node_id, *node_type, *node_state);
-                Response::NodeStateSet { found }
-            }
-            Request::AcquireLock { key, lock } => {
-                if let Some(existing) = state.ref_locks.get(key) {
-                    if !existing.is_expired() {
-                        return Response::LockNotAcquired {
-                            reason: format!("lock held by {}", existing.holder_id),
-                        };
-                    }
-                }
-                let lock_id = lock.lock_id.clone();
-                state.ref_locks.insert(key.clone(), lock.clone());
-                state.version += 1;
-                Response::LockAcquired { lock_id }
-            }
-            Request::ReleaseLock { lock_id } => {
-                let key = state
-                    .ref_locks
-                    .iter()
-                    .find(|(_, v)| v.lock_id == *lock_id)
-                    .map(|(k, _)| k.clone());
-
-                if let Some(key) = key {
-                    state.ref_locks.remove(&key);
-                    state.version += 1;
-                    Response::LockReleased { found: true }
-                } else {
-                    Response::LockReleased { found: false }
-                }
-            }
-            Request::CleanupExpiredLocks => {
-                let expired: Vec<RefLockKey> = state
-                    .ref_locks
-                    .iter()
-                    .filter(|(_, lock)| lock.is_expired())
-                    .map(|(k, _)| k.clone())
-                    .collect();
-
-                let count = expired.len();
-                for key in expired {
-                    state.ref_locks.remove(&key);
-                }
-                if count > 0 {
-                    state.version += 1;
-                }
-                Response::LocksCleanedUp { count }
-            }
-        }
     }
 }
 
 impl Default for ControlPlaneStore {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub struct LogReader {
-    logs: BTreeMap<u64, Entry<TypeConfig>>,
-}
-
-impl RaftLogReader<TypeConfig> for LogReader {
-    async fn try_get_log_entries<RB: std::ops::RangeBounds<u64> + Clone + Debug + Send>(
-        &mut self,
-        range: RB,
-    ) -> Result<Vec<Entry<TypeConfig>>, StorageError<NodeId>> {
-        let entries: Vec<_> = self.logs.range(range).map(|(_, v)| v.clone()).collect();
-        Ok(entries)
     }
 }
 
@@ -354,7 +192,8 @@ impl RaftStorage<TypeConfig> for ControlPlaneStore {
                 batch.put(&key, &value);
                 logs.insert(entry.log_id.index, entry);
             }
-            db.write(batch).map_err(|e| StorageIOError::write_logs(&e))?;
+            db.write(batch)
+                .map_err(|e| StorageIOError::write_logs(&e))?;
         } else {
             for entry in entries {
                 logs.insert(entry.log_id.index, entry);
@@ -376,7 +215,8 @@ impl RaftStorage<TypeConfig> for ControlPlaneStore {
             for index in &keys_to_remove {
                 batch.delete(Self::log_key(*index));
             }
-            db.write(batch).map_err(|e| StorageIOError::write_logs(&e))?;
+            db.write(batch)
+                .map_err(|e| StorageIOError::write_logs(&e))?;
         }
 
         for index in keys_to_remove {
@@ -386,7 +226,10 @@ impl RaftStorage<TypeConfig> for ControlPlaneStore {
         Ok(())
     }
 
-    async fn purge_logs_upto(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
+    async fn purge_logs_upto(
+        &mut self,
+        log_id: LogId<NodeId>,
+    ) -> Result<(), StorageError<NodeId>> {
         let mut logs = self.logs.write();
         let keys_to_remove: Vec<u64> = logs.range(..=log_id.index).map(|(k, _)| *k).collect();
 
@@ -395,7 +238,8 @@ impl RaftStorage<TypeConfig> for ControlPlaneStore {
             for index in &keys_to_remove {
                 batch.delete(Self::log_key(*index));
             }
-            db.write(batch).map_err(|e| StorageIOError::write_logs(&e))?;
+            db.write(batch)
+                .map_err(|e| StorageIOError::write_logs(&e))?;
         }
 
         for index in keys_to_remove {
@@ -409,7 +253,10 @@ impl RaftStorage<TypeConfig> for ControlPlaneStore {
     async fn last_applied_state(
         &mut self,
     ) -> Result<
-        (Option<LogId<NodeId>>, StoredMembership<NodeId, BasicNode>),
+        (
+            Option<LogId<NodeId>>,
+            StoredMembership<NodeId, BasicNode>,
+        ),
         StorageError<NodeId>,
     > {
         let data = self.sm_data.read();
@@ -431,7 +278,7 @@ impl RaftStorage<TypeConfig> for ControlPlaneStore {
                     responses.push(Response::Success);
                 }
                 EntryPayload::Normal(request) => {
-                    let response = Self::apply_request(&mut data.state, request);
+                    let response = apply_request(&mut data.state, request);
                     responses.push(response);
                 }
                 EntryPayload::Membership(membership) => {
@@ -499,10 +346,9 @@ impl RaftStorage<TypeConfig> for ControlPlaneStore {
     }
 }
 
-pub type StateMachineStore = Adaptor<TypeConfig, ControlPlaneStore>;
 pub type LogStore = Adaptor<TypeConfig, ControlPlaneStore>;
 
-pub fn create_stores(store: ControlPlaneStore) -> (LogStore, StateMachineStore) {
+pub fn create_stores(store: ControlPlaneStore) -> (LogStore, super::state_machine::StateMachineStore) {
     Adaptor::new(store)
 }
 

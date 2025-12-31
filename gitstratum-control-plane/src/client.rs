@@ -9,7 +9,7 @@ use std::time::Duration;
 use tonic::transport::Channel;
 
 use crate::error::{ControlPlaneError, Result};
-use crate::state::{ExtendedNodeInfo, NodeType};
+use crate::membership::{ExtendedNodeInfo, NodeType};
 
 fn hashring_node_state_to_proto(state: HashRingNodeState) -> ProtoNodeState {
     match state {

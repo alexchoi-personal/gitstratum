@@ -13,9 +13,8 @@ use std::time::Duration;
 use tonic::{Request, Response, Status};
 
 use crate::error::ControlPlaneError;
-use crate::locks::LockInfo;
+use crate::membership::{ClusterStateSnapshot, ExtendedNodeInfo, LockInfo, NodeType, RefLockKey};
 use crate::raft::{ControlPlaneRaft, NodeId, Request as RaftRequest, StateMachineStore};
-use crate::state::{ClusterStateSnapshot, ExtendedNodeInfo, NodeType, RefLockKey};
 
 fn proto_node_state_to_hashring(state: ProtoNodeState) -> HashRingNodeState {
     match state {
