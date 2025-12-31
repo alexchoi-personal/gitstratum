@@ -985,34 +985,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitstratum-bitcask"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "bitflags 2.10.0",
- "bytes",
- "crc32fast",
- "criterion",
- "crossbeam-channel",
- "dashmap",
- "flate2",
- "futures",
- "gitstratum-core",
- "io-uring",
- "lru",
- "metrics",
- "parking_lot",
- "proptest",
- "rand 0.8.5",
- "serde",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-test",
- "tracing",
-]
-
-[[package]]
 name = "gitstratum-control-bin"
 version = "0.1.0"
 dependencies = [
@@ -1247,6 +1219,34 @@ dependencies = [
  "prost-types",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "gitstratum-storage"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "bitflags 2.10.0",
+ "bytes",
+ "crc32fast",
+ "criterion",
+ "crossbeam-channel",
+ "dashmap",
+ "flate2",
+ "futures",
+ "gitstratum-core",
+ "io-uring",
+ "lru",
+ "metrics",
+ "parking_lot",
+ "proptest",
+ "rand 0.8.5",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "tracing",
 ]
 
 [[package]]

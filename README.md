@@ -42,7 +42,7 @@ GitStratum is a horizontally scalable Git hosting backend that separates storage
 | `gitstratum-object` | Blob storage with compression |
 | `gitstratum-frontend` | Git protocol implementation |
 | `gitstratum-operator` | Kubernetes operator |
-| `gitstratum-bitcask` | NVMe-optimized key-value store |
+| `gitstratum-storage` | NVMe-optimized storage engine |
 | `gitstratum-hashring` | Consistent hashing |
 
 ## Building
