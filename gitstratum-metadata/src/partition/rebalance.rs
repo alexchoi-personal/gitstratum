@@ -101,6 +101,9 @@ impl RebalancePlanner {
         }
 
         for i in 0..router.partition_count() {
+            if plan.actions.len() >= self.config.max_moves_per_round as usize {
+                return plan;
+            }
             if let Some(partition) = router.get_partition(i) {
                 if partition.primary_node.is_none() {
                     if let Some(node) = self.find_least_loaded(&node_loads) {

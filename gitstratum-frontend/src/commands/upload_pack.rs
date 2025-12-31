@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::{FrontendError, Result};
-use crate::negotiate::{NegotiationRequest, NegotiationResponse, ObjectWalker};
-use crate::pack::{PackEntry, PackWriter};
+use crate::cache::negotiation::{NegotiationRequest, NegotiationResponse, ObjectWalker};
+use crate::pack::assembly::{PackEntry, PackWriter};
 
 #[async_trait]
 pub trait MetadataClient: Send + Sync {
@@ -77,7 +77,7 @@ where
             }
         }
 
-        Ok(crate::negotiate::negotiate_refs(request, &available))
+        Ok(crate::cache::negotiation::negotiate_refs(request, &available))
     }
 
     pub async fn handle_request(&self, request: NegotiationRequest) -> Result<Bytes> {

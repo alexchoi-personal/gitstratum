@@ -7,9 +7,9 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, instrument};
 
 use crate::error::{FrontendError, Result};
-use crate::negotiate::NegotiationRequest;
-use crate::receive_pack::{GitReceivePack, PushResult, RefUpdate};
-use crate::upload_pack::GitUploadPack;
+use crate::cache::negotiation::NegotiationRequest;
+use crate::commands::receive_pack::{GitReceivePack, PushResult, RefUpdate};
+use crate::commands::upload_pack::GitUploadPack;
 
 #[async_trait]
 pub trait ControlPlaneConnection: Send + Sync {
@@ -227,7 +227,7 @@ struct MetadataAdapter<M> {
 
 #[async_trait]
 #[cfg_attr(coverage_nightly, coverage(off))]
-impl<M: MetadataConnection> crate::upload_pack::MetadataClient for MetadataAdapter<M> {
+impl<M: MetadataConnection> crate::commands::upload_pack::MetadataClient for MetadataAdapter<M> {
     async fn get_commit(&self, repo_id: &str, oid: &Oid) -> Result<Option<Commit>> {
         self.client.get_commit(repo_id, oid).await
     }
@@ -251,7 +251,7 @@ struct ObjectAdapter<O> {
 
 #[async_trait]
 #[cfg_attr(coverage_nightly, coverage(off))]
-impl<O: ObjectConnection> crate::upload_pack::ObjectClient for ObjectAdapter<O> {
+impl<O: ObjectConnection> crate::commands::upload_pack::ObjectClient for ObjectAdapter<O> {
     async fn get_blob(&self, oid: &Oid) -> Result<Option<Blob>> {
         self.client.get_blob(oid).await
     }
@@ -266,7 +266,7 @@ struct ControlPlaneAdapter<C> {
 }
 
 #[async_trait]
-impl<C: ControlPlaneConnection> crate::receive_pack::ControlPlaneClient for ControlPlaneAdapter<C> {
+impl<C: ControlPlaneConnection> crate::commands::receive_pack::ControlPlaneClient for ControlPlaneAdapter<C> {
     async fn acquire_ref_lock(&self, repo_id: &str, ref_name: &str, holder_id: &str, timeout_ms: u64) -> Result<String> {
         self.client.acquire_ref_lock(repo_id, ref_name, holder_id, timeout_ms).await
     }
@@ -281,7 +281,7 @@ struct MetadataWriterAdapter<M> {
 }
 
 #[async_trait]
-impl<M: MetadataConnection> crate::receive_pack::MetadataWriter for MetadataWriterAdapter<M> {
+impl<M: MetadataConnection> crate::commands::receive_pack::MetadataWriter for MetadataWriterAdapter<M> {
     async fn put_commit(&self, repo_id: &str, commit: &Commit) -> Result<()> {
         self.client.put_commit(repo_id, commit).await
     }
@@ -305,7 +305,7 @@ struct ObjectWriterAdapter<O> {
 
 #[async_trait]
 #[cfg_attr(coverage_nightly, coverage(off))]
-impl<O: ObjectConnection> crate::receive_pack::ObjectWriter for ObjectWriterAdapter<O> {
+impl<O: ObjectConnection> crate::commands::receive_pack::ObjectWriter for ObjectWriterAdapter<O> {
     async fn put_blob(&self, blob: &Blob) -> Result<()> {
         self.client.put_blob(blob).await
     }

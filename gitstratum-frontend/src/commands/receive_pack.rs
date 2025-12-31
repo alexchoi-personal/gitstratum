@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{FrontendError, Result};
-use crate::pack::PackReader;
+use crate::pack::assembly::PackReader;
 
 #[derive(Debug, Clone)]
 pub struct RefUpdate {
@@ -554,7 +554,7 @@ mod tests {
     }
 
     fn create_test_pack() -> Bytes {
-        use crate::pack::PackWriter;
+        use crate::pack::assembly::PackWriter;
 
         let mut writer = PackWriter::new();
         let blob = Blob::new(b"test content".to_vec());
