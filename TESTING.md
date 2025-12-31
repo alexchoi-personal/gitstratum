@@ -489,10 +489,10 @@ tests/
 ```rust
 // tests/integration_tests.rs
 
-use gitstratum_frontend::Frontend;
-use gitstratum_control_plane::ControlPlane;
-use gitstratum_metadata::MetadataCluster;
-use gitstratum_object::ObjectCluster;
+use gitstratum_frontend_cluster::Frontend;
+use gitstratum_control_plane_cluster::ControlPlane;
+use gitstratum_metadata_cluster::MetadataCluster;
+use gitstratum_object_cluster::ObjectCluster;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn test_full_git_workflow() {

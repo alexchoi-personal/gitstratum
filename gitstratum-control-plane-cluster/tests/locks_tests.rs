@@ -1,4 +1,4 @@
-use gitstratum_control_plane::LockInfo;
+use gitstratum_control_plane_cluster::LockInfo;
 use std::thread;
 use std::time::Duration;
 

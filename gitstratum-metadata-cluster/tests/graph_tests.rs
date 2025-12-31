@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use gitstratum_core::{Commit, Oid, RepoId, Signature};
-use gitstratum_metadata::{
+use gitstratum_metadata_cluster::{
     collect_reachable_commits, find_merge_base, is_ancestor, walk_commits, MetadataStore,
 };
 use tempfile::TempDir;
@@ -162,19 +162,19 @@ async fn test_walk_commits_async_api() {
 
     let commits = setup_linear_history(&store, &repo_id, 10);
 
-    let walked = gitstratum_metadata::walk_commits_async(
+    let walked = gitstratum_metadata_cluster::walk_commits_async(
         store.clone(), repo_id.clone(), vec![commits[9].oid], vec![], None,
     ).await.unwrap();
     assert_eq!(walked.len(), 10);
     assert_eq!(walked[0].oid, commits[9].oid);
     assert_eq!(walked[9].oid, commits[0].oid);
 
-    let walked = gitstratum_metadata::walk_commits_async(
+    let walked = gitstratum_metadata_cluster::walk_commits_async(
         store.clone(), repo_id.clone(), vec![commits[9].oid], vec![], Some(3),
     ).await.unwrap();
     assert_eq!(walked.len(), 3);
 
-    let walked = gitstratum_metadata::walk_commits_async(
+    let walked = gitstratum_metadata_cluster::walk_commits_async(
         store.clone(), repo_id.clone(), vec![commits[9].oid], vec![commits[5].oid], None,
     ).await.unwrap();
     assert_eq!(walked.len(), 4);
@@ -182,7 +182,7 @@ async fn test_walk_commits_async_api() {
         assert_ne!(commit.oid, commits[5].oid);
     }
 
-    let walked = gitstratum_metadata::walk_commits_async(
+    let walked = gitstratum_metadata_cluster::walk_commits_async(
         store.clone(), repo_id, vec![], vec![], None,
     ).await.unwrap();
     assert!(walked.is_empty());

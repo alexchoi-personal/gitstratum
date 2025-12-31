@@ -1,5 +1,5 @@
 use gitstratum_core::{Commit, Oid, RefName, RepoId, Signature, Tree, TreeEntry, TreeEntryMode};
-use gitstratum_metadata::MetadataStore;
+use gitstratum_metadata_cluster::MetadataStore;
 use tempfile::TempDir;
 
 fn create_test_store() -> (MetadataStore, TempDir) {

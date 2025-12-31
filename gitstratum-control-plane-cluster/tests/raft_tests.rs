@@ -1,4 +1,4 @@
-use gitstratum_control_plane::{
+use gitstratum_control_plane_cluster::{
     ClusterStateSnapshot, ControlPlaneStore, ExtendedNodeInfo, LockInfo, NodeType, RaftRequest,
     RaftResponse, RefLockKey,
 };
@@ -19,7 +19,7 @@ fn create_test_node(id: &str, node_type: NodeType) -> ExtendedNodeInfo {
 fn create_log_entry(
     index: u64,
     request: RaftRequest,
-) -> Entry<gitstratum_control_plane::TypeConfig> {
+) -> Entry<gitstratum_control_plane_cluster::TypeConfig> {
     Entry {
         log_id: LogId::new(CommittedLeaderId::new(1, 1), index),
         payload: EntryPayload::Normal(request),
@@ -395,7 +395,7 @@ async fn test_blank_and_empty_entries() {
     let responses = store.apply_to_state_machine(&[blank_entry]).await.unwrap();
     assert!(matches!(responses[0], RaftResponse::Success));
 
-    let empty_entries: Vec<Entry<gitstratum_control_plane::TypeConfig>> = vec![];
+    let empty_entries: Vec<Entry<gitstratum_control_plane_cluster::TypeConfig>> = vec![];
     let responses = store.apply_to_state_machine(&empty_entries).await.unwrap();
     assert!(responses.is_empty());
 
@@ -406,7 +406,7 @@ async fn test_blank_and_empty_entries() {
 
 #[tokio::test]
 async fn test_log_reader_and_stores() {
-    use gitstratum_control_plane::create_stores;
+    use gitstratum_control_plane_cluster::create_stores;
     use openraft::RaftLogReader;
 
     let mut store = ControlPlaneStore::new();

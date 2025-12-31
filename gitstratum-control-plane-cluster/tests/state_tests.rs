@@ -1,4 +1,4 @@
-use gitstratum_control_plane::{
+use gitstratum_control_plane_cluster::{
     ClusterState, ClusterStateSnapshot, ExtendedNodeInfo, LockInfo, NodeType, RefLockKey,
 };
 use gitstratum_hashring::NodeState;

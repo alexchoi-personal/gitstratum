@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gitstratum_core::{Commit, Oid, Signature, Tree, TreeEntry, TreeEntryMode};
-use gitstratum_metadata::{MetadataServiceImpl, MetadataStore};
+use gitstratum_metadata_cluster::{MetadataServiceImpl, MetadataStore};
 use gitstratum_proto::metadata_service_server::MetadataService;
 use gitstratum_proto::{
     Commit as ProtoCommit, CreateRepoRequest, DeleteRepoRequest, FindMergeBaseRequest,

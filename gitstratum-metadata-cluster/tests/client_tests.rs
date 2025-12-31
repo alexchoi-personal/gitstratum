@@ -2,7 +2,7 @@ use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::sync::Arc;
 
 use gitstratum_core::{Commit, Oid, RefName, RepoId, Signature, Tree, TreeEntry, TreeEntryMode};
-use gitstratum_metadata::{MetadataClient, MetadataServiceImpl, MetadataStore};
+use gitstratum_metadata_cluster::{MetadataClient, MetadataServiceImpl, MetadataStore};
 use gitstratum_proto::metadata_service_server::MetadataServiceServer;
 use tempfile::TempDir;
 use tokio::sync::oneshot;

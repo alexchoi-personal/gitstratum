@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use gitstratum_core::{Blob, Commit, Object, Oid, Signature, Tree, TreeEntry};
-use gitstratum_frontend::{
+use gitstratum_frontend_cluster::{
     ClusterState, ControlPlaneClient, ControlPlaneConnection, FrontendBuilder, GitReceivePack,
     GitUploadPack, MetadataClient, MetadataConnection, MetadataWriter, NegotiationRequest,
     ObjectClient, ObjectConnection, ObjectWriter, PackReader, PackWriter, RefUpdate, Result,

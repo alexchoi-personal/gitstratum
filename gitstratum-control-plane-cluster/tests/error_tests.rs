@@ -1,4 +1,4 @@
-use gitstratum_control_plane::ControlPlaneError;
+use gitstratum_control_plane_cluster::ControlPlaneError;
 
 #[test]
 fn test_all_error_variants_display_and_debug() {

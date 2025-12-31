@@ -1,5 +1,5 @@
 use gitstratum_core::{Blob, Oid};
-use gitstratum_object::{ObjectStore, StorageStats};
+use gitstratum_object_cluster::{ObjectStore, StorageStats};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -136,7 +136,7 @@ fn test_persistence_across_store_instances() {
 
 #[tokio::test]
 async fn test_grpc_service_full_workflow() {
-    use gitstratum_object::ObjectServiceImpl;
+    use gitstratum_object_cluster::ObjectServiceImpl;
     use gitstratum_proto::object_service_server::ObjectService;
     use gitstratum_proto::{DeleteBlobRequest, GetBlobRequest, GetStatsRequest, HasBlobRequest, PutBlobRequest};
     use tonic::Request;
