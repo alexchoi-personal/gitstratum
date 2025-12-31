@@ -4,16 +4,14 @@ use std::sync::Arc;
 
 use lru::LruCache;
 use parking_lot::RwLock;
-use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, Options, DB};
+use rocksdb::{ColumnFamily, Options, DB};
 
-use gitstratum_core::{Commit, Oid, RefName, RepoId, Signature, Tree};
+use gitstratum_core::{Commit, Oid, RefName, RepoId, Tree};
 
 use crate::error::{MetadataStoreError, Result};
-
-const CF_REPOS: &str = "repos";
-const CF_REFS: &str = "refs";
-const CF_COMMITS: &str = "commits";
-const CF_TREES: &str = "trees";
+use crate::store::column_families::{
+    create_cf_descriptors, CF_COMMITS, CF_REFS, CF_REPOS, CF_TREES,
+};
 
 const DEFAULT_CACHE_SIZE: usize = 10000;
 
@@ -33,13 +31,7 @@ impl MetadataStore {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
 
-        let cf_descriptors = vec![
-            ColumnFamilyDescriptor::new(CF_REPOS, Options::default()),
-            ColumnFamilyDescriptor::new(CF_REFS, Options::default()),
-            ColumnFamilyDescriptor::new(CF_COMMITS, Options::default()),
-            ColumnFamilyDescriptor::new(CF_TREES, Options::default()),
-        ];
-
+        let cf_descriptors = create_cf_descriptors();
         let db = DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
 
         let cache_size = NonZeroUsize::new(cache_size).unwrap_or(NonZeroUsize::new(1).unwrap());
@@ -377,6 +369,7 @@ impl MetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gitstratum_core::Signature;
     use tempfile::TempDir;
 
     fn create_test_store() -> (MetadataStore, TempDir) {

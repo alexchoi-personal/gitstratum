@@ -23,6 +23,8 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 bytes = { workspace = true }
 lru = { workspace = true }
+chrono = { workspace = true }
+siphasher = { workspace = true }
 
 rocksdb = { workspace = true }
 

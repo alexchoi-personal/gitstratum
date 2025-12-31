@@ -932,6 +932,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "bytes",
+ "chrono",
  "futures",
  "gitstratum-core",
  "gitstratum-proto",
@@ -939,6 +940,7 @@ dependencies = [
  "parking_lot",
  "rocksdb",
  "serde",
+ "siphasher",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2466,6 +2468,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "siphasher"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
 name = "slab"

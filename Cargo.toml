@@ -64,6 +64,8 @@ flate2 = "1.0"
 lru = "0.12"
 rand = "0.8"
 uuid = { version = "1.6", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+siphasher = "1.0"
 
 # Kubernetes
 kube = { version = "0.87", features = ["runtime", "derive"] }
