@@ -1,0 +1,56 @@
+[package]
+name = "metrics-exporter-prometheus"
+version = "0.13.1"
+authors = ["Toby Lawrence <toby@nuclearfurnace.com>"]
+edition = "2018"
+rust-version = "1.65.0"
+
+license = "MIT"
+
+description = "A metrics-compatible exporter for sending metrics to Prometheus."
+homepage = "https://github.com/metrics-rs/metrics"
+repository = "https://github.com/metrics-rs/metrics"
+documentation = "https://docs.rs/metrics-exporter-prometheus"
+readme = "README.md"
+
+categories = ["development-tools::debugging"]
+keywords = ["metrics", "telemetry", "prometheus"]
+
+[features]
+default = ["http-listener", "push-gateway"]
+async-runtime = ["tokio", "hyper"]
+http-listener = ["async-runtime", "hyper/server", "ipnet"]
+push-gateway = ["async-runtime", "hyper/client", "hyper-tls", "tracing"]
+
+[dependencies]
+metrics = { version = "^0.22", path = "../metrics" }
+metrics-util = { version = "^0.16", path = "../metrics-util", default-features = false, features = ["recency", "registry", "summary"] }
+thiserror = { version = "1", default-features = false }
+quanta = { version = "0.12", default-features = false }
+indexmap = { version = "2.1", default-features = false, features = ["std"] }
+base64 = { version = "0.21.0", default-features = false, features = ["std"] }
+
+# Optional
+hyper = { version = "0.14", default-features = false, features = ["tcp", "http1"], optional = true }
+ipnet = { version = "2", optional = true }
+tokio = { version = "1", features = ["rt", "net", "time"], optional = true }
+tracing = { version = "0.1.26", optional = true }
+hyper-tls = { version = "0.5.0", optional = true }
+
+[dev-dependencies]
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rand = "0.8"
+proptest = "1"
+
+[[example]]
+name = "prometheus_push_gateway"
+required-features = ["push-gateway"]
+
+[[example]]
+name = "prometheus_server"
+required-features = ["http-listener"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

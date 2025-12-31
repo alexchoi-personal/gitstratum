@@ -1,0 +1,21 @@
+[package]
+name = "gitstratum-metadata-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "gitstratum-metadata"
+path = "src/main.rs"
+
+[dependencies]
+gitstratum-metadata = { path = "../../gitstratum-metadata" }
+gitstratum-core = { path = "../../gitstratum-core" }
+gitstratum-proto = { path = "../../gitstratum-proto" }
+tokio.workspace = true
+clap = { version = "4.4", features = ["derive"] }
+tonic.workspace = true
+anyhow.workspace = true
+uuid.workspace = true

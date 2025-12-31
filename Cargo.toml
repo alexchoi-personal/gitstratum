@@ -9,6 +9,12 @@ members = [
     "gitstratum-frontend",
     "gitstratum-proto",
     "gitstratum-operator",
+    "gitstratum-metrics",
+    "bins/gitstratum-control",
+    "bins/gitstratum-ctl",
+    "bins/gitstratum-frontend",
+    "bins/gitstratum-metadata",
+    "bins/gitstratum-object",
 ]
 
 [workspace.package]
@@ -55,6 +61,9 @@ metrics-exporter-prometheus = "0.13"
 # Error handling
 thiserror = "1.0"
 anyhow = "1.0"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
 
 # Utilities
 bytes = { version = "1.5", features = ["serde"] }
