@@ -1,15 +1,12 @@
 use bytes::Bytes;
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
 use gitstratum_core::{Blob, Oid};
 use rocksdb::{Options, DB};
-use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{debug, instrument, trace};
 
+use super::compression::{CompressionConfig, Compressor};
 use crate::error::{ObjectStoreError, Result};
 
 #[derive(Debug, Clone, Default)]
@@ -21,15 +18,21 @@ pub struct StorageStats {
     pub io_utilization: f32,
 }
 
-pub struct ObjectStore {
+pub struct RocksDbStore {
     db: Arc<DB>,
     blob_count: AtomicU64,
     total_bytes: AtomicU64,
+    compressor: Compressor,
 }
 
-impl ObjectStore {
+impl RocksDbStore {
     #[instrument(skip_all, fields(path = %path.as_ref().display()))]
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        Self::with_compression(path, CompressionConfig::default())
+    }
+
+    #[instrument(skip_all, fields(path = %path.as_ref().display()))]
+    pub fn with_compression(path: impl AsRef<Path>, compression_config: CompressionConfig) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.set_compression_type(rocksdb::DBCompressionType::None);
@@ -57,6 +60,7 @@ impl ObjectStore {
             db,
             blob_count: AtomicU64::new(blob_count),
             total_bytes: AtomicU64::new(total_bytes),
+            compressor: Compressor::new(compression_config),
         })
     }
 
@@ -168,21 +172,11 @@ impl ObjectStore {
     }
 
     fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(data)
-            .map_err(|e| ObjectStoreError::Compression(e.to_string()))?;
-        encoder
-            .finish()
-            .map_err(|e| ObjectStoreError::Compression(e.to_string()))
+        self.compressor.compress(data)
     }
 
     fn decompress(&self, oid: &Oid, compressed: &[u8]) -> Result<Blob> {
-        let mut decoder = ZlibDecoder::new(compressed);
-        let mut data = Vec::new();
-        decoder
-            .read_to_end(&mut data)
-            .map_err(|e| ObjectStoreError::Decompression(e.to_string()))?;
+        let data = self.compressor.decompress(compressed)?;
         Ok(Blob::with_oid(*oid, Bytes::from(data)))
     }
 }
@@ -192,9 +186,9 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn create_test_store() -> (ObjectStore, TempDir) {
+    fn create_test_store() -> (RocksDbStore, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let store = ObjectStore::new(temp_dir.path()).unwrap();
+        let store = RocksDbStore::new(temp_dir.path()).unwrap();
         (store, temp_dir)
     }
 
@@ -292,12 +286,12 @@ mod tests {
         let oid = blob.oid;
 
         {
-            let store = ObjectStore::new(temp_dir.path()).unwrap();
+            let store = RocksDbStore::new(temp_dir.path()).unwrap();
             store.put(&blob).unwrap();
         }
 
         {
-            let store = ObjectStore::new(temp_dir.path()).unwrap();
+            let store = RocksDbStore::new(temp_dir.path()).unwrap();
             assert!(store.has(&oid));
             let retrieved = store.get(&oid).unwrap().unwrap();
             assert_eq!(retrieved.data.as_ref(), b"persistent data");
@@ -376,5 +370,23 @@ mod tests {
         assert_eq!(stats.used_bytes, 0);
         assert_eq!(stats.available_bytes, 0);
         assert_eq!(stats.io_utilization, 0.0);
+    }
+
+    #[test]
+    fn test_with_compression() {
+        use super::super::compression::CompressionType;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = CompressionConfig {
+            compression_type: CompressionType::Zlib,
+            level: 9,
+        };
+        let store = RocksDbStore::with_compression(temp_dir.path(), config).unwrap();
+
+        let blob = Blob::new(b"test with custom compression".to_vec());
+        store.put(&blob).unwrap();
+
+        let retrieved = store.get(&blob.oid).unwrap().unwrap();
+        assert_eq!(retrieved.data.as_ref(), b"test with custom compression");
     }
 }

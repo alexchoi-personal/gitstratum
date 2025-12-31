@@ -42,6 +42,25 @@ pub enum ObjectStoreError {
 
     #[error("all replicas failed")]
     AllReplicasFailed,
+
+    #[error("delta too large: {size} bytes (max: {max})")]
+    DeltaTooLarge { size: usize, max: usize },
+
+    #[error("delta apply error: {0}")]
+    DeltaApplyError(String),
+
+    #[error("delta deserialize error: {0}")]
+    DeltaDeserializeError(String),
+
+    #[error("insufficient replicas: required {required}, achieved {achieved}")]
+    InsufficientReplicas { required: usize, achieved: usize },
+
+    #[error("integrity error: oid {oid}, expected {expected}, computed {computed}")]
+    IntegrityError {
+        oid: String,
+        expected: String,
+        computed: String,
+    },
 }
 
 impl From<ObjectStoreError> for tonic::Status {
