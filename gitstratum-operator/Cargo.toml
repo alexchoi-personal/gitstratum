@@ -1,0 +1,28 @@
+[package]
+name = "gitstratum-operator"
+description = "Kubernetes operator for GitStratum cluster management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gitstratum-core = { workspace = true }
+gitstratum-proto = { workspace = true }
+
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+schemars = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

@@ -1,0 +1,32 @@
+[package]
+name = "gitstratum-object"
+description = "Object storage cluster for GitStratum (blob storage with consistent hashing)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gitstratum-core = { workspace = true }
+gitstratum-hashring = { workspace = true }
+gitstratum-proto = { workspace = true }
+
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+tonic = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+bytes = { workspace = true }
+flate2 = { workspace = true }
+
+rocksdb = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+rand = { workspace = true }

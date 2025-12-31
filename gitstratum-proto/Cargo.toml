@@ -1,0 +1,16 @@
+[package]
+name = "gitstratum-proto"
+description = "Protocol buffer definitions for GitStratum gRPC services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

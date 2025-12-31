@@ -1,0 +1,113 @@
+on: [push, pull_request]
+name: ci
+jobs:
+  ut-nightly:
+    name: unittest with nightly rust
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test_feature:
+          - ""
+          - "anyhow"
+          - "backtrace"
+          - "rkyv"
+          - "anyhow,backtrace"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: "nightly"
+          override: true
+          components: rustfmt, clippy
+
+      - name: Unit Tests | nightly
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features "${{ matrix.test_feature }}"
+        env:
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          path: |
+            _log/
+
+  ut-stable:
+    name: unittest with stable rust
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test_feature:
+          - ""
+          - "anyhow"
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: "stable"
+          override: true
+          components: rustfmt, clippy
+
+      - name: Unit Tests | stable
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features "${{ matrix.test_feature }}"
+        env:
+          RUST_LOG: debug
+          RUST_BACKTRACE: full
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          path: |
+            _log/
+
+  checks:
+    name: other checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v2
+
+
+      - name: Setup | Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: "nightly"
+          override: true
+          components: rustfmt, clippy
+
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all-features
+
+
+      - name: Format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+
+      - name: Clippy
+        shell: bash
+        run: |
+          cargo clippy --workspace --all-targets                -- -D warnings
+          cargo clippy --workspace --all-targets --all-features -- -D warnings

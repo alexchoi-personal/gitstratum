@@ -1,0 +1,19 @@
+[package]
+name = "gitstratum-core"
+description = "Core types and traits for GitStratum distributed Git system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

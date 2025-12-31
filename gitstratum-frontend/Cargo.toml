@@ -1,0 +1,28 @@
+[package]
+name = "gitstratum-frontend"
+description = "Git protocol frontend for GitStratum (HTTP and SSH serving)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gitstratum-core = { workspace = true }
+gitstratum-hashring = { workspace = true }
+gitstratum-proto = { workspace = true }
+
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+tonic = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+flate2 = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = { workspace = true }

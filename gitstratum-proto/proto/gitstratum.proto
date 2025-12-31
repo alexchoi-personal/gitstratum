@@ -1,0 +1,417 @@
+syntax = "proto3";
+
+package gitstratum;
+
+// Common types
+message Oid {
+  bytes bytes = 1;
+}
+
+message Signature {
+  string name = 1;
+  string email = 2;
+  int64 timestamp = 3;
+  string timezone = 4;
+}
+
+message TreeEntry {
+  string mode = 1;
+  string name = 2;
+  Oid oid = 3;
+}
+
+message Blob {
+  Oid oid = 1;
+  bytes data = 2;
+  bool compressed = 3;
+}
+
+message Tree {
+  Oid oid = 1;
+  repeated TreeEntry entries = 2;
+}
+
+message Commit {
+  Oid oid = 1;
+  Oid tree = 2;
+  repeated Oid parents = 3;
+  Signature author = 4;
+  Signature committer = 5;
+  string message = 6;
+}
+
+// Control Plane Service
+service ControlPlaneService {
+  // Cluster membership
+  rpc GetClusterState(GetClusterStateRequest) returns (GetClusterStateResponse);
+  rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+  rpc SetNodeState(SetNodeStateRequest) returns (SetNodeStateResponse);
+
+  // Distributed locks for ref updates
+  rpc AcquireRefLock(AcquireRefLockRequest) returns (AcquireRefLockResponse);
+  rpc ReleaseRefLock(ReleaseRefLockRequest) returns (ReleaseRefLockResponse);
+
+  // Hash ring
+  rpc GetHashRing(GetHashRingRequest) returns (GetHashRingResponse);
+
+  // Rebalancing
+  rpc TriggerRebalance(TriggerRebalanceRequest) returns (TriggerRebalanceResponse);
+  rpc GetRebalanceStatus(GetRebalanceStatusRequest) returns (GetRebalanceStatusResponse);
+}
+
+message NodeInfo {
+  string id = 1;
+  string address = 2;
+  uint32 port = 3;
+  NodeState state = 4;
+  NodeType type = 5;
+}
+
+enum NodeState {
+  NODE_STATE_UNKNOWN = 0;
+  NODE_STATE_ACTIVE = 1;
+  NODE_STATE_JOINING = 2;
+  NODE_STATE_DRAINING = 3;
+  NODE_STATE_DOWN = 4;
+}
+
+enum NodeType {
+  NODE_TYPE_UNKNOWN = 0;
+  NODE_TYPE_CONTROL_PLANE = 1;
+  NODE_TYPE_METADATA = 2;
+  NODE_TYPE_OBJECT = 3;
+  NODE_TYPE_FRONTEND = 4;
+}
+
+message GetClusterStateRequest {}
+
+message GetClusterStateResponse {
+  repeated NodeInfo control_plane_nodes = 1;
+  repeated NodeInfo metadata_nodes = 2;
+  repeated NodeInfo object_nodes = 3;
+  repeated NodeInfo frontend_nodes = 4;
+  string leader_id = 5;
+  uint64 version = 6;
+}
+
+message AddNodeRequest {
+  NodeInfo node = 1;
+}
+
+message AddNodeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message RemoveNodeRequest {
+  string node_id = 1;
+}
+
+message RemoveNodeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message SetNodeStateRequest {
+  string node_id = 1;
+  NodeState state = 2;
+}
+
+message SetNodeStateResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message AcquireRefLockRequest {
+  string repo_id = 1;
+  string ref_name = 2;
+  string holder_id = 3;
+  uint64 timeout_ms = 4;
+}
+
+message AcquireRefLockResponse {
+  bool acquired = 1;
+  string lock_id = 2;
+  string error = 3;
+}
+
+message ReleaseRefLockRequest {
+  string lock_id = 1;
+}
+
+message ReleaseRefLockResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message HashRingEntry {
+  uint64 position = 1;
+  string node_id = 2;
+}
+
+message GetHashRingRequest {}
+
+message GetHashRingResponse {
+  repeated HashRingEntry entries = 1;
+  uint32 replication_factor = 2;
+  uint64 version = 3;
+}
+
+message TriggerRebalanceRequest {
+  string reason = 1;
+}
+
+message TriggerRebalanceResponse {
+  bool started = 1;
+  string rebalance_id = 2;
+  string error = 3;
+}
+
+message GetRebalanceStatusRequest {
+  string rebalance_id = 1;
+}
+
+message GetRebalanceStatusResponse {
+  bool in_progress = 1;
+  float progress_percent = 2;
+  uint64 bytes_moved = 3;
+  uint64 bytes_remaining = 4;
+  string error = 5;
+}
+
+// Metadata Service
+service MetadataService {
+  // Refs
+  rpc GetRef(GetRefRequest) returns (GetRefResponse);
+  rpc ListRefs(ListRefsRequest) returns (ListRefsResponse);
+  rpc UpdateRef(UpdateRefRequest) returns (UpdateRefResponse);
+
+  // Commits
+  rpc GetCommit(GetCommitRequest) returns (GetCommitResponse);
+  rpc GetCommits(GetCommitsRequest) returns (stream Commit);
+  rpc PutCommit(PutCommitRequest) returns (PutCommitResponse);
+
+  // Trees
+  rpc GetTree(GetTreeRequest) returns (GetTreeResponse);
+  rpc PutTree(PutTreeRequest) returns (PutTreeResponse);
+
+  // Graph traversal
+  rpc WalkCommits(WalkCommitsRequest) returns (stream Commit);
+  rpc FindMergeBase(FindMergeBaseRequest) returns (FindMergeBaseResponse);
+
+  // Repository
+  rpc CreateRepo(CreateRepoRequest) returns (CreateRepoResponse);
+  rpc DeleteRepo(DeleteRepoRequest) returns (DeleteRepoResponse);
+  rpc ListRepos(ListReposRequest) returns (ListReposResponse);
+}
+
+message GetRefRequest {
+  string repo_id = 1;
+  string ref_name = 2;
+}
+
+message GetRefResponse {
+  Oid target = 1;
+  bool found = 2;
+}
+
+message RefEntry {
+  string name = 1;
+  Oid target = 2;
+}
+
+message ListRefsRequest {
+  string repo_id = 1;
+  string prefix = 2;
+}
+
+message ListRefsResponse {
+  repeated RefEntry refs = 1;
+}
+
+message UpdateRefRequest {
+  string repo_id = 1;
+  string ref_name = 2;
+  Oid old_target = 3;
+  Oid new_target = 4;
+  bool force = 5;
+}
+
+message UpdateRefResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message GetCommitRequest {
+  string repo_id = 1;
+  Oid oid = 2;
+}
+
+message GetCommitResponse {
+  Commit commit = 1;
+  bool found = 2;
+}
+
+message GetCommitsRequest {
+  string repo_id = 1;
+  repeated Oid oids = 2;
+}
+
+message PutCommitRequest {
+  string repo_id = 1;
+  Commit commit = 2;
+}
+
+message PutCommitResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message GetTreeRequest {
+  string repo_id = 1;
+  Oid oid = 2;
+}
+
+message GetTreeResponse {
+  Tree tree = 1;
+  bool found = 2;
+}
+
+message PutTreeRequest {
+  string repo_id = 1;
+  Tree tree = 2;
+}
+
+message PutTreeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message WalkCommitsRequest {
+  string repo_id = 1;
+  repeated Oid from = 2;
+  repeated Oid until = 3;
+  uint32 limit = 4;
+}
+
+message FindMergeBaseRequest {
+  string repo_id = 1;
+  repeated Oid commits = 2;
+}
+
+message FindMergeBaseResponse {
+  Oid merge_base = 1;
+  bool found = 2;
+}
+
+message CreateRepoRequest {
+  string repo_id = 1;
+}
+
+message CreateRepoResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message DeleteRepoRequest {
+  string repo_id = 1;
+}
+
+message DeleteRepoResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message ListReposRequest {
+  string prefix = 1;
+  uint32 limit = 2;
+  string cursor = 3;
+}
+
+message ListReposResponse {
+  repeated string repo_ids = 1;
+  string next_cursor = 2;
+}
+
+// Object Service (Blob storage)
+service ObjectService {
+  rpc GetBlob(GetBlobRequest) returns (GetBlobResponse);
+  rpc GetBlobs(GetBlobsRequest) returns (stream Blob);
+  rpc PutBlob(PutBlobRequest) returns (PutBlobResponse);
+  rpc PutBlobs(stream Blob) returns (PutBlobsResponse);
+  rpc HasBlob(HasBlobRequest) returns (HasBlobResponse);
+  rpc DeleteBlob(DeleteBlobRequest) returns (DeleteBlobResponse);
+
+  // Batch operations for rebalancing
+  rpc StreamBlobs(StreamBlobsRequest) returns (stream Blob);
+  rpc ReceiveBlobs(stream Blob) returns (ReceiveBlobsResponse);
+
+  // Stats
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+}
+
+message GetBlobRequest {
+  Oid oid = 1;
+}
+
+message GetBlobResponse {
+  Blob blob = 1;
+  bool found = 2;
+}
+
+message GetBlobsRequest {
+  repeated Oid oids = 1;
+}
+
+message PutBlobRequest {
+  Blob blob = 1;
+}
+
+message PutBlobResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message PutBlobsResponse {
+  uint32 success_count = 1;
+  uint32 error_count = 2;
+  repeated string errors = 3;
+}
+
+message HasBlobRequest {
+  Oid oid = 1;
+}
+
+message HasBlobResponse {
+  bool exists = 1;
+}
+
+message DeleteBlobRequest {
+  Oid oid = 1;
+}
+
+message DeleteBlobResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message StreamBlobsRequest {
+  uint64 from_position = 1;
+  uint64 to_position = 2;
+}
+
+message ReceiveBlobsResponse {
+  uint32 received_count = 1;
+  string error = 2;
+}
+
+message GetStatsRequest {}
+
+message GetStatsResponse {
+  uint64 total_blobs = 1;
+  uint64 total_bytes = 2;
+  uint64 used_bytes = 3;
+  uint64 available_bytes = 4;
+  float io_utilization = 5;
+}
