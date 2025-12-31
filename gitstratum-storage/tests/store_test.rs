@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use gitstratum_bitcask::{BitcaskConfig, BitcaskStore};
+use gitstratum_storage::{BitcaskConfig, BitcaskStore};
 use gitstratum_core::Oid;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -21,7 +21,7 @@ fn create_test_config(dir: &TempDir) -> BitcaskConfig {
         sync_writes: false,
         io_queue_depth: 64,
         io_queue_count: 2,
-        compaction: gitstratum_bitcask::config::CompactionConfig {
+        compaction: gitstratum_storage::config::CompactionConfig {
             fragmentation_threshold: 0.4,
             check_interval: Duration::from_secs(300),
             max_concurrent: 1,
