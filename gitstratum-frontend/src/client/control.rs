@@ -36,7 +36,13 @@ pub trait ControlPlaneClient: Send + Sync {
     async fn validate_token(&self, token: &str) -> Result<TokenValidation>;
     async fn validate_ssh_key(&self, fingerprint: &str) -> Result<TokenValidation>;
     async fn check_rate_limit(&self, user_id: &str, repo_id: &str) -> Result<bool>;
-    async fn acquire_ref_lock(&self, repo_id: &str, ref_name: &str, holder_id: &str, timeout_ms: u64) -> Result<String>;
+    async fn acquire_ref_lock(
+        &self,
+        repo_id: &str,
+        ref_name: &str,
+        holder_id: &str,
+        timeout_ms: u64,
+    ) -> Result<String>;
     async fn release_ref_lock(&self, lock_id: &str) -> Result<()>;
     async fn get_cluster_state(&self) -> Result<ClusterState>;
     async fn log_audit(&self, event: AuditEvent) -> Result<()>;
@@ -180,8 +186,8 @@ mod tests {
 
     #[test]
     fn test_token_validation_admin() {
-        let validation = TokenValidation::valid("admin".to_string())
-            .with_permissions(vec!["admin".to_string()]);
+        let validation =
+            TokenValidation::valid("admin".to_string()).with_permissions(vec!["admin".to_string()]);
 
         assert!(validation.can_read());
         assert!(validation.can_write());
@@ -189,8 +195,7 @@ mod tests {
 
     #[test]
     fn test_token_validation_expiry() {
-        let validation = TokenValidation::valid("user-1".to_string())
-            .with_expiry(1704067200);
+        let validation = TokenValidation::valid("user-1".to_string()).with_expiry(1704067200);
 
         assert_eq!(validation.expires_at, Some(1704067200));
     }
@@ -206,8 +211,8 @@ mod tests {
 
     #[test]
     fn test_audit_event_with_details() {
-        let event = AuditEvent::new("git", "user-1", "repo-1", "clone")
-            .with_details("refs/heads/main");
+        let event =
+            AuditEvent::new("git", "user-1", "repo-1", "clone").with_details("refs/heads/main");
 
         assert_eq!(event.details, "refs/heads/main");
     }

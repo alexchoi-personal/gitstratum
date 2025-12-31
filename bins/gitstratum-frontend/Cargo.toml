@@ -22,3 +22,6 @@ tokio.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 anyhow.workspace = true
 uuid.workspace = true
+
+[lints]
+workspace = true

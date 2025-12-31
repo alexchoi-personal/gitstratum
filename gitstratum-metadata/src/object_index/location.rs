@@ -118,7 +118,11 @@ impl ObjectLocationIndex {
         let mut locations = self.locations.write();
         if let Some(location) = locations.get_mut(oid) {
             location.add_node(node_id.clone());
-            self.node_objects.write().entry(node_id).or_default().insert(*oid);
+            self.node_objects
+                .write()
+                .entry(node_id)
+                .or_default()
+                .insert(*oid);
             true
         } else {
             false
@@ -231,8 +235,8 @@ mod tests {
     #[test]
     fn test_object_location_with_size() {
         let oid = Oid::hash(b"object");
-        let location = ObjectLocation::new(oid, vec!["node1".to_string()], ObjectType::Blob)
-            .with_size(1024);
+        let location =
+            ObjectLocation::new(oid, vec!["node1".to_string()], ObjectType::Blob).with_size(1024);
 
         assert_eq!(location.size_bytes, Some(1024));
     }
@@ -342,8 +346,16 @@ mod tests {
         let oid1 = Oid::hash(b"object1");
         let oid2 = Oid::hash(b"object2");
 
-        index.put(ObjectLocation::new(oid1, vec!["node1".to_string()], ObjectType::Blob));
-        index.put(ObjectLocation::new(oid2, vec!["node1".to_string(), "node2".to_string()], ObjectType::Tree));
+        index.put(ObjectLocation::new(
+            oid1,
+            vec!["node1".to_string()],
+            ObjectType::Blob,
+        ));
+        index.put(ObjectLocation::new(
+            oid2,
+            vec!["node1".to_string(), "node2".to_string()],
+            ObjectType::Tree,
+        ));
 
         let objects = index.get_objects_on_node("node1");
         assert_eq!(objects.len(), 2);
@@ -378,7 +390,11 @@ mod tests {
         assert_eq!(index.node_count(), 0);
 
         let oid = Oid::hash(b"object");
-        index.put(ObjectLocation::new(oid, vec!["node1".to_string()], ObjectType::Blob));
+        index.put(ObjectLocation::new(
+            oid,
+            vec!["node1".to_string()],
+            ObjectType::Blob,
+        ));
 
         assert_eq!(index.object_count(), 1);
         assert_eq!(index.node_count(), 1);
@@ -394,8 +410,16 @@ mod tests {
         let oid1 = Oid::hash(b"object1");
         let oid2 = Oid::hash(b"object2");
 
-        index.put(ObjectLocation::new(oid1, vec!["node1".to_string()], ObjectType::Blob));
-        index.put(ObjectLocation::new(oid2, vec!["node2".to_string()], ObjectType::Tree));
+        index.put(ObjectLocation::new(
+            oid1,
+            vec!["node1".to_string()],
+            ObjectType::Blob,
+        ));
+        index.put(ObjectLocation::new(
+            oid2,
+            vec!["node2".to_string()],
+            ObjectType::Tree,
+        ));
 
         let locator: &dyn ObjectLocator = &index;
         assert!(locator.locate(&oid1).is_some());

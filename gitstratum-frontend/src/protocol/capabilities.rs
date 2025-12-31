@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt;
 
 #[derive(Debug, Clone, Default)]
 pub struct Capabilities {
@@ -28,14 +29,20 @@ impl Capabilities {
         caps
     }
 
-    pub fn to_string(&self) -> String {
-        let mut sorted: Vec<_> = self.caps.iter().collect();
-        sorted.sort();
-        sorted.into_iter().cloned().collect::<Vec<_>>().join(" ")
-    }
-
     pub fn iter(&self) -> impl Iterator<Item = &String> {
         self.caps.iter()
+    }
+}
+
+impl fmt::Display for Capabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut sorted: Vec<_> = self.caps.iter().collect();
+        sorted.sort();
+        write!(
+            f,
+            "{}",
+            sorted.into_iter().cloned().collect::<Vec<_>>().join(" ")
+        )
     }
 }
 

@@ -24,7 +24,11 @@ impl BaseSelector {
         }
     }
 
-    pub fn with_config(max_candidates: usize, min_similarity: f64, max_base_size_ratio: f64) -> Self {
+    pub fn with_config(
+        max_candidates: usize,
+        min_similarity: f64,
+        max_base_size_ratio: f64,
+    ) -> Self {
         Self {
             max_candidates,
             min_similarity,

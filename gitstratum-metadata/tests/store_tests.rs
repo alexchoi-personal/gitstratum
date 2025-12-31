@@ -26,395 +26,73 @@ fn create_test_tree(entries: Vec<(&str, Oid)>) -> Tree {
 }
 
 #[test]
-fn test_repo_create_and_exists() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-
-    assert!(!store.repo_exists(&repo_id).unwrap());
-
-    store.create_repo(&repo_id).unwrap();
-
-    assert!(store.repo_exists(&repo_id).unwrap());
-}
-
-#[test]
-fn test_repo_create_duplicate() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-
-    store.create_repo(&repo_id).unwrap();
-    let result = store.create_repo(&repo_id);
-
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_repo_delete() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-
-    store.create_repo(&repo_id).unwrap();
-    store.delete_repo(&repo_id).unwrap();
-
-    assert!(!store.repo_exists(&repo_id).unwrap());
-}
-
-#[test]
-fn test_repo_delete_not_found() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("nonexistent").unwrap();
-
-    let result = store.delete_repo(&repo_id);
-
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_repo_list() {
+fn test_repository_lifecycle_with_listing_and_pagination() {
     let (store, _temp) = create_test_store();
 
-    store.create_repo(&RepoId::new("alpha").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("beta").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("gamma").unwrap()).unwrap();
-
-    let (repos, cursor) = store.list_repos("", 10, "").unwrap();
-
-    assert_eq!(repos.len(), 3);
-    assert!(cursor.is_none());
-}
-
-#[test]
-fn test_repo_list_with_prefix() {
-    let (store, _temp) = create_test_store();
-
-    store.create_repo(&RepoId::new("org/repo1").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("org/repo2").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("other/repo3").unwrap()).unwrap();
-
-    let (repos, _) = store.list_repos("org/", 10, "").unwrap();
-
-    assert_eq!(repos.len(), 2);
-}
-
-#[test]
-fn test_repo_list_with_pagination() {
-    let (store, _temp) = create_test_store();
-
-    store.create_repo(&RepoId::new("repo1").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("repo2").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("repo3").unwrap()).unwrap();
-
-    let (repos, cursor) = store.list_repos("", 2, "").unwrap();
-
-    assert_eq!(repos.len(), 2);
-    assert!(cursor.is_some());
-
-    let (repos2, cursor2) = store.list_repos("", 2, &cursor.unwrap()).unwrap();
-
-    assert_eq!(repos2.len(), 1);
-    assert!(cursor2.is_none());
-}
-
-#[test]
-fn test_ref_get_set() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let ref_name = RefName::branch("main").unwrap();
-    let oid = Oid::hash(b"test commit");
-
-    store.create_repo(&repo_id).unwrap();
-
-    assert!(store.get_ref(&repo_id, &ref_name).unwrap().is_none());
-
-    store.update_ref(&repo_id, &ref_name, None, &oid, false).unwrap();
-
-    let result = store.get_ref(&repo_id, &ref_name).unwrap();
-    assert_eq!(result, Some(oid));
-}
-
-#[test]
-fn test_ref_cas_success() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let ref_name = RefName::branch("main").unwrap();
-    let oid1 = Oid::hash(b"commit1");
-    let oid2 = Oid::hash(b"commit2");
-
-    store.create_repo(&repo_id).unwrap();
-    store.update_ref(&repo_id, &ref_name, None, &oid1, false).unwrap();
-    store.update_ref(&repo_id, &ref_name, Some(&oid1), &oid2, false).unwrap();
-
-    let result = store.get_ref(&repo_id, &ref_name).unwrap();
-    assert_eq!(result, Some(oid2));
-}
-
-#[test]
-fn test_ref_cas_failure() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let ref_name = RefName::branch("main").unwrap();
-    let oid1 = Oid::hash(b"commit1");
-    let oid2 = Oid::hash(b"commit2");
-    let wrong_oid = Oid::hash(b"wrong");
-
-    store.create_repo(&repo_id).unwrap();
-    store.update_ref(&repo_id, &ref_name, None, &oid1, false).unwrap();
-
-    let result = store.update_ref(&repo_id, &ref_name, Some(&wrong_oid), &oid2, false);
-
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_ref_force_update() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let ref_name = RefName::branch("main").unwrap();
-    let oid1 = Oid::hash(b"commit1");
-    let oid2 = Oid::hash(b"commit2");
-    let wrong_oid = Oid::hash(b"wrong");
-
-    store.create_repo(&repo_id).unwrap();
-    store.update_ref(&repo_id, &ref_name, None, &oid1, false).unwrap();
-    store.update_ref(&repo_id, &ref_name, Some(&wrong_oid), &oid2, true).unwrap();
-
-    let result = store.get_ref(&repo_id, &ref_name).unwrap();
-    assert_eq!(result, Some(oid2));
-}
-
-#[test]
-fn test_ref_list() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let oid = Oid::hash(b"commit");
-
-    store.create_repo(&repo_id).unwrap();
-    store.update_ref(&repo_id, &RefName::branch("main").unwrap(), None, &oid, false).unwrap();
-    store.update_ref(&repo_id, &RefName::branch("feature").unwrap(), None, &oid, false).unwrap();
-    store.update_ref(&repo_id, &RefName::tag("v1.0").unwrap(), None, &oid, false).unwrap();
-
-    let refs = store.list_refs(&repo_id, "refs/heads/").unwrap();
-
-    assert_eq!(refs.len(), 2);
-}
-
-#[test]
-fn test_ref_delete() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let ref_name = RefName::branch("main").unwrap();
-    let oid = Oid::hash(b"commit");
-
-    store.create_repo(&repo_id).unwrap();
-    store.update_ref(&repo_id, &ref_name, None, &oid, false).unwrap();
-    store.delete_ref(&repo_id, &ref_name).unwrap();
-
-    assert!(store.get_ref(&repo_id, &ref_name).unwrap().is_none());
-}
-
-#[test]
-fn test_commit_put_get() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let tree = Oid::hash(b"tree");
-    let commit = create_test_commit(tree, vec![], "Initial commit");
-
-    store.create_repo(&repo_id).unwrap();
-    store.put_commit(&repo_id, &commit).unwrap();
-
-    let result = store.get_commit(&repo_id, &commit.oid).unwrap();
-
-    assert!(result.is_some());
-    let fetched = result.unwrap();
-    assert_eq!(fetched.oid, commit.oid);
-    assert_eq!(fetched.tree, commit.tree);
-    assert_eq!(fetched.message, commit.message);
-}
-
-#[test]
-fn test_commit_not_found() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let oid = Oid::hash(b"nonexistent");
-
-    store.create_repo(&repo_id).unwrap();
-
-    let result = store.get_commit(&repo_id, &oid).unwrap();
-
-    assert!(result.is_none());
-}
-
-#[test]
-fn test_commit_with_parents() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let tree = Oid::hash(b"tree");
-    let parent = create_test_commit(tree, vec![], "Parent commit");
-    let child = create_test_commit(tree, vec![parent.oid], "Child commit");
-
-    store.create_repo(&repo_id).unwrap();
-    store.put_commit(&repo_id, &parent).unwrap();
-    store.put_commit(&repo_id, &child).unwrap();
-
-    let result = store.get_commit(&repo_id, &child.oid).unwrap().unwrap();
-
-    assert_eq!(result.parents.len(), 1);
-    assert_eq!(result.parents[0], parent.oid);
-}
-
-#[test]
-fn test_commit_cache() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let tree = Oid::hash(b"tree");
-    let commit = create_test_commit(tree, vec![], "Test commit");
-
-    store.create_repo(&repo_id).unwrap();
-    store.put_commit(&repo_id, &commit).unwrap();
-
-    let _ = store.get_commit(&repo_id, &commit.oid).unwrap();
-    let _ = store.get_commit(&repo_id, &commit.oid).unwrap();
-
-    store.clear_cache();
-
-    let result = store.get_commit(&repo_id, &commit.oid).unwrap();
-    assert!(result.is_some());
-}
-
-#[test]
-fn test_tree_put_get() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let tree = create_test_tree(vec![
-        ("file1.txt", Oid::hash(b"file1")),
-        ("file2.txt", Oid::hash(b"file2")),
-    ]);
-
-    store.create_repo(&repo_id).unwrap();
-    store.put_tree(&repo_id, &tree).unwrap();
-
-    let result = store.get_tree(&repo_id, &tree.oid).unwrap();
-
-    assert!(result.is_some());
-    let fetched = result.unwrap();
-    assert_eq!(fetched.oid, tree.oid);
-    assert_eq!(fetched.entries.len(), 2);
-}
-
-#[test]
-fn test_tree_not_found() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let oid = Oid::hash(b"nonexistent");
-
-    store.create_repo(&repo_id).unwrap();
-
-    let result = store.get_tree(&repo_id, &oid).unwrap();
-
-    assert!(result.is_none());
-}
-
-#[test]
-fn test_tree_cache() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let tree = create_test_tree(vec![("file.txt", Oid::hash(b"file"))]);
-
-    store.create_repo(&repo_id).unwrap();
-    store.put_tree(&repo_id, &tree).unwrap();
-
-    let _ = store.get_tree(&repo_id, &tree.oid).unwrap();
-    let _ = store.get_tree(&repo_id, &tree.oid).unwrap();
-
-    store.clear_cache();
-
-    let result = store.get_tree(&repo_id, &tree.oid).unwrap();
-    assert!(result.is_some());
-}
-
-#[test]
-fn test_delete_repo_cleans_up_data() {
-    let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let ref_name = RefName::branch("main").unwrap();
-    let tree = Oid::hash(b"tree");
-    let commit = create_test_commit(tree, vec![], "Test commit");
-    let tree_obj = create_test_tree(vec![("file.txt", Oid::hash(b"file"))]);
-
-    store.create_repo(&repo_id).unwrap();
-    store.update_ref(&repo_id, &ref_name, None, &commit.oid, false).unwrap();
-    store.put_commit(&repo_id, &commit).unwrap();
-    store.put_tree(&repo_id, &tree_obj).unwrap();
-
-    store.delete_repo(&repo_id).unwrap();
-
-    assert!(!store.repo_exists(&repo_id).unwrap());
-}
-
-#[test]
-fn test_multiple_repos_isolation() {
-    let (store, _temp) = create_test_store();
-    let repo1 = RepoId::new("repo1").unwrap();
-    let repo2 = RepoId::new("repo2").unwrap();
-    let ref_name = RefName::branch("main").unwrap();
-    let oid1 = Oid::hash(b"commit1");
-    let oid2 = Oid::hash(b"commit2");
-
+    let repo1 = RepoId::new("org/repo1").unwrap();
+    let repo2 = RepoId::new("org/repo2").unwrap();
+    let repo3 = RepoId::new("other/repo3").unwrap();
+
+    assert!(!store.repo_exists(&repo1).unwrap());
     store.create_repo(&repo1).unwrap();
+    assert!(store.repo_exists(&repo1).unwrap());
+
+    assert!(store.create_repo(&repo1).is_err());
+
     store.create_repo(&repo2).unwrap();
-    store.update_ref(&repo1, &ref_name, None, &oid1, false).unwrap();
-    store.update_ref(&repo2, &ref_name, None, &oid2, false).unwrap();
+    store.create_repo(&repo3).unwrap();
 
-    let result1 = store.get_ref(&repo1, &ref_name).unwrap();
-    let result2 = store.get_ref(&repo2, &ref_name).unwrap();
+    let (all_repos, _) = store.list_repos("", 10, "").unwrap();
+    assert_eq!(all_repos.len(), 3);
 
-    assert_eq!(result1, Some(oid1));
-    assert_eq!(result2, Some(oid2));
+    let (org_repos, _) = store.list_repos("org/", 10, "").unwrap();
+    assert_eq!(org_repos.len(), 2);
+
+    let (page1, cursor1) = store.list_repos("", 2, "").unwrap();
+    assert_eq!(page1.len(), 2);
+    assert!(cursor1.is_some());
+
+    let (page2, cursor2) = store.list_repos("", 2, &cursor1.unwrap()).unwrap();
+    assert_eq!(page2.len(), 1);
+    assert!(cursor2.is_none());
+
+    store.delete_repo(&repo1).unwrap();
+    assert!(!store.repo_exists(&repo1).unwrap());
+
+    assert!(store.delete_repo(&repo1).is_err());
 }
 
 #[test]
-fn test_custom_cache_size() {
-    let temp_dir = TempDir::new().unwrap();
-    let store = MetadataStore::open_with_cache_size(temp_dir.path(), 100).unwrap();
-    let repo_id = RepoId::new("test-repo").unwrap();
-    let tree = Oid::hash(b"tree");
-
-    store.create_repo(&repo_id).unwrap();
-
-    for i in 0..150 {
-        let commit = create_test_commit(tree, vec![], &format!("Commit {}", i));
-        store.put_commit(&repo_id, &commit).unwrap();
-    }
-
-    let commit = create_test_commit(tree, vec![], "Final commit");
-    store.put_commit(&repo_id, &commit).unwrap();
-    let result = store.get_commit(&repo_id, &commit.oid).unwrap();
-    assert!(result.is_some());
-}
-
-#[test]
-fn test_list_repos_skips_invalid_repo_ids() {
-    let temp_dir = TempDir::new().unwrap();
-    let store = MetadataStore::open(temp_dir.path()).unwrap();
-
-    store.create_repo(&RepoId::new("valid-repo").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("another-valid").unwrap()).unwrap();
-
-    let (repos, _) = store.list_repos("", 10, "").unwrap();
-    assert_eq!(repos.len(), 2);
-}
-
-#[test]
-fn test_list_refs_handles_various_ref_formats() {
+fn test_ref_operations_and_cas_semantics() {
     let (store, _temp) = create_test_store();
     let repo_id = RepoId::new("test-repo").unwrap();
-    let oid = Oid::hash(b"commit");
-
     store.create_repo(&repo_id).unwrap();
-    store.update_ref(&repo_id, &RefName::branch("main").unwrap(), None, &oid, true).unwrap();
-    store.update_ref(&repo_id, &RefName::branch("feature/test").unwrap(), None, &oid, true).unwrap();
-    store.update_ref(&repo_id, &RefName::tag("v1.0.0").unwrap(), None, &oid, true).unwrap();
-    store.update_ref(&repo_id, &RefName::remote("origin", "main").unwrap(), None, &oid, true).unwrap();
+
+    let main_ref = RefName::branch("main").unwrap();
+    let feature_ref = RefName::branch("feature/test").unwrap();
+    let tag_ref = RefName::tag("v1.0.0").unwrap();
+    let remote_ref = RefName::remote("origin", "main").unwrap();
+
+    let oid1 = Oid::hash(b"commit1");
+    let oid2 = Oid::hash(b"commit2");
+    let wrong_oid = Oid::hash(b"wrong");
+
+    assert!(store.get_ref(&repo_id, &main_ref).unwrap().is_none());
+
+    store.update_ref(&repo_id, &main_ref, None, &oid1, false).unwrap();
+    assert_eq!(store.get_ref(&repo_id, &main_ref).unwrap(), Some(oid1));
+
+    store.update_ref(&repo_id, &main_ref, Some(&oid1), &oid2, false).unwrap();
+    assert_eq!(store.get_ref(&repo_id, &main_ref).unwrap(), Some(oid2));
+
+    assert!(store.update_ref(&repo_id, &main_ref, Some(&wrong_oid), &oid1, false).is_err());
+
+    store.update_ref(&repo_id, &main_ref, Some(&wrong_oid), &oid1, true).unwrap();
+    assert_eq!(store.get_ref(&repo_id, &main_ref).unwrap(), Some(oid1));
+
+    store.update_ref(&repo_id, &feature_ref, None, &oid1, false).unwrap();
+    store.update_ref(&repo_id, &tag_ref, None, &oid1, false).unwrap();
+    store.update_ref(&repo_id, &remote_ref, None, &oid1, false).unwrap();
 
     let all_refs = store.list_refs(&repo_id, "").unwrap();
     assert_eq!(all_refs.len(), 4);
@@ -427,49 +105,83 @@ fn test_list_refs_handles_various_ref_formats() {
 
     let remote_refs = store.list_refs(&repo_id, "refs/remotes/").unwrap();
     assert_eq!(remote_refs.len(), 1);
+
+    let nonexistent = store.list_refs(&repo_id, "refs/nonexistent/").unwrap();
+    assert!(nonexistent.is_empty());
+
+    store.delete_ref(&repo_id, &main_ref).unwrap();
+    assert!(store.get_ref(&repo_id, &main_ref).unwrap().is_none());
 }
 
 #[test]
-fn test_list_repos_with_empty_prefix_and_cursor() {
-    let (store, _temp) = create_test_store();
-
-    store.create_repo(&RepoId::new("aaa").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("bbb").unwrap()).unwrap();
-    store.create_repo(&RepoId::new("ccc").unwrap()).unwrap();
-
-    let (repos1, cursor1) = store.list_repos("", 1, "").unwrap();
-    assert_eq!(repos1.len(), 1);
-    assert!(cursor1.is_some());
-
-    let (repos2, cursor2) = store.list_repos("", 1, &cursor1.unwrap()).unwrap();
-    assert_eq!(repos2.len(), 1);
-    assert!(cursor2.is_some());
-
-    let (repos3, _cursor3) = store.list_repos("", 1, &cursor2.unwrap()).unwrap();
-    assert_eq!(repos3.len(), 1);
-}
-
-#[test]
-fn test_delete_repo_with_many_refs_commits_trees() {
+fn test_commit_and_tree_storage_with_caching() {
     let (store, _temp) = create_test_store();
     let repo_id = RepoId::new("test-repo").unwrap();
+    store.create_repo(&repo_id).unwrap();
 
+    let nonexistent_oid = Oid::hash(b"nonexistent");
+    assert!(store.get_commit(&repo_id, &nonexistent_oid).unwrap().is_none());
+    assert!(store.get_tree(&repo_id, &nonexistent_oid).unwrap().is_none());
+
+    let tree1 = create_test_tree(vec![
+        ("file1.txt", Oid::hash(b"file1")),
+        ("file2.txt", Oid::hash(b"file2")),
+    ]);
+    store.put_tree(&repo_id, &tree1).unwrap();
+
+    let tree_result = store.get_tree(&repo_id, &tree1.oid).unwrap().unwrap();
+    assert_eq!(tree_result.oid, tree1.oid);
+    assert_eq!(tree_result.entries.len(), 2);
+
+    let _ = store.get_tree(&repo_id, &tree1.oid).unwrap();
+    let _ = store.get_tree(&repo_id, &tree1.oid).unwrap();
+
+    let commit1 = create_test_commit(tree1.oid, vec![], "Initial commit");
+    store.put_commit(&repo_id, &commit1).unwrap();
+
+    let commit_result = store.get_commit(&repo_id, &commit1.oid).unwrap().unwrap();
+    assert_eq!(commit_result.oid, commit1.oid);
+    assert_eq!(commit_result.tree, commit1.tree);
+    assert_eq!(commit_result.message, "Initial commit");
+
+    let commit2 = create_test_commit(tree1.oid, vec![commit1.oid], "Second commit");
+    store.put_commit(&repo_id, &commit2).unwrap();
+
+    let commit2_result = store.get_commit(&repo_id, &commit2.oid).unwrap().unwrap();
+    assert_eq!(commit2_result.parents.len(), 1);
+    assert_eq!(commit2_result.parents[0], commit1.oid);
+
+    let _ = store.get_commit(&repo_id, &commit1.oid).unwrap();
+    let _ = store.get_commit(&repo_id, &commit1.oid).unwrap();
+
+    store.clear_cache();
+
+    let after_clear = store.get_commit(&repo_id, &commit1.oid).unwrap();
+    assert!(after_clear.is_some());
+
+    let tree_after_clear = store.get_tree(&repo_id, &tree1.oid).unwrap();
+    assert!(tree_after_clear.is_some());
+}
+
+#[test]
+fn test_repository_deletion_cascades_all_data() {
+    let (store, _temp) = create_test_store();
+    let repo_id = RepoId::new("test-repo").unwrap();
     store.create_repo(&repo_id).unwrap();
 
     for i in 0..5 {
         let ref_name = RefName::branch(&format!("branch{}", i)).unwrap();
         let oid = Oid::hash(format!("commit{}", i).as_bytes());
         store.update_ref(&repo_id, &ref_name, None, &oid, true).unwrap();
-    }
 
-    for i in 0..5 {
         let tree_oid = Oid::hash(format!("tree{}", i).as_bytes());
         let commit = create_test_commit(tree_oid, vec![], &format!("Commit {}", i));
         store.put_commit(&repo_id, &commit).unwrap();
 
-        let tree = create_test_tree(vec![
-            (&format!("file{}.txt", i), Oid::hash(format!("content{}", i).as_bytes())),
-        ]);
+        let tree = create_test_tree(vec![(
+            &format!("file{}.txt", i),
+            Oid::hash(format!("content{}", i).as_bytes()),
+        )]);
         store.put_tree(&repo_id, &tree).unwrap();
     }
 
@@ -478,25 +190,55 @@ fn test_delete_repo_with_many_refs_commits_trees() {
 }
 
 #[test]
-fn test_list_refs_empty_result() {
+fn test_multi_repository_isolation() {
     let (store, _temp) = create_test_store();
-    let repo_id = RepoId::new("test-repo").unwrap();
 
-    store.create_repo(&repo_id).unwrap();
+    let repo1 = RepoId::new("repo1").unwrap();
+    let repo2 = RepoId::new("repo2").unwrap();
+    store.create_repo(&repo1).unwrap();
+    store.create_repo(&repo2).unwrap();
 
-    let refs = store.list_refs(&repo_id, "refs/heads/").unwrap();
-    assert!(refs.is_empty());
+    let ref_name = RefName::branch("main").unwrap();
+    let oid1 = Oid::hash(b"commit1");
+    let oid2 = Oid::hash(b"commit2");
+
+    store.update_ref(&repo1, &ref_name, None, &oid1, false).unwrap();
+    store.update_ref(&repo2, &ref_name, None, &oid2, false).unwrap();
+
+    let tree = Oid::hash(b"tree");
+    let commit1 = create_test_commit(tree, vec![], "Repo1 commit");
+    let commit2 = create_test_commit(tree, vec![], "Repo2 commit");
+
+    store.put_commit(&repo1, &commit1).unwrap();
+    store.put_commit(&repo2, &commit2).unwrap();
+
+    assert_eq!(store.get_ref(&repo1, &ref_name).unwrap(), Some(oid1));
+    assert_eq!(store.get_ref(&repo2, &ref_name).unwrap(), Some(oid2));
+
+    assert!(store.get_commit(&repo1, &commit1.oid).unwrap().is_some());
+    assert!(store.get_commit(&repo1, &commit2.oid).unwrap().is_none());
+
+    assert!(store.get_commit(&repo2, &commit2.oid).unwrap().is_some());
+    assert!(store.get_commit(&repo2, &commit1.oid).unwrap().is_none());
 }
 
 #[test]
-fn test_list_refs_with_nonmatching_prefix() {
-    let (store, _temp) = create_test_store();
+fn test_custom_cache_size_and_eviction() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = MetadataStore::open_with_cache_size(temp_dir.path(), 100).unwrap();
     let repo_id = RepoId::new("test-repo").unwrap();
-    let oid = Oid::hash(b"commit");
+    let tree = Oid::hash(b"tree");
 
     store.create_repo(&repo_id).unwrap();
-    store.update_ref(&repo_id, &RefName::branch("main").unwrap(), None, &oid, true).unwrap();
 
-    let refs = store.list_refs(&repo_id, "refs/nonexistent/").unwrap();
-    assert!(refs.is_empty());
+    for i in 0..150 {
+        let commit = create_test_commit(tree, vec![], &format!("Commit {}", i));
+        store.put_commit(&repo_id, &commit).unwrap();
+    }
+
+    let final_commit = create_test_commit(tree, vec![], "Final commit");
+    store.put_commit(&repo_id, &final_commit).unwrap();
+
+    let result = store.get_commit(&repo_id, &final_commit.oid).unwrap();
+    assert!(result.is_some());
 }

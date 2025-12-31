@@ -154,7 +154,12 @@ impl MetadataStore {
         Ok(())
     }
 
-    pub fn list_repos(&self, prefix: &str, limit: usize, cursor: &str) -> Result<(Vec<RepoId>, Option<String>)> {
+    pub fn list_repos(
+        &self,
+        prefix: &str,
+        limit: usize,
+        cursor: &str,
+    ) -> Result<(Vec<RepoId>, Option<String>)> {
         let mut repos = Vec::new();
         let prefix_bytes = prefix.as_bytes();
         let cursor_bytes = cursor.as_bytes();
@@ -278,7 +283,8 @@ impl MetadataStore {
             }
         }
 
-        self.db.put_cf(self.cf_refs(), &key, new_target.as_bytes())?;
+        self.db
+            .put_cf(self.cf_refs(), &key, new_target.as_bytes())?;
         Ok(())
     }
 
@@ -403,7 +409,10 @@ mod tests {
 
         store.create_repo(&repo_id).unwrap();
         let result = store.create_repo(&repo_id);
-        assert!(matches!(result, Err(MetadataStoreError::RepoAlreadyExists(_))));
+        assert!(matches!(
+            result,
+            Err(MetadataStoreError::RepoAlreadyExists(_))
+        ));
     }
 
     #[test]
@@ -473,7 +482,9 @@ mod tests {
 
         assert!(store.get_ref(&repo_id, &ref_name).unwrap().is_none());
 
-        store.update_ref(&repo_id, &ref_name, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid, true)
+            .unwrap();
         assert_eq!(store.get_ref(&repo_id, &ref_name).unwrap(), Some(oid));
 
         store.delete_ref(&repo_id, &ref_name).unwrap();
@@ -490,9 +501,13 @@ mod tests {
         let oid1 = Oid::hash(b"commit1");
         let oid2 = Oid::hash(b"commit2");
 
-        store.update_ref(&repo_id, &ref_name, None, &oid1, false).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid1, false)
+            .unwrap();
 
-        store.update_ref(&repo_id, &ref_name, Some(&oid1), &oid2, false).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, Some(&oid1), &oid2, false)
+            .unwrap();
         assert_eq!(store.get_ref(&repo_id, &ref_name).unwrap(), Some(oid2));
     }
 
@@ -507,7 +522,9 @@ mod tests {
         let oid2 = Oid::hash(b"commit2");
         let wrong_oid = Oid::hash(b"wrong");
 
-        store.update_ref(&repo_id, &ref_name, None, &oid1, true).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid1, true)
+            .unwrap();
 
         let result = store.update_ref(&repo_id, &ref_name, Some(&wrong_oid), &oid2, false);
         assert!(matches!(result, Err(MetadataStoreError::CasFailed { .. })));
@@ -523,7 +540,9 @@ mod tests {
         let oid1 = Oid::hash(b"commit1");
         let oid2 = Oid::hash(b"commit2");
 
-        store.update_ref(&repo_id, &ref_name, None, &oid1, true).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid1, true)
+            .unwrap();
 
         let result = store.update_ref(&repo_id, &ref_name, None, &oid2, false);
         assert!(matches!(result, Err(MetadataStoreError::CasFailed { .. })));
@@ -552,7 +571,9 @@ mod tests {
         let ref_name = RefName::new("refs/heads/main").unwrap();
         let new_oid = Oid::hash(b"new");
 
-        store.update_ref(&repo_id, &ref_name, Some(&Oid::ZERO), &new_oid, false).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, Some(&Oid::ZERO), &new_oid, false)
+            .unwrap();
         assert_eq!(store.get_ref(&repo_id, &ref_name).unwrap(), Some(new_oid));
     }
 
@@ -568,7 +589,9 @@ mod tests {
 
         let oid = Oid::hash(b"commit");
         store.update_ref(&repo_id, &main, None, &oid, true).unwrap();
-        store.update_ref(&repo_id, &feature, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &feature, None, &oid, true)
+            .unwrap();
         store.update_ref(&repo_id, &tag, None, &oid, true).unwrap();
 
         let refs = store.list_refs(&repo_id, "refs/heads/").unwrap();
@@ -656,7 +679,9 @@ mod tests {
 
         let ref_name = RefName::new("refs/heads/main").unwrap();
         let oid = Oid::hash(b"commit1");
-        store.update_ref(&repo_id, &ref_name, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid, true)
+            .unwrap();
 
         let commit = Commit {
             oid: Oid::hash(b"commit1"),

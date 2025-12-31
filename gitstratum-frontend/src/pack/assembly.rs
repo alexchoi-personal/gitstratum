@@ -2,9 +2,12 @@ use bytes::{BufMut, Bytes, BytesMut};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
-use gitstratum_core::{Blob, Commit, Object, ObjectType, Oid, Signature, Tree, TreeEntry, TreeEntryMode};
+use gitstratum_core::{
+    Blob, Commit, Object, ObjectType, Oid, Signature, Tree, TreeEntry, TreeEntryMode,
+};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::str::FromStr;
 
 use crate::error::{FrontendError, Result};
 
@@ -102,20 +105,18 @@ fn parse_tree_entries(data: &[u8]) -> Result<Vec<TreeEntry>> {
     let mut pos = 0;
 
     while pos < data.len() {
-        let space_pos = data[pos..]
-            .iter()
-            .position(|&b| b == b' ')
-            .ok_or_else(|| FrontendError::InvalidPackFormat("missing space in tree entry".to_string()))?;
+        let space_pos = data[pos..].iter().position(|&b| b == b' ').ok_or_else(|| {
+            FrontendError::InvalidPackFormat("missing space in tree entry".to_string())
+        })?;
 
         let mode_str = std::str::from_utf8(&data[pos..pos + space_pos])
             .map_err(|e| FrontendError::InvalidPackFormat(e.to_string()))?;
         let mode = TreeEntryMode::from_str(mode_str)?;
         pos += space_pos + 1;
 
-        let null_pos = data[pos..]
-            .iter()
-            .position(|&b| b == 0)
-            .ok_or_else(|| FrontendError::InvalidPackFormat("missing null in tree entry".to_string()))?;
+        let null_pos = data[pos..].iter().position(|&b| b == 0).ok_or_else(|| {
+            FrontendError::InvalidPackFormat("missing null in tree entry".to_string())
+        })?;
 
         let name = std::str::from_utf8(&data[pos..pos + null_pos])
             .map_err(|e| FrontendError::InvalidPackFormat(e.to_string()))?
@@ -123,7 +124,9 @@ fn parse_tree_entries(data: &[u8]) -> Result<Vec<TreeEntry>> {
         pos += null_pos + 1;
 
         if pos + 32 > data.len() {
-            return Err(FrontendError::InvalidPackFormat("truncated tree entry oid".to_string()));
+            return Err(FrontendError::InvalidPackFormat(
+                "truncated tree entry oid".to_string(),
+            ));
         }
 
         let oid = Oid::from_slice(&data[pos..pos + 32])?;
@@ -136,8 +139,8 @@ fn parse_tree_entries(data: &[u8]) -> Result<Vec<TreeEntry>> {
 }
 
 fn parse_commit(oid: Oid, data: &[u8]) -> Result<Commit> {
-    let text = std::str::from_utf8(data)
-        .map_err(|e| FrontendError::InvalidPackFormat(e.to_string()))?;
+    let text =
+        std::str::from_utf8(data).map_err(|e| FrontendError::InvalidPackFormat(e.to_string()))?;
 
     let mut tree: Option<Oid> = None;
     let mut parents = Vec::new();
@@ -176,7 +179,8 @@ fn parse_commit(oid: Oid, data: &[u8]) -> Result<Commit> {
         tree.ok_or_else(|| FrontendError::InvalidPackFormat("missing tree".to_string()))?,
         parents,
         author.ok_or_else(|| FrontendError::InvalidPackFormat("missing author".to_string()))?,
-        committer.ok_or_else(|| FrontendError::InvalidPackFormat("missing committer".to_string()))?,
+        committer
+            .ok_or_else(|| FrontendError::InvalidPackFormat("missing committer".to_string()))?,
         message,
     ))
 }
@@ -196,7 +200,9 @@ fn parse_signature(s: &str) -> Result<Signature> {
     let parts: Vec<&str> = rest.split_whitespace().collect();
 
     if parts.len() < 2 {
-        return Err(FrontendError::InvalidPackFormat("invalid signature timestamp".to_string()));
+        return Err(FrontendError::InvalidPackFormat(
+            "invalid signature timestamp".to_string(),
+        ));
     }
 
     let timestamp: i64 = parts[0]
@@ -334,11 +340,15 @@ pub struct PackReader {
 impl PackReader {
     pub fn new(data: Bytes) -> Result<Self> {
         if data.len() < 12 {
-            return Err(FrontendError::InvalidPackFormat("pack too small".to_string()));
+            return Err(FrontendError::InvalidPackFormat(
+                "pack too small".to_string(),
+            ));
         }
 
         if &data[0..4] != PACK_SIGNATURE {
-            return Err(FrontendError::InvalidPackFormat("invalid pack signature".to_string()));
+            return Err(FrontendError::InvalidPackFormat(
+                "invalid pack signature".to_string(),
+            ));
         }
 
         let version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
@@ -582,19 +592,25 @@ fn apply_delta_instructions(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
             }
 
             if offset + size > base.len() {
-                return Err(FrontendError::InvalidPackFormat("delta copy out of bounds".to_string()));
+                return Err(FrontendError::InvalidPackFormat(
+                    "delta copy out of bounds".to_string(),
+                ));
             }
 
             result.extend_from_slice(&base[offset..offset + size]);
         } else if cmd != 0 {
             let size = cmd as usize;
             if pos + size > delta.len() {
-                return Err(FrontendError::InvalidPackFormat("delta insert out of bounds".to_string()));
+                return Err(FrontendError::InvalidPackFormat(
+                    "delta insert out of bounds".to_string(),
+                ));
             }
             result.extend_from_slice(&delta[pos..pos + size]);
             pos += size;
         } else {
-            return Err(FrontendError::InvalidPackFormat("invalid delta command".to_string()));
+            return Err(FrontendError::InvalidPackFormat(
+                "invalid delta command".to_string(),
+            ));
         }
     }
 
@@ -636,498 +652,6 @@ fn read_delta_size(data: &[u8]) -> Result<(usize, usize)> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_pack_writer_empty() {
-        let writer = PackWriter::new();
-        let data = writer.build().unwrap();
-
-        assert_eq!(&data[0..4], PACK_SIGNATURE);
-        assert_eq!(u32::from_be_bytes([data[4], data[5], data[6], data[7]]), PACK_VERSION);
-        assert_eq!(u32::from_be_bytes([data[8], data[9], data[10], data[11]]), 0);
-    }
-
-    #[test]
-    fn test_pack_writer_with_blob() {
-        let mut writer = PackWriter::new();
-        let blob = Blob::new(b"hello world".to_vec());
-        writer.add_object(&Object::Blob(blob.clone())).unwrap();
-
-        let data = writer.build().unwrap();
-        assert!(data.len() > 12);
-
-        let reader = PackReader::new(data).unwrap();
-        assert_eq!(reader.object_count(), 1);
-    }
-
-    #[test]
-    fn test_pack_roundtrip_blob() {
-        let mut writer = PackWriter::new();
-        let blob = Blob::new(b"test content for roundtrip".to_vec());
-        let original_oid = blob.oid;
-        writer.add_object(&Object::Blob(blob)).unwrap();
-
-        let data = writer.build().unwrap();
-        let mut reader = PackReader::new(data).unwrap();
-
-        let entry = reader.read_next().unwrap().unwrap();
-        assert_eq!(entry.oid, original_oid);
-        assert_eq!(entry.object_type, ObjectType::Blob);
-        assert_eq!(entry.data.as_ref(), b"test content for roundtrip");
-    }
-
-    #[test]
-    fn test_pack_roundtrip_tree() {
-        let mut writer = PackWriter::new();
-        let entries = vec![
-            TreeEntry::file("README.md", Oid::hash(b"readme")),
-            TreeEntry::file("main.rs", Oid::hash(b"main")),
-        ];
-        let tree = Tree::new(entries);
-        let original_oid = tree.oid;
-        writer.add_object(&Object::Tree(tree)).unwrap();
-
-        let data = writer.build().unwrap();
-        let mut reader = PackReader::new(data).unwrap();
-
-        let entry = reader.read_next().unwrap().unwrap();
-        assert_eq!(entry.oid, original_oid);
-        assert_eq!(entry.object_type, ObjectType::Tree);
-    }
-
-    #[test]
-    fn test_pack_roundtrip_commit() {
-        let mut writer = PackWriter::new();
-        let tree = Oid::hash(b"tree");
-        let author = Signature::new("Author", "author@example.com", 1704067200, "+0000");
-        let committer = Signature::new("Committer", "committer@example.com", 1704067200, "+0000");
-        let commit = Commit::new(tree, vec![], author, committer, "Initial commit");
-        let original_oid = commit.oid;
-        writer.add_object(&Object::Commit(commit)).unwrap();
-
-        let data = writer.build().unwrap();
-        let mut reader = PackReader::new(data).unwrap();
-
-        let entry = reader.read_next().unwrap().unwrap();
-        assert_eq!(entry.oid, original_oid);
-        assert_eq!(entry.object_type, ObjectType::Commit);
-    }
-
-    #[test]
-    fn test_pack_multiple_objects() {
-        let mut writer = PackWriter::new();
-
-        let blob1 = Blob::new(b"content 1".to_vec());
-        let blob2 = Blob::new(b"content 2".to_vec());
-        let entries = vec![TreeEntry::file("file1.txt", blob1.oid), TreeEntry::file("file2.txt", blob2.oid)];
-        let tree = Tree::new(entries);
-
-        writer.add_object(&Object::Blob(blob1)).unwrap();
-        writer.add_object(&Object::Blob(blob2)).unwrap();
-        writer.add_object(&Object::Tree(tree)).unwrap();
-
-        assert_eq!(writer.entry_count(), 3);
-
-        let data = writer.build().unwrap();
-        let entries = PackReader::new(data).unwrap().read_all().unwrap();
-        assert_eq!(entries.len(), 3);
-    }
-
-    #[test]
-    fn test_pack_reader_invalid_signature() {
-        let data = Bytes::from_static(b"NOTPACK\x00\x00\x00\x02\x00\x00\x00\x00");
-        let result = PackReader::new(data);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_reader_invalid_version() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(99);
-        data.put_u32(0);
-
-        let result = PackReader::new(data.freeze());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_entry_into_object() {
-        let blob = Blob::new(b"hello".to_vec());
-        let entry = PackEntry::from_object(&Object::Blob(blob.clone())).unwrap();
-        let obj = entry.into_object().unwrap();
-
-        match obj {
-            Object::Blob(b) => {
-                assert_eq!(b.oid, blob.oid);
-                assert_eq!(b.data, blob.data);
-            }
-            _ => panic!("expected blob"),
-        }
-    }
-
-    #[test]
-    fn test_serialize_parse_tree() {
-        let entries = vec![
-            TreeEntry::file("a.txt", Oid::hash(b"a")),
-            TreeEntry::directory("dir", Oid::hash(b"dir")),
-            TreeEntry::new(TreeEntryMode::Executable, "script.sh", Oid::hash(b"script")),
-        ];
-
-        let tree = Tree::new(entries);
-        let serialized = serialize_tree(&tree);
-        let parsed = parse_tree_entries(&serialized).unwrap();
-
-        assert_eq!(parsed.len(), 3);
-        for (original, parsed) in tree.entries.iter().zip(parsed.iter()) {
-            assert_eq!(original.mode, parsed.mode);
-            assert_eq!(original.name, parsed.name);
-            assert_eq!(original.oid, parsed.oid);
-        }
-    }
-
-    #[test]
-    fn test_serialize_parse_commit() {
-        let tree = Oid::hash(b"tree");
-        let parent = Oid::hash(b"parent");
-        let author = Signature::new("Author Name", "author@example.com", 1704067200, "+0530");
-        let committer = Signature::new("Committer Name", "committer@example.com", 1704067300, "-0800");
-        let commit = Commit::new(tree, vec![parent], author, committer, "Test commit message");
-
-        let serialized = serialize_commit(&commit);
-        let parsed = parse_commit(commit.oid, &serialized).unwrap();
-
-        assert_eq!(parsed.tree, commit.tree);
-        assert_eq!(parsed.parents, commit.parents);
-        assert_eq!(parsed.author.name, commit.author.name);
-        assert_eq!(parsed.author.email, commit.author.email);
-        assert_eq!(parsed.author.timestamp, commit.author.timestamp);
-        assert_eq!(parsed.committer.name, commit.committer.name);
-        assert_eq!(parsed.message, commit.message);
-    }
-
-    #[test]
-    fn test_delta_size_encoding() {
-        let (size, consumed) = read_delta_size(&[0x05]).unwrap();
-        assert_eq!(size, 5);
-        assert_eq!(consumed, 1);
-
-        let (size, consumed) = read_delta_size(&[0x80, 0x01]).unwrap();
-        assert_eq!(size, 128);
-        assert_eq!(consumed, 2);
-    }
-
-    #[test]
-    fn test_apply_delta_copy() {
-        let base = b"hello world";
-        let mut delta = Vec::new();
-        delta.push(11);
-        delta.push(5);
-        delta.push(0x80 | 0x01 | 0x10);
-        delta.push(0);
-        delta.push(5);
-
-        let result = apply_delta_instructions(base, &delta).unwrap();
-        assert_eq!(result, b"hello");
-    }
-
-    #[test]
-    fn test_apply_delta_insert() {
-        let base = b"hello";
-        let mut delta = Vec::new();
-        delta.push(5);
-        delta.push(11);
-        delta.push(0x80 | 0x01 | 0x10);
-        delta.push(0);
-        delta.push(5);
-        delta.push(6);
-        delta.extend_from_slice(b" world");
-
-        let result = apply_delta_instructions(base, &delta).unwrap();
-        assert_eq!(result, b"hello world");
-    }
-
-    #[test]
-    fn test_pack_writer_without_header() {
-        let mut writer = PackWriter::without_header();
-        let blob = Blob::new(b"test".to_vec());
-        writer.add_object(&Object::Blob(blob)).unwrap();
-
-        let data = writer.build().unwrap();
-        assert_ne!(&data[0..4], PACK_SIGNATURE);
-    }
-
-    #[test]
-    fn test_pack_reader_from_raw() {
-        let mut writer = PackWriter::without_header();
-        let blob = Blob::new(b"raw test".to_vec());
-        let original_oid = blob.oid;
-        writer.add_object(&Object::Blob(blob)).unwrap();
-
-        let data = writer.build().unwrap();
-        let mut reader = PackReader::from_raw(data, 1);
-
-        let entry = reader.read_next().unwrap().unwrap();
-        assert_eq!(entry.oid, original_oid);
-    }
-
-    #[test]
-    fn test_pack_entry_into_object_tag_error() {
-        let oid = Oid::hash(b"tag-content");
-        let entry = PackEntry::new(oid, ObjectType::Tag, Bytes::from_static(b"tag data"));
-        let result = entry.into_object();
-        assert!(result.is_err());
-        match result {
-            Err(FrontendError::InvalidObjectType { expected, actual }) => {
-                assert_eq!(expected, "blob, tree, or commit");
-                assert_eq!(actual, "tag");
-            }
-            _ => panic!("expected InvalidObjectType error"),
-        }
-    }
-
-    #[test]
-    fn test_pack_entry_into_object_tree() {
-        let entries = vec![
-            TreeEntry::file("test.txt", Oid::hash(b"content")),
-        ];
-        let tree = Tree::new(entries.clone());
-        let entry = PackEntry::from_object(&Object::Tree(tree.clone())).unwrap();
-        let obj = entry.into_object().unwrap();
-        match obj {
-            Object::Tree(t) => {
-                assert_eq!(t.entries.len(), 1);
-                assert_eq!(t.entries[0].name, "test.txt");
-            }
-            _ => panic!("expected tree"),
-        }
-    }
-
-    #[test]
-    fn test_pack_entry_into_object_commit() {
-        let tree = Oid::hash(b"tree");
-        let author = Signature::new("Test", "test@example.com", 1234567890, "+0000");
-        let committer = Signature::new("Test", "test@example.com", 1234567890, "+0000");
-        let commit = Commit::new(tree, vec![], author.clone(), committer.clone(), "Test message");
-        let entry = PackEntry::from_object(&Object::Commit(commit.clone())).unwrap();
-        let obj = entry.into_object().unwrap();
-        match obj {
-            Object::Commit(c) => {
-                assert_eq!(c.message, "Test message");
-                assert_eq!(c.author.name, "Test");
-            }
-            _ => panic!("expected commit"),
-        }
-    }
-
-    #[test]
-    fn test_parse_tree_entries_missing_space() {
-        let data = b"100644filenamewoohoo";
-        let result = parse_tree_entries(data);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_tree_entries_missing_null() {
-        let data = b"100644 filename";
-        let result = parse_tree_entries(data);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_tree_entries_truncated_oid() {
-        let mut data = Vec::new();
-        data.extend_from_slice(b"100644 filename");
-        data.push(0);
-        data.extend_from_slice(&[0u8; 16]);
-        let result = parse_tree_entries(&data);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_commit_multiline_message() {
-        let tree = Oid::hash(b"tree");
-        let author = Signature::new("Test", "test@example.com", 1234567890, "+0000");
-        let committer = Signature::new("Test", "test@example.com", 1234567890, "+0000");
-        let commit = Commit::new(tree, vec![], author, committer, "Line 1\nLine 2\nLine 3");
-
-        let serialized = serialize_commit(&commit);
-        let parsed = parse_commit(commit.oid, &serialized).unwrap();
-        assert_eq!(parsed.message, "Line 1\nLine 2\nLine 3");
-    }
-
-    #[test]
-    fn test_parse_signature_missing_lt() {
-        let result = parse_signature("Name email@example.com> 1234567890 +0000");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_signature_missing_gt() {
-        let result = parse_signature("Name <email@example.com 1234567890 +0000");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_signature_invalid_timestamp_parts() {
-        let result = parse_signature("Name <email@example.com> 1234567890");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_signature_invalid_timestamp_number() {
-        let result = parse_signature("Name <email@example.com> notanumber +0000");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_writer_add_entry() {
-        let mut writer = PackWriter::new();
-        let oid = Oid::hash(b"content");
-        let entry = PackEntry::new(oid, ObjectType::Blob, Bytes::from_static(b"content"));
-        writer.add_entry(entry);
-        assert_eq!(writer.entry_count(), 1);
-    }
-
-    #[test]
-    fn test_pack_writer_with_tag() {
-        let mut writer = PackWriter::new();
-        let oid = Oid::hash(b"tag");
-        let entry = PackEntry::new(oid, ObjectType::Tag, Bytes::from_static(b"tag content"));
-        writer.add_entry(entry);
-        let data = writer.build().unwrap();
-        assert!(data.len() > 12);
-    }
-
-    #[test]
-    fn test_pack_writer_build_streaming() {
-        let mut writer = PackWriter::new();
-        let blob = Blob::new(b"streaming content".to_vec());
-        writer.add_object(&Object::Blob(blob)).unwrap();
-
-        let mut output = Vec::new();
-        writer.build_streaming(&mut output).unwrap();
-
-        assert_eq!(&output[0..4], PACK_SIGNATURE);
-        assert_eq!(u32::from_be_bytes([output[4], output[5], output[6], output[7]]), PACK_VERSION);
-        assert_eq!(u32::from_be_bytes([output[8], output[9], output[10], output[11]]), 1);
-    }
-
-    #[test]
-    fn test_pack_writer_build_streaming_without_header() {
-        let mut writer = PackWriter::without_header();
-        let blob = Blob::new(b"content".to_vec());
-        writer.add_object(&Object::Blob(blob)).unwrap();
-
-        let mut output = Vec::new();
-        writer.build_streaming(&mut output).unwrap();
-
-        assert_ne!(&output[0..4], PACK_SIGNATURE);
-    }
-
-    #[test]
-    fn test_pack_writer_build_streaming_all_types() {
-        let mut writer = PackWriter::new();
-
-        let blob = Blob::new(b"blob".to_vec());
-        writer.add_object(&Object::Blob(blob)).unwrap();
-
-        let tree = Tree::new(vec![TreeEntry::file("f", Oid::hash(b"x"))]);
-        writer.add_object(&Object::Tree(tree)).unwrap();
-
-        let author = Signature::new("A", "a@e.com", 0, "+0000");
-        let commit = Commit::new(Oid::hash(b"t"), vec![], author.clone(), author, "msg");
-        writer.add_object(&Object::Commit(commit)).unwrap();
-
-        let tag_entry = PackEntry::new(Oid::hash(b"tag"), ObjectType::Tag, Bytes::from_static(b"tag"));
-        writer.add_entry(tag_entry);
-
-        let mut output = Vec::new();
-        writer.build_streaming(&mut output).unwrap();
-        assert!(!output.is_empty());
-    }
-
-    #[test]
-    fn test_pack_reader_too_small() {
-        let data = Bytes::from_static(b"PACK\x00\x00");
-        let result = PackReader::new(data);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_reader_objects_remaining() {
-        let mut writer = PackWriter::new();
-        let blob = Blob::new(b"test".to_vec());
-        writer.add_object(&Object::Blob(blob)).unwrap();
-        let data = writer.build().unwrap();
-
-        let mut reader = PackReader::new(data).unwrap();
-        assert_eq!(reader.objects_remaining(), 1);
-        reader.read_next().unwrap();
-        assert_eq!(reader.objects_remaining(), 0);
-    }
-
-    #[test]
-    fn test_pack_reader_unexpected_end_of_stream() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_reader_tag_object() {
-        let mut writer = PackWriter::new();
-        let tag_entry = PackEntry::new(Oid::hash(b"tag"), ObjectType::Tag, Bytes::from_static(b"tag content"));
-        writer.add_entry(tag_entry);
-
-        let data = writer.build().unwrap();
-        let mut reader = PackReader::new(data).unwrap();
-        let entry = reader.read_next().unwrap().unwrap();
-        assert_eq!(entry.object_type, ObjectType::Tag);
-    }
-
-    #[test]
-    fn test_pack_reader_unknown_object_type() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-        data.put_u8(0x50);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_reader_header_continuation() {
-        let mut writer = PackWriter::new();
-        let blob = Blob::new(vec![0u8; 256]);
-        writer.add_object(&Object::Blob(blob)).unwrap();
-
-        let data = writer.build().unwrap();
-        let mut reader = PackReader::new(data).unwrap();
-        let entry = reader.read_next().unwrap().unwrap();
-        assert_eq!(entry.data.len(), 256);
-    }
-
-    #[test]
-    fn test_pack_reader_header_truncated_continuation() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-        data.put_u8(0x80 | 0x30);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
-    }
-
     fn encode_delta_size(size: usize) -> Vec<u8> {
         let mut result = Vec::new();
         let mut size = size;
@@ -1146,207 +670,257 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_delta_copy_with_offset_byte2() {
-        let base = vec![b'A'; 512];
-        let mut delta = Vec::new();
-        delta.extend(encode_delta_size(512));
-        delta.extend(encode_delta_size(5));
-        delta.push(0x80 | 0x02 | 0x10);
-        delta.push(0x01);
-        delta.push(5);
+    fn test_pack_write_read_roundtrip_all_object_types() {
+        let blob1 = Blob::new(b"hello world".to_vec());
+        let blob1_oid = blob1.oid;
+        let blob2 = Blob::new(b"test content for roundtrip verification".to_vec());
+        let blob2_oid = blob2.oid;
+        let large_blob = Blob::new(vec![0u8; 256]);
+        let large_blob_oid = large_blob.oid;
 
-        let result = apply_delta_instructions(&base, &delta).unwrap();
-        assert_eq!(result.len(), 5);
-        assert_eq!(&result, &[b'A'; 5]);
+        let tree_entries = vec![
+            TreeEntry::file("README.md", Oid::hash(b"readme")),
+            TreeEntry::file("main.rs", Oid::hash(b"main")),
+            TreeEntry::directory("src", Oid::hash(b"src")),
+            TreeEntry::new(TreeEntryMode::Executable, "script.sh", Oid::hash(b"script")),
+        ];
+        let tree = Tree::new(tree_entries.clone());
+        let tree_oid = tree.oid;
+
+        let tree2 = Tree::new(vec![
+            TreeEntry::file("file1.txt", blob1.oid),
+            TreeEntry::file("file2.txt", blob2.oid),
+        ]);
+
+        let parent_commit_oid = Oid::hash(b"parent");
+        let author = Signature::new("Author Name", "author@example.com", 1704067200, "+0530");
+        let committer = Signature::new("Committer Name", "committer@example.com", 1704067300, "-0800");
+        let commit = Commit::new(tree_oid, vec![parent_commit_oid], author, committer, "Test commit message\nWith multiple lines");
+
+        let author2 = Signature::new("Test", "test@example.com", 1234567890, "+0000");
+        let commit2 = Commit::new(tree.oid, vec![], author2.clone(), author2.clone(), "Initial commit");
+
+        let tag_oid = Oid::hash(b"tag");
+        let tag_entry = PackEntry::new(tag_oid, ObjectType::Tag, Bytes::from_static(b"tag content"));
+
+        let mut writer = PackWriter::new();
+        writer.add_object(&Object::Blob(blob1.clone())).unwrap();
+        writer.add_object(&Object::Blob(blob2.clone())).unwrap();
+        writer.add_object(&Object::Blob(large_blob.clone())).unwrap();
+        writer.add_object(&Object::Tree(tree.clone())).unwrap();
+        writer.add_object(&Object::Tree(tree2.clone())).unwrap();
+        writer.add_object(&Object::Commit(commit.clone())).unwrap();
+        writer.add_object(&Object::Commit(commit2.clone())).unwrap();
+        writer.add_entry(tag_entry.clone());
+        assert_eq!(writer.entry_count(), 8);
+
+        let pack_data = writer.build().unwrap();
+        assert_eq!(&pack_data[0..4], PACK_SIGNATURE);
+        assert_eq!(u32::from_be_bytes([pack_data[4], pack_data[5], pack_data[6], pack_data[7]]), PACK_VERSION);
+        assert_eq!(u32::from_be_bytes([pack_data[8], pack_data[9], pack_data[10], pack_data[11]]), 8);
+
+        let mut reader = PackReader::new(pack_data.clone()).unwrap();
+        assert_eq!(reader.object_count(), 8);
+        assert_eq!(reader.objects_remaining(), 8);
+
+        let entry = reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.oid, blob1_oid);
+        assert_eq!(entry.object_type, ObjectType::Blob);
+        assert_eq!(entry.data.as_ref(), b"hello world");
+        let obj = entry.into_object().unwrap();
+        match obj {
+            Object::Blob(b) => assert_eq!(b.data, blob1.data),
+            _ => panic!("expected blob"),
+        }
+
+        let entry = reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.oid, blob2_oid);
+        assert_eq!(entry.data.as_ref(), b"test content for roundtrip verification");
+
+        let entry = reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.oid, large_blob_oid);
+        assert_eq!(entry.data.len(), 256);
+
+        let entry = reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.oid, tree_oid);
+        assert_eq!(entry.object_type, ObjectType::Tree);
+        let obj = entry.into_object().unwrap();
+        match obj {
+            Object::Tree(t) => {
+                assert_eq!(t.entries.len(), 4);
+                assert_eq!(t.entries[0].name, "README.md");
+                assert_eq!(t.entries[0].mode, TreeEntryMode::File);
+                assert_eq!(t.entries[1].name, "main.rs");
+                assert_eq!(t.entries[2].name, "script.sh");
+                assert_eq!(t.entries[2].mode, TreeEntryMode::Executable);
+                assert_eq!(t.entries[3].name, "src");
+                assert_eq!(t.entries[3].mode, TreeEntryMode::Directory);
+            }
+            _ => panic!("expected tree"),
+        }
+
+        let entry = reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.object_type, ObjectType::Tree);
+
+        let entry = reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.object_type, ObjectType::Commit);
+        let obj = entry.into_object().unwrap();
+        match obj {
+            Object::Commit(c) => {
+                assert_eq!(c.tree, tree_oid);
+                assert_eq!(c.parents.len(), 1);
+                assert_eq!(c.parents[0], parent_commit_oid);
+                assert_eq!(c.author.name, "Author Name");
+                assert_eq!(c.author.email, "author@example.com");
+                assert_eq!(c.author.timestamp, 1704067200);
+                assert_eq!(c.author.timezone, "+0530");
+                assert_eq!(c.committer.name, "Committer Name");
+                assert_eq!(c.committer.timezone, "-0800");
+                assert_eq!(c.message, "Test commit message\nWith multiple lines");
+            }
+            _ => panic!("expected commit"),
+        }
+
+        let entry = reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.object_type, ObjectType::Commit);
+        let obj = entry.into_object().unwrap();
+        match obj {
+            Object::Commit(c) => {
+                assert_eq!(c.message, "Initial commit");
+                assert_eq!(c.author.name, "Test");
+            }
+            _ => panic!("expected commit"),
+        }
+
+        let entry = reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.object_type, ObjectType::Tag);
+        let result = entry.into_object();
+        assert!(matches!(result, Err(FrontendError::InvalidObjectType { .. })));
+
+        assert_eq!(reader.objects_remaining(), 0);
+        assert!(reader.read_next().unwrap().is_none());
+
+        let all_entries = PackReader::new(pack_data).unwrap().read_all().unwrap();
+        assert_eq!(all_entries.len(), 8);
+
+        let empty_writer = PackWriter::new();
+        let empty_data = empty_writer.build().unwrap();
+        assert_eq!(&empty_data[0..4], PACK_SIGNATURE);
+        assert_eq!(u32::from_be_bytes([empty_data[8], empty_data[9], empty_data[10], empty_data[11]]), 0);
+
+        let default_writer = PackWriter::default();
+        assert_eq!(default_writer.entry_count(), 0);
+
+        let raw_oid = Oid::hash(b"raw content");
+        let raw_entry = PackEntry::new(raw_oid, ObjectType::Blob, Bytes::from_static(b"raw content"));
+        let mut raw_writer = PackWriter::new();
+        raw_writer.add_entry(raw_entry);
+        assert_eq!(raw_writer.entry_count(), 1);
     }
 
     #[test]
-    fn test_apply_delta_copy_with_offset_byte3() {
-        let base = vec![b'B'; 0x20000];
-        let mut delta = Vec::new();
-        delta.extend(encode_delta_size(0x20000));
-        delta.extend(encode_delta_size(5));
-        delta.push(0x80 | 0x04 | 0x10);
-        delta.push(0x01);
-        delta.push(5);
+    fn test_pack_streaming_and_headerless_modes() {
+        let blob = Blob::new(b"streaming content".to_vec());
+        let blob_oid = blob.oid;
+        let tree = Tree::new(vec![TreeEntry::file("f", Oid::hash(b"x"))]);
+        let author = Signature::new("A", "a@e.com", 0, "+0000");
+        let commit = Commit::new(Oid::hash(b"t"), vec![], author.clone(), author, "msg");
+        let tag_entry = PackEntry::new(Oid::hash(b"tag"), ObjectType::Tag, Bytes::from_static(b"tag"));
 
-        let result = apply_delta_instructions(&base, &delta).unwrap();
-        assert_eq!(result.len(), 5);
-        assert_eq!(&result, &[b'B'; 5]);
+        let mut writer = PackWriter::new();
+        writer.add_object(&Object::Blob(blob.clone())).unwrap();
+        writer.add_object(&Object::Tree(tree.clone())).unwrap();
+        writer.add_object(&Object::Commit(commit.clone())).unwrap();
+        writer.add_entry(tag_entry);
+
+        let mut streamed = Vec::new();
+        writer.build_streaming(&mut streamed).unwrap();
+
+        assert_eq!(&streamed[0..4], PACK_SIGNATURE);
+        assert_eq!(u32::from_be_bytes([streamed[4], streamed[5], streamed[6], streamed[7]]), PACK_VERSION);
+        assert_eq!(u32::from_be_bytes([streamed[8], streamed[9], streamed[10], streamed[11]]), 4);
+
+        let entries = PackReader::new(Bytes::from(streamed)).unwrap().read_all().unwrap();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].object_type, ObjectType::Blob);
+        assert_eq!(entries[1].object_type, ObjectType::Tree);
+        assert_eq!(entries[2].object_type, ObjectType::Commit);
+        assert_eq!(entries[3].object_type, ObjectType::Tag);
+
+        let mut headerless_writer = PackWriter::without_header();
+        let blob2 = Blob::new(b"raw test".to_vec());
+        let blob2_oid = blob2.oid;
+        headerless_writer.add_object(&Object::Blob(blob2)).unwrap();
+
+        let headerless_data = headerless_writer.build().unwrap();
+        assert_ne!(&headerless_data[0..4], PACK_SIGNATURE);
+
+        let mut raw_reader = PackReader::from_raw(headerless_data, 1);
+        let entry = raw_reader.read_next().unwrap().unwrap();
+        assert_eq!(entry.oid, blob2_oid);
+
+        let mut headerless_streamed_writer = PackWriter::without_header();
+        headerless_streamed_writer.add_object(&Object::Blob(blob)).unwrap();
+
+        let mut headerless_output = Vec::new();
+        headerless_streamed_writer.build_streaming(&mut headerless_output).unwrap();
+        assert_ne!(&headerless_output[0..4], PACK_SIGNATURE);
+
+        let mut raw_reader2 = PackReader::from_raw(Bytes::from(headerless_output), 1);
+        let entry = raw_reader2.read_next().unwrap().unwrap();
+        assert_eq!(entry.oid, blob_oid);
     }
 
     #[test]
-    fn test_apply_delta_copy_with_offset_byte4() {
-        let base = vec![b'C'; 256];
-        let mut delta = Vec::new();
-        delta.extend(encode_delta_size(256));
-        delta.extend(encode_delta_size(5));
-        delta.push(0x80 | 0x08 | 0x10);
-        delta.push(0x00);
-        delta.push(5);
-
-        let result = apply_delta_instructions(&base, &delta).unwrap();
-        assert_eq!(result.len(), 5);
-        assert_eq!(&result, &[b'C'; 5]);
-    }
-
-    #[test]
-    fn test_apply_delta_copy_with_size_byte2() {
-        let base = vec![b'D'; 512];
-        let mut delta = Vec::new();
-        delta.extend(encode_delta_size(512));
-        delta.extend(encode_delta_size(0x102));
-        delta.push(0x80 | 0x10 | 0x20);
-        delta.push(0x02);
-        delta.push(0x01);
-
-        let result = apply_delta_instructions(&base, &delta).unwrap();
-        assert_eq!(result.len(), 0x102);
-    }
-
-    #[test]
-    fn test_apply_delta_copy_with_size_byte3() {
-        let base = vec![b'E'; 0x20000];
-        let mut delta = Vec::new();
-        delta.extend(encode_delta_size(0x20000));
-        delta.extend(encode_delta_size(0x10002));
-        delta.push(0x80 | 0x10 | 0x40);
-        delta.push(0x02);
-        delta.push(0x01);
-
-        let result = apply_delta_instructions(&base, &delta).unwrap();
-        assert_eq!(result.len(), 0x10002);
-    }
-
-    #[test]
-    fn test_apply_delta_copy_size_zero_means_64k() {
-        let base = vec![b'F'; 0x10000];
-        let mut delta = Vec::new();
-        delta.extend(encode_delta_size(0x10000));
-        delta.extend(encode_delta_size(0x10000));
-        delta.push(0x80);
-
-        let result = apply_delta_instructions(&base, &delta).unwrap();
-        assert_eq!(result.len(), 0x10000);
-    }
-
-    #[test]
-    fn test_apply_delta_copy_out_of_bounds() {
-        let base = b"small";
-        let mut delta = Vec::new();
-        delta.push(5);
-        delta.push(100);
-        delta.push(0x80 | 0x01 | 0x10);
-        delta.push(0);
-        delta.push(100);
-
-        let result = apply_delta_instructions(base, &delta);
+    fn test_pack_reader_error_handling() {
+        let result = PackReader::new(Bytes::from_static(b"PACK\x00\x00"));
         assert!(result.is_err());
-    }
 
-    #[test]
-    fn test_apply_delta_insert_out_of_bounds() {
-        let base = b"base";
-        let mut delta = Vec::new();
-        delta.push(4);
-        delta.push(10);
-        delta.push(10);
-        delta.extend_from_slice(b"short");
-
-        let result = apply_delta_instructions(base, &delta);
+        let result = PackReader::new(Bytes::from_static(b"NOTPACK\x00\x00\x00\x02\x00\x00\x00\x00"));
         assert!(result.is_err());
-    }
 
-    #[test]
-    fn test_apply_delta_invalid_command() {
-        let base = b"base";
-        let mut delta = Vec::new();
-        delta.push(4);
-        delta.push(4);
-        delta.push(0);
-
-        let result = apply_delta_instructions(base, &delta);
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(99);
+        data.put_u32(0);
+        let result = PackReader::new(data.freeze());
         assert!(result.is_err());
-    }
 
-    #[test]
-    fn test_apply_delta_result_size_mismatch() {
-        let base = b"hello";
-        let mut delta = Vec::new();
-        delta.push(5);
-        delta.push(10);
-        delta.push(0x80 | 0x01 | 0x10);
-        delta.push(0);
-        delta.push(5);
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        assert_eq!(reader.object_count(), 1);
+        assert!(reader.read_next().is_err());
 
-        let result = apply_delta_instructions(base, &delta);
-        assert!(result.is_err());
-    }
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        data.put_u8(0x80 | 0x30);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        assert!(reader.read_next().is_err());
 
-    #[test]
-    fn test_read_delta_size_empty() {
-        let result = read_delta_size(&[]);
-        assert!(result.is_err());
-    }
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        data.put_u8(0x50);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        assert!(reader.read_next().is_err());
 
-    #[test]
-    fn test_parse_commit_missing_tree() {
-        let data = b"author Test <test@test.com> 1234567890 +0000\n\
-                     committer Test <test@test.com> 1234567890 +0000\n\n\
-                     Message";
-        let result = parse_commit(Oid::hash(b"test"), data);
-        assert!(result.is_err());
-    }
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        data.put_u8((OBJ_BLOB << 4) | 10);
+        let compressed = compress_data(b"short").unwrap();
+        data.put_slice(&compressed);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        let result = reader.read_next();
+        assert!(matches!(result, Err(FrontendError::InvalidPackFormat(msg)) if msg.contains("decompressed size mismatch")));
 
-    #[test]
-    fn test_parse_commit_missing_author() {
-        let tree_hex = Oid::hash(b"tree").to_string();
-        let data = format!("tree {}\ncommitter Test <test@test.com> 1234567890 +0000\n\nMessage", tree_hex);
-        let result = parse_commit(Oid::hash(b"test"), data.as_bytes());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_commit_missing_committer() {
-        let tree_hex = Oid::hash(b"tree").to_string();
-        let data = format!("tree {}\nauthor Test <test@test.com> 1234567890 +0000\n\nMessage", tree_hex);
-        let result = parse_commit(Oid::hash(b"test"), data.as_bytes());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_writer_default() {
-        let writer = PackWriter::default();
-        assert_eq!(writer.entry_count(), 0);
-    }
-
-    #[test]
-    fn test_parse_tree_entries_invalid_utf8_mode() {
-        let data = [0xFF, 0xFE, b' ', b'n', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let result = parse_tree_entries(&data);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_tree_entries_invalid_utf8_name() {
-        let mut data = Vec::new();
-        data.extend_from_slice(b"100644 ");
-        data.extend_from_slice(&[0xFF, 0xFE]);
-        data.push(0);
-        data.extend_from_slice(&[0u8; 32]);
-        let result = parse_tree_entries(&data);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_commit_invalid_utf8() {
-        let data = [0xFF, 0xFE, 0x00];
-        let result = parse_commit(Oid::hash(b"test"), &data);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_reader_ofs_delta_object() {
         let mut data = BytesMut::new();
         data.put_slice(PACK_SIGNATURE);
         data.put_u32(PACK_VERSION);
@@ -1355,20 +929,249 @@ mod tests {
         data.put_u8(0x01);
         let compressed = compress_data(b"delta").unwrap();
         data.put_slice(&compressed);
-
         let mut reader = PackReader::new(data.freeze()).unwrap();
         let result = reader.read_next();
-        assert!(result.is_err());
-        match result {
-            Err(FrontendError::InvalidPackFormat(msg)) => {
-                assert!(msg.contains("offset delta not yet supported"));
-            }
-            _ => panic!("expected InvalidPackFormat error"),
-        }
+        assert!(matches!(result, Err(FrontendError::InvalidPackFormat(msg)) if msg.contains("offset delta not yet supported")));
+
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        data.put_u8((OBJ_OFS_DELTA << 4) | 5);
+        data.put_u8(0x80 | 0x01);
+        data.put_u8(0x01);
+        let compressed = compress_data(b"delta").unwrap();
+        data.put_slice(&compressed);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        assert!(reader.read_next().is_err());
+
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        data.put_u8((OBJ_OFS_DELTA << 4) | 5);
+        data.put_u8(0x80 | 0x01);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        assert!(reader.read_next().is_err());
+
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        data.put_u8(OBJ_OFS_DELTA << 4);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        assert!(reader.read_next().is_err());
+
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        data.put_u8((OBJ_REF_DELTA << 4) | 5);
+        data.put_slice(&[0u8; 16]);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        assert!(reader.read_next().is_err());
+
+        let oid = Oid::hash(b"nonexistent");
+        let mut delta = Vec::new();
+        delta.extend(encode_delta_size(10));
+        delta.extend(encode_delta_size(5));
+        delta.push(0x80 | 0x10);
+        delta.push(5);
+        let delta_compressed = compress_data(&delta).unwrap();
+        let mut data = BytesMut::new();
+        data.put_slice(PACK_SIGNATURE);
+        data.put_u32(PACK_VERSION);
+        data.put_u32(1);
+        data.put_u8((OBJ_REF_DELTA << 4) | (delta.len() as u8 & 0x0f));
+        data.put_slice(oid.as_bytes());
+        data.put_slice(&delta_compressed);
+        let mut reader = PackReader::new(data.freeze()).unwrap();
+        assert!(matches!(reader.read_next(), Err(FrontendError::ObjectNotFound(_))));
     }
 
     #[test]
-    fn test_pack_reader_ref_delta_object() {
+    fn test_serialization_parsing_error_handling() {
+        let result = parse_tree_entries(b"100644filenamewoohoo");
+        assert!(result.is_err());
+
+        let result = parse_tree_entries(b"100644 filename");
+        assert!(result.is_err());
+
+        let mut truncated_oid = Vec::new();
+        truncated_oid.extend_from_slice(b"100644 filename");
+        truncated_oid.push(0);
+        truncated_oid.extend_from_slice(&[0u8; 16]);
+        let result = parse_tree_entries(&truncated_oid);
+        assert!(result.is_err());
+
+        let invalid_mode = [0xFF, 0xFE, b' ', b'n', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let result = parse_tree_entries(&invalid_mode);
+        assert!(result.is_err());
+
+        let mut invalid_name = Vec::new();
+        invalid_name.extend_from_slice(b"100644 ");
+        invalid_name.extend_from_slice(&[0xFF, 0xFE]);
+        invalid_name.push(0);
+        invalid_name.extend_from_slice(&[0u8; 32]);
+        let result = parse_tree_entries(&invalid_name);
+        assert!(result.is_err());
+
+        let result = parse_commit(Oid::hash(b"test"), &[0xFF, 0xFE, 0x00]);
+        assert!(result.is_err());
+
+        let result = parse_commit(Oid::hash(b"test"), b"author Test <test@test.com> 1234567890 +0000\ncommitter Test <test@test.com> 1234567890 +0000\n\nMessage");
+        assert!(result.is_err());
+
+        let tree_hex = Oid::hash(b"tree").to_string();
+        let data = format!("tree {}\ncommitter Test <test@test.com> 1234567890 +0000\n\nMessage", tree_hex);
+        let result = parse_commit(Oid::hash(b"test"), data.as_bytes());
+        assert!(result.is_err());
+
+        let data = format!("tree {}\nauthor Test <test@test.com> 1234567890 +0000\n\nMessage", tree_hex);
+        let result = parse_commit(Oid::hash(b"test"), data.as_bytes());
+        assert!(result.is_err());
+
+        let result = parse_signature("Name email@example.com> 1234567890 +0000");
+        assert!(result.is_err());
+
+        let result = parse_signature("Name <email@example.com 1234567890 +0000");
+        assert!(result.is_err());
+
+        let result = parse_signature("Name <email@example.com> 1234567890");
+        assert!(result.is_err());
+
+        let result = parse_signature("Name <email@example.com> notanumber +0000");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delta_operations() {
+        let (size, consumed) = read_delta_size(&[0x05]).unwrap();
+        assert_eq!(size, 5);
+        assert_eq!(consumed, 1);
+
+        let (size, consumed) = read_delta_size(&[0x80, 0x01]).unwrap();
+        assert_eq!(size, 128);
+        assert_eq!(consumed, 2);
+
+        assert!(read_delta_size(&[]).is_err());
+
+        let base = b"hello world";
+        let mut delta = Vec::new();
+        delta.push(11);
+        delta.push(5);
+        delta.push(0x80 | 0x01 | 0x10);
+        delta.push(0);
+        delta.push(5);
+        let result = apply_delta_instructions(base, &delta).unwrap();
+        assert_eq!(result, b"hello");
+
+        let base = b"hello";
+        let mut delta = Vec::new();
+        delta.push(5);
+        delta.push(11);
+        delta.push(0x80 | 0x01 | 0x10);
+        delta.push(0);
+        delta.push(5);
+        delta.push(6);
+        delta.extend_from_slice(b" world");
+        let result = apply_delta_instructions(base, &delta).unwrap();
+        assert_eq!(result, b"hello world");
+
+        let base = vec![b'A'; 512];
+        let mut delta = Vec::new();
+        delta.extend(encode_delta_size(512));
+        delta.extend(encode_delta_size(5));
+        delta.push(0x80 | 0x02 | 0x10);
+        delta.push(0x01);
+        delta.push(5);
+        let result = apply_delta_instructions(&base, &delta).unwrap();
+        assert_eq!(result.len(), 5);
+
+        let base = vec![b'B'; 0x20000];
+        let mut delta = Vec::new();
+        delta.extend(encode_delta_size(0x20000));
+        delta.extend(encode_delta_size(5));
+        delta.push(0x80 | 0x04 | 0x10);
+        delta.push(0x01);
+        delta.push(5);
+        let result = apply_delta_instructions(&base, &delta).unwrap();
+        assert_eq!(result.len(), 5);
+
+        let base = vec![b'C'; 256];
+        let mut delta = Vec::new();
+        delta.extend(encode_delta_size(256));
+        delta.extend(encode_delta_size(5));
+        delta.push(0x80 | 0x08 | 0x10);
+        delta.push(0x00);
+        delta.push(5);
+        let result = apply_delta_instructions(&base, &delta).unwrap();
+        assert_eq!(result.len(), 5);
+
+        let base = vec![b'D'; 512];
+        let mut delta = Vec::new();
+        delta.extend(encode_delta_size(512));
+        delta.extend(encode_delta_size(0x102));
+        delta.push(0x80 | 0x10 | 0x20);
+        delta.push(0x02);
+        delta.push(0x01);
+        let result = apply_delta_instructions(&base, &delta).unwrap();
+        assert_eq!(result.len(), 0x102);
+
+        let base = vec![b'E'; 0x20000];
+        let mut delta = Vec::new();
+        delta.extend(encode_delta_size(0x20000));
+        delta.extend(encode_delta_size(0x10002));
+        delta.push(0x80 | 0x10 | 0x40);
+        delta.push(0x02);
+        delta.push(0x01);
+        let result = apply_delta_instructions(&base, &delta).unwrap();
+        assert_eq!(result.len(), 0x10002);
+
+        let base = vec![b'F'; 0x10000];
+        let mut delta = Vec::new();
+        delta.extend(encode_delta_size(0x10000));
+        delta.extend(encode_delta_size(0x10000));
+        delta.push(0x80);
+        let result = apply_delta_instructions(&base, &delta).unwrap();
+        assert_eq!(result.len(), 0x10000);
+
+        let base = b"small";
+        let mut delta = Vec::new();
+        delta.push(5);
+        delta.push(100);
+        delta.push(0x80 | 0x01 | 0x10);
+        delta.push(0);
+        delta.push(100);
+        assert!(apply_delta_instructions(base, &delta).is_err());
+
+        let base = b"base";
+        let mut delta = Vec::new();
+        delta.push(4);
+        delta.push(10);
+        delta.push(10);
+        delta.extend_from_slice(b"short");
+        assert!(apply_delta_instructions(base, &delta).is_err());
+
+        let base = b"base";
+        let mut delta = Vec::new();
+        delta.push(4);
+        delta.push(4);
+        delta.push(0);
+        assert!(apply_delta_instructions(base, &delta).is_err());
+
+        let base = b"hello";
+        let mut delta = Vec::new();
+        delta.push(5);
+        delta.push(10);
+        delta.push(0x80 | 0x01 | 0x10);
+        delta.push(0);
+        delta.push(5);
+        assert!(apply_delta_instructions(base, &delta).is_err());
+    }
+
+    #[test]
+    fn test_ref_delta_roundtrip() {
         let mut writer = PackWriter::new();
         let blob = Blob::new(b"base content for delta".to_vec());
         let base_oid = blob.oid;
@@ -1411,122 +1214,5 @@ mod tests {
         let delta_entry = second.unwrap();
         assert_eq!(delta_entry.object_type, ObjectType::Blob);
         assert_eq!(delta_entry.data.len(), 11);
-    }
-
-    #[test]
-    fn test_pack_reader_ref_delta_missing_base() {
-        let oid = Oid::hash(b"nonexistent");
-        let mut delta = Vec::new();
-        delta.extend(encode_delta_size(10));
-        delta.extend(encode_delta_size(5));
-        delta.push(0x80 | 0x10);
-        delta.push(5);
-
-        let delta_compressed = compress_data(&delta).unwrap();
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-        data.put_u8((OBJ_REF_DELTA << 4) | (delta.len() as u8 & 0x0f));
-        data.put_slice(oid.as_bytes());
-        data.put_slice(&delta_compressed);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
-        match result {
-            Err(FrontendError::ObjectNotFound(_)) => {}
-            _ => panic!("expected ObjectNotFound error"),
-        }
-    }
-
-    #[test]
-    fn test_pack_reader_ref_delta_truncated() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-        data.put_u8((OBJ_REF_DELTA << 4) | 5);
-        data.put_slice(&[0u8; 16]);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_reader_offset_delta_multi_byte() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-        data.put_u8((OBJ_OFS_DELTA << 4) | 5);
-        data.put_u8(0x80 | 0x01);
-        data.put_u8(0x01);
-        let compressed = compress_data(b"delta").unwrap();
-        data.put_slice(&compressed);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_reader_offset_delta_truncated() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-        data.put_u8((OBJ_OFS_DELTA << 4) | 5);
-        data.put_u8(0x80 | 0x01);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_pack_reader_decompression_size_mismatch() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-        data.put_u8((OBJ_BLOB << 4) | 10);
-        let compressed = compress_data(b"short").unwrap();
-        data.put_slice(&compressed);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
-        match result {
-            Err(FrontendError::InvalidPackFormat(msg)) => {
-                assert!(msg.contains("decompressed size mismatch"));
-            }
-            _ => panic!("expected InvalidPackFormat error"),
-        }
-    }
-
-    #[test]
-    fn test_pack_reader_read_object_header_truncated() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-
-        let reader = PackReader::new(data.freeze()).unwrap();
-        assert_eq!(reader.object_count(), 1);
-    }
-
-    #[test]
-    fn test_pack_reader_offset_delta_empty_after_header() {
-        let mut data = BytesMut::new();
-        data.put_slice(PACK_SIGNATURE);
-        data.put_u32(PACK_VERSION);
-        data.put_u32(1);
-        data.put_u8(OBJ_OFS_DELTA << 4);
-
-        let mut reader = PackReader::new(data.freeze()).unwrap();
-        let result = reader.read_next();
-        assert!(result.is_err());
     }
 }

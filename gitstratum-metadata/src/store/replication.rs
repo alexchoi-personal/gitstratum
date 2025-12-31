@@ -186,11 +186,15 @@ mod tests {
         );
         assert_eq!(
             manager.check_replication_status(2),
-            ReplicationStatus::Pending { missing_replicas: 1 }
+            ReplicationStatus::Pending {
+                missing_replicas: 1
+            }
         );
         assert_eq!(
             manager.check_replication_status(1),
-            ReplicationStatus::Degraded { available_replicas: 1 }
+            ReplicationStatus::Degraded {
+                available_replicas: 1
+            }
         );
         assert_eq!(
             manager.check_replication_status(0),
@@ -218,11 +222,26 @@ mod tests {
 
     #[test]
     fn test_replication_event_types() {
-        assert_eq!(ReplicationEventType::RefUpdate, ReplicationEventType::RefUpdate);
-        assert_eq!(ReplicationEventType::CommitSync, ReplicationEventType::CommitSync);
-        assert_eq!(ReplicationEventType::TreeSync, ReplicationEventType::TreeSync);
-        assert_eq!(ReplicationEventType::FullSync, ReplicationEventType::FullSync);
-        assert_ne!(ReplicationEventType::RefUpdate, ReplicationEventType::CommitSync);
+        assert_eq!(
+            ReplicationEventType::RefUpdate,
+            ReplicationEventType::RefUpdate
+        );
+        assert_eq!(
+            ReplicationEventType::CommitSync,
+            ReplicationEventType::CommitSync
+        );
+        assert_eq!(
+            ReplicationEventType::TreeSync,
+            ReplicationEventType::TreeSync
+        );
+        assert_eq!(
+            ReplicationEventType::FullSync,
+            ReplicationEventType::FullSync
+        );
+        assert_ne!(
+            ReplicationEventType::RefUpdate,
+            ReplicationEventType::CommitSync
+        );
     }
 
     #[test]

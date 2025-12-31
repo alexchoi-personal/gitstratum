@@ -62,28 +62,32 @@ impl TimeoutMiddleware {
     where
         F: Future<Output = Result<T>>,
     {
-        self.with_timeout(future, self.config.connection_timeout, "connection").await
+        self.with_timeout(future, self.config.connection_timeout, "connection")
+            .await
     }
 
     pub async fn with_read_timeout<F, T>(&self, future: F) -> Result<T>
     where
         F: Future<Output = Result<T>>,
     {
-        self.with_timeout(future, self.config.read_timeout, "read").await
+        self.with_timeout(future, self.config.read_timeout, "read")
+            .await
     }
 
     pub async fn with_write_timeout<F, T>(&self, future: F) -> Result<T>
     where
         F: Future<Output = Result<T>>,
     {
-        self.with_timeout(future, self.config.write_timeout, "write").await
+        self.with_timeout(future, self.config.write_timeout, "write")
+            .await
     }
 
     pub async fn with_operation_timeout<F, T>(&self, future: F) -> Result<T>
     where
         F: Future<Output = Result<T>>,
     {
-        self.with_timeout(future, self.config.operation_timeout, "operation").await
+        self.with_timeout(future, self.config.operation_timeout, "operation")
+            .await
     }
 
     async fn with_timeout<F, T>(&self, future: F, duration: Duration, kind: &str) -> Result<T>
@@ -178,7 +182,10 @@ mod tests {
         let config = TimeoutConfig::new();
         let middleware = TimeoutMiddleware::new(config);
 
-        let result = middleware.with_write_timeout(async { Ok(2) }).await.unwrap();
+        let result = middleware
+            .with_write_timeout(async { Ok(2) })
+            .await
+            .unwrap();
         assert_eq!(result, 2);
     }
 

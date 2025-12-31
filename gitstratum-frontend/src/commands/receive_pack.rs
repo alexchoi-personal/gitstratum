@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use gitstratum_core::{Blob, Commit, Object, Oid, Tree};
-use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::error::{FrontendError, Result};
 use crate::pack::assembly::PackReader;
@@ -88,7 +90,11 @@ impl RefUpdateResult {
         if self.success {
             format!("ok {}", self.ref_name)
         } else {
-            format!("ng {} {}", self.ref_name, self.error.as_deref().unwrap_or("unknown error"))
+            format!(
+                "ng {} {}",
+                self.ref_name,
+                self.error.as_deref().unwrap_or("unknown error")
+            )
         }
     }
 }
@@ -136,7 +142,13 @@ impl Default for PushResult {
 
 #[async_trait]
 pub trait ControlPlaneClient: Send + Sync {
-    async fn acquire_ref_lock(&self, repo_id: &str, ref_name: &str, holder_id: &str, timeout_ms: u64) -> Result<String>;
+    async fn acquire_ref_lock(
+        &self,
+        repo_id: &str,
+        ref_name: &str,
+        holder_id: &str,
+        timeout_ms: u64,
+    ) -> Result<String>;
     async fn release_ref_lock(&self, lock_id: &str) -> Result<()>;
 }
 
@@ -144,7 +156,14 @@ pub trait ControlPlaneClient: Send + Sync {
 pub trait MetadataWriter: Send + Sync {
     async fn put_commit(&self, repo_id: &str, commit: &Commit) -> Result<()>;
     async fn put_tree(&self, repo_id: &str, tree: &Tree) -> Result<()>;
-    async fn update_ref(&self, repo_id: &str, ref_name: &str, old_oid: Oid, new_oid: Oid, force: bool) -> Result<bool>;
+    async fn update_ref(
+        &self,
+        repo_id: &str,
+        ref_name: &str,
+        old_oid: Oid,
+        new_oid: Oid,
+        force: bool,
+    ) -> Result<bool>;
     async fn get_ref(&self, repo_id: &str, ref_name: &str) -> Result<Option<Oid>>;
 }
 
@@ -198,7 +217,11 @@ where
         self
     }
 
-    pub async fn handle_push(&self, updates: Vec<RefUpdate>, pack_data: Bytes) -> Result<PushResult> {
+    pub async fn handle_push(
+        &self,
+        updates: Vec<RefUpdate>,
+        pack_data: Bytes,
+    ) -> Result<PushResult> {
         if pack_data.len() > self.max_pack_size {
             return Err(FrontendError::PackTooLarge {
                 size: pack_data.len(),
@@ -212,7 +235,12 @@ where
         for update in &updates {
             let lock_id = self
                 .control_plane
-                .acquire_ref_lock(&self.repo_id, &update.ref_name, &self.holder_id, self.lock_timeout_ms)
+                .acquire_ref_lock(
+                    &self.repo_id,
+                    &update.ref_name,
+                    &self.holder_id,
+                    self.lock_timeout_ms,
+                )
                 .await?;
             locks.push((update.ref_name.clone(), lock_id));
         }
@@ -243,7 +271,11 @@ where
         Ok(objects)
     }
 
-    async fn apply_push(&self, updates: &[RefUpdate], objects: HashMap<Oid, Object>) -> Result<PushResult> {
+    async fn apply_push(
+        &self,
+        updates: &[RefUpdate],
+        objects: HashMap<Oid, Object>,
+    ) -> Result<PushResult> {
         let mut result = PushResult::new();
         result.objects_received = objects.len();
 
@@ -283,7 +315,10 @@ where
 
     async fn apply_ref_update(&self, update: &RefUpdate) -> Result<()> {
         if !update.force && update.is_update() {
-            let current = self.metadata_writer.get_ref(&self.repo_id, &update.ref_name).await?;
+            let current = self
+                .metadata_writer
+                .get_ref(&self.repo_id, &update.ref_name)
+                .await?;
             if current != Some(update.old_oid) {
                 return Err(FrontendError::RefUpdateRejected(format!(
                     "ref {} is at {:?}, expected {}",
@@ -294,7 +329,13 @@ where
 
         let success = self
             .metadata_writer
-            .update_ref(&self.repo_id, &update.ref_name, update.old_oid, update.new_oid, update.force)
+            .update_ref(
+                &self.repo_id,
+                &update.ref_name,
+                update.old_oid,
+                update.new_oid,
+                update.force,
+            )
             .await?;
 
         if !success {
@@ -389,8 +430,10 @@ impl ReceivePackCapabilities {
 
         caps
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl fmt::Display for ReceivePackCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut caps = Vec::new();
 
         if self.report_status {
@@ -412,7 +455,7 @@ impl ReceivePackCapabilities {
             caps.push("quiet");
         }
 
-        caps.join(" ")
+        write!(f, "{}", caps.join(" "))
     }
 }
 
@@ -463,11 +506,20 @@ mod tests {
 
     #[async_trait]
     impl ControlPlaneClient for MockControlPlane {
-        async fn acquire_ref_lock(&self, _repo_id: &str, ref_name: &str, _holder_id: &str, _timeout_ms: u64) -> Result<String> {
+        async fn acquire_ref_lock(
+            &self,
+            _repo_id: &str,
+            ref_name: &str,
+            _holder_id: &str,
+            _timeout_ms: u64,
+        ) -> Result<String> {
             let mut id = self.next_lock_id.lock().unwrap();
             let lock_id = format!("lock-{}", *id);
             *id += 1;
-            self.locks.lock().unwrap().insert(lock_id.clone(), ref_name.to_string());
+            self.locks
+                .lock()
+                .unwrap()
+                .insert(lock_id.clone(), ref_name.to_string());
             Ok(lock_id)
         }
 
@@ -501,7 +553,10 @@ mod tests {
     #[cfg_attr(coverage_nightly, coverage(off))]
     impl MetadataWriter for MockMetadataWriter {
         async fn put_commit(&self, _repo_id: &str, commit: &Commit) -> Result<()> {
-            self.commits.lock().unwrap().insert(commit.oid, commit.clone());
+            self.commits
+                .lock()
+                .unwrap()
+                .insert(commit.oid, commit.clone());
             Ok(())
         }
 
@@ -510,11 +565,21 @@ mod tests {
             Ok(())
         }
 
-        async fn update_ref(&self, _repo_id: &str, ref_name: &str, _old_oid: Oid, new_oid: Oid, _force: bool) -> Result<bool> {
+        async fn update_ref(
+            &self,
+            _repo_id: &str,
+            ref_name: &str,
+            _old_oid: Oid,
+            new_oid: Oid,
+            _force: bool,
+        ) -> Result<bool> {
             if new_oid.is_zero() {
                 self.refs.lock().unwrap().remove(ref_name);
             } else {
-                self.refs.lock().unwrap().insert(ref_name.to_string(), new_oid);
+                self.refs
+                    .lock()
+                    .unwrap()
+                    .insert(ref_name.to_string(), new_oid);
             }
             Ok(true)
         }
@@ -608,8 +673,14 @@ mod tests {
         let ok = RefUpdateResult::ok("refs/heads/main".to_string());
         assert_eq!(ok.to_report_line(), "ok refs/heads/main");
 
-        let err = RefUpdateResult::error("refs/heads/main".to_string(), "fast-forward required".to_string());
-        assert_eq!(err.to_report_line(), "ng refs/heads/main fast-forward required");
+        let err = RefUpdateResult::error(
+            "refs/heads/main".to_string(),
+            "fast-forward required".to_string(),
+        );
+        assert_eq!(
+            err.to_report_line(),
+            "ng refs/heads/main fast-forward required"
+        );
     }
 
     #[test]
@@ -641,7 +712,11 @@ mod tests {
 
         let pack_data = create_test_pack();
         let new_oid = Oid::hash(b"new-commit");
-        let updates = vec![RefUpdate::new("refs/heads/main".to_string(), Oid::ZERO, new_oid)];
+        let updates = vec![RefUpdate::new(
+            "refs/heads/main".to_string(),
+            Oid::ZERO,
+            new_oid,
+        )];
 
         let result = receive_pack.handle_push(updates, pack_data).await.unwrap();
         assert!(result.all_successful());
@@ -667,7 +742,11 @@ mod tests {
 
         let pack_data = create_test_pack();
         let new_oid = Oid::hash(b"new");
-        let updates = vec![RefUpdate::new("refs/heads/main".to_string(), old_oid, new_oid)];
+        let updates = vec![RefUpdate::new(
+            "refs/heads/main".to_string(),
+            old_oid,
+            new_oid,
+        )];
 
         let result = receive_pack.handle_push(updates, pack_data).await.unwrap();
         assert!(result.all_successful());
@@ -688,9 +767,17 @@ mod tests {
         );
 
         let updates = vec![
-            RefUpdate::new("refs/heads/valid".to_string(), Oid::ZERO, Oid::hash(b"test")),
+            RefUpdate::new(
+                "refs/heads/valid".to_string(),
+                Oid::ZERO,
+                Oid::hash(b"test"),
+            ),
             RefUpdate::new("invalid-ref".to_string(), Oid::ZERO, Oid::hash(b"test")),
-            RefUpdate::new("refs/heads/bad..ref".to_string(), Oid::ZERO, Oid::hash(b"test")),
+            RefUpdate::new(
+                "refs/heads/bad..ref".to_string(),
+                Oid::ZERO,
+                Oid::hash(b"test"),
+            ),
         ];
 
         let results = receive_pack.validate_updates(&updates).await.unwrap();
@@ -754,7 +841,11 @@ mod tests {
         .with_max_pack_size(10);
 
         let pack_data = create_test_pack();
-        let updates = vec![RefUpdate::new("refs/heads/main".to_string(), Oid::ZERO, Oid::hash(b"test"))];
+        let updates = vec![RefUpdate::new(
+            "refs/heads/main".to_string(),
+            Oid::ZERO,
+            Oid::hash(b"test"),
+        )];
 
         let result = receive_pack.handle_push(updates, pack_data).await;
         assert!(matches!(result, Err(FrontendError::PackTooLarge { .. })));
@@ -804,7 +895,11 @@ mod tests {
 
         let empty_pack = Bytes::new();
         let new_oid = Oid::hash(b"test");
-        let updates = vec![RefUpdate::new("refs/heads/main".to_string(), Oid::ZERO, new_oid)];
+        let updates = vec![RefUpdate::new(
+            "refs/heads/main".to_string(),
+            Oid::ZERO,
+            new_oid,
+        )];
 
         let result = receive_pack.handle_push(updates, empty_pack).await.unwrap();
         assert!(result.all_successful());
@@ -881,9 +976,11 @@ mod tests {
             "client-1".to_string(),
         );
 
-        let updates = vec![
-            RefUpdate::new("refs/heads/to-delete".to_string(), Oid::hash(b"old"), Oid::ZERO),
-        ];
+        let updates = vec![RefUpdate::new(
+            "refs/heads/to-delete".to_string(),
+            Oid::hash(b"old"),
+            Oid::ZERO,
+        )];
 
         let results = receive_pack.validate_updates(&updates).await.unwrap();
         assert!(results[0].success);
@@ -926,7 +1023,14 @@ mod tests {
             Ok(())
         }
 
-        async fn update_ref(&self, _repo_id: &str, _ref_name: &str, _old_oid: Oid, _new_oid: Oid, _force: bool) -> Result<bool> {
+        async fn update_ref(
+            &self,
+            _repo_id: &str,
+            _ref_name: &str,
+            _old_oid: Oid,
+            _new_oid: Oid,
+            _force: bool,
+        ) -> Result<bool> {
             Ok(false)
         }
 
@@ -951,11 +1055,19 @@ mod tests {
 
         let pack_data = Bytes::new();
         let new_oid = Oid::hash(b"new");
-        let updates = vec![RefUpdate::new("refs/heads/main".to_string(), Oid::ZERO, new_oid)];
+        let updates = vec![RefUpdate::new(
+            "refs/heads/main".to_string(),
+            Oid::ZERO,
+            new_oid,
+        )];
 
         let result = receive_pack.handle_push(updates, pack_data).await.unwrap();
         assert!(!result.all_successful());
-        assert!(result.updates[0].error.as_ref().unwrap().contains("rejected"));
+        assert!(result.updates[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("rejected"));
     }
 
     #[tokio::test]
@@ -978,10 +1090,18 @@ mod tests {
         );
 
         let pack_data = Bytes::new();
-        let updates = vec![RefUpdate::new("refs/heads/main".to_string(), wrong_old_oid, new_oid)];
+        let updates = vec![RefUpdate::new(
+            "refs/heads/main".to_string(),
+            wrong_old_oid,
+            new_oid,
+        )];
 
         let result = receive_pack.handle_push(updates, pack_data).await.unwrap();
         assert!(!result.all_successful());
-        assert!(result.updates[0].error.as_ref().unwrap().contains("expected"));
+        assert!(result.updates[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("expected"));
     }
 }

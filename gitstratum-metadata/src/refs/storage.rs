@@ -39,12 +39,14 @@ impl<'a> RefStorage<'a> {
     }
 
     pub fn get_main(&self, repo_id: &RepoId) -> Result<Option<Oid>> {
-        let main_ref = RefName::new("refs/heads/main").expect("refs/heads/main is a valid ref name");
+        let main_ref =
+            RefName::new("refs/heads/main").expect("refs/heads/main is a valid ref name");
         if let Some(oid) = self.get(repo_id, &main_ref)? {
             return Ok(Some(oid));
         }
 
-        let master_ref = RefName::new("refs/heads/master").expect("refs/heads/master is a valid ref name");
+        let master_ref =
+            RefName::new("refs/heads/master").expect("refs/heads/master is a valid ref name");
         self.get(repo_id, &master_ref)
     }
 }
@@ -72,7 +74,9 @@ mod tests {
         assert!(ref_storage.get(&repo_id, &ref_name).unwrap().is_none());
 
         let oid = Oid::hash(b"commit1");
-        store.update_ref(&repo_id, &ref_name, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid, true)
+            .unwrap();
 
         assert_eq!(ref_storage.get(&repo_id, &ref_name).unwrap(), Some(oid));
     }
@@ -89,7 +93,9 @@ mod tests {
 
         let oid = Oid::hash(b"commit");
         store.update_ref(&repo_id, &main, None, &oid, true).unwrap();
-        store.update_ref(&repo_id, &feature, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &feature, None, &oid, true)
+            .unwrap();
         store.update_ref(&repo_id, &tag, None, &oid, true).unwrap();
 
         let ref_storage = RefStorage::new(&store);
@@ -139,7 +145,9 @@ mod tests {
 
         let master = RefName::new("refs/heads/master").unwrap();
         let oid = Oid::hash(b"commit");
-        store.update_ref(&repo_id, &master, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &master, None, &oid, true)
+            .unwrap();
 
         let ref_storage = RefStorage::new(&store);
         assert_eq!(ref_storage.get_main(&repo_id).unwrap(), Some(oid));
@@ -166,9 +174,15 @@ mod tests {
         let upstream_main = RefName::new("refs/remotes/upstream/main").unwrap();
 
         let oid = Oid::hash(b"commit");
-        store.update_ref(&repo_id, &origin_main, None, &oid, true).unwrap();
-        store.update_ref(&repo_id, &origin_dev, None, &oid, true).unwrap();
-        store.update_ref(&repo_id, &upstream_main, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &origin_main, None, &oid, true)
+            .unwrap();
+        store
+            .update_ref(&repo_id, &origin_dev, None, &oid, true)
+            .unwrap();
+        store
+            .update_ref(&repo_id, &upstream_main, None, &oid, true)
+            .unwrap();
 
         let ref_storage = RefStorage::new(&store);
         let origin_refs = ref_storage.list_remotes(&repo_id, "origin").unwrap();

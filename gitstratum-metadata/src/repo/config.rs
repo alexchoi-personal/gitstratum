@@ -167,7 +167,12 @@ mod tests {
 
         config.add_protected_branch("develop");
         assert_eq!(
-            config.settings.protected_branches.iter().filter(|b| *b == "develop").count(),
+            config
+                .settings
+                .protected_branches
+                .iter()
+                .filter(|b| *b == "develop")
+                .count(),
             1
         );
 

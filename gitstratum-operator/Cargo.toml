@@ -26,3 +26,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+
+[lints]
+workspace = true

@@ -24,12 +24,12 @@ GitStratum is a distributed Git hosting system designed for high-throughput CI/C
           │                                 │                                 │
           ▼                                 ▼                                 ▼
 ┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                        │
+│                                                                                       │
 │                           ╔════════════════════════════════╗                          │
 │                           ║     1. FRONTEND CLUSTER        ║                          │
 │                           ║        (Git Protocol)          ║                          │
 │                           ╚════════════════════════════════╝                          │
-│                                                                                        │
+│                                                                                       │
 │    ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐           │
 │    │  Frontend Node 1   │   │  Frontend Node 2   │   │  Frontend Node N   │           │
 │    │  ┌──────────────┐  │   │  ┌──────────────┐  │   │  ┌──────────────┐  │           │
@@ -39,38 +39,38 @@ GitStratum is a distributed Git hosting system designed for high-throughput CI/C
 │    │  │ Local Cache  │  │   │  │ Local Cache  │  │   │  │ Local Cache  │  │           │
 │    │  └──────────────┘  │   │  └──────────────┘  │   │  └──────────────┘  │           │
 │    └────────────────────┘   └────────────────────┘   └────────────────────┘           │
-│                                                                                        │
+│                                                                                       │
 └───────────────────────────────────────────────────────────────────────────────────────┘
           │                                 │                                 │
           │ gRPC                            │ gRPC                            │ gRPC
           ▼                                 ▼                                 ▼
 ┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                        │
+│                                                                                       │
 │                           ╔════════════════════════════════╗                          │
 │                           ║   2. CONTROL PLANE CLUSTER     ║                          │
 │                           ║       (Raft Consensus)         ║                          │
 │                           ╚════════════════════════════════╝                          │
-│                                                                                        │
+│                                                                                       │
 │    ┌─────────────────────────────────────────────────────────────────────────────┐    │
-│    │                           RAFT CONSENSUS LAYER                               │    │
-│    │     ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐        │    │
-│    │     │ Control Node 1  │◀──▶│ Control Node 2  │◀──▶│ Control Node 3  │        │    │
-│    │     │    (LEADER)     │    │   (FOLLOWER)    │    │   (FOLLOWER)    │        │    │
-│    │     └─────────────────┘    └─────────────────┘    └─────────────────┘        │    │
+│    │                           RAFT CONSENSUS LAYER                              │    │
+│    │     ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐       │    │
+│    │     │ Control Node 1  │◀──▶│ Control Node 2  │◀──▶│ Control Node 3  │       │    │
+│    │     │    (LEADER)     │    │   (FOLLOWER)    │    │   (FOLLOWER)    │       │    │
+│    │     └─────────────────┘    └─────────────────┘    └─────────────────┘       │    │
 │    └─────────────────────────────────────────────────────────────────────────────┘    │
 │    │ Membership │ Auth/RBAC │ Rate Limiting │ Hash Ring │ Audit Log │ Config │        │
-│                                                                                        │
+│                                                                                       │
 └───────────────────────────────────────────────────────────────────────────────────────┘
           │                                                           │
           │ gRPC                                                      │ gRPC
           ▼                                                           ▼
 ┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                        │
+│                                                                                       │
 │                           ╔════════════════════════════════╗                          │
 │                           ║     3. METADATA CLUSTER        ║                          │
 │                           ║      (Refs & Repo Data)        ║                          │
 │                           ╚════════════════════════════════╝                          │
-│                                                                                        │
+│                                                                                       │
 │    ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐           │
 │    │  Metadata Node 1   │   │  Metadata Node 2   │   │  Metadata Node N   │           │
 │    │  ┌──────────────┐  │   │  ┌──────────────┐  │   │  ┌──────────────┐  │           │
@@ -83,20 +83,20 @@ GitStratum is a distributed Git hosting system designed for high-throughput CI/C
 │    │  └──────────────┘  │   │  └──────────────┘  │   │  └──────────────┘  │           │
 │    │  In-Memory Cache   │   │  In-Memory Cache   │   │  In-Memory Cache   │           │
 │    └────────────────────┘   └────────────────────┘   └────────────────────┘           │
-│                                                                                        │
+│                                                                                       │
 │    Partitioned by repo_id hash, replicated for durability                             │
-│                                                                                        │
+│                                                                                       │
 └───────────────────────────────────────────────────────────────────────────────────────┘
           │
           │ gRPC (object locations)
           ▼
 ┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                        │
+│                                                                                       │
 │                           ╔════════════════════════════════╗                          │
 │                           ║      4. OBJECT CLUSTER         ║                          │
 │                           ║        (Blob Storage)          ║                          │
 │                           ╚════════════════════════════════╝                          │
-│                                                                                        │
+│                                                                                       │
 │    ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐           │
 │    │  Object Node 1     │   │  Object Node 2     │   │  Object Node N     │           │
 │    │  ┌──────────────┐  │   │  ┌──────────────┐  │   │  ┌──────────────┐  │           │
@@ -109,26 +109,26 @@ GitStratum is a distributed Git hosting system designed for high-throughput CI/C
 │    │  Hot Object Cache  │   │  Hot Object Cache  │   │  Hot Object Cache  │           │
 │    │  Delta Engine      │   │  Delta Engine      │   │  Delta Engine      │           │
 │    └────────────────────┘   └────────────────────┘   └────────────────────┘           │
-│                                                                                        │
+│                                                                                       │
 │    Consistent Hash Ring: SHA256(object_id) -> Primary Node                            │
 │    Replication Factor: 3 (configurable)                                               │
-│                                                                                        │
+│                                                                                       │
 └───────────────────────────────────────────────────────────────────────────────────────┘
           │
           ▼
 ┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                           KUBERNETES ORCHESTRATION                                     │
-│                                                                                        │
+│                           KUBERNETES ORCHESTRATION                                    │
+│                                                                                       │
 │    ┌─────────────────────────────────────────────────────────────────────────────┐    │
-│    │                         GitStratum Operator                                  │    │
+│    │                         GitStratum Operator                                 │    │
 │    │  ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐│    │
 │    │  │ Frontend       │ │ Control Plane  │ │ Metadata       │ │ Object         ││    │
 │    │  │ Controller     │ │ Controller     │ │ Controller     │ │ Controller     ││    │
 │    │  └────────────────┘ └────────────────┘ └────────────────┘ └────────────────┘│    │
 │    └─────────────────────────────────────────────────────────────────────────────┘    │
-│                                                                                        │
+│                                                                                       │
 │    ┌─────────────────────────────────────────────────────────────────────────────┐    │
-│    │                         Prometheus + Grafana                                 │    │
+│    │                         Prometheus + Grafana                                │    │
 │    │  Per-cluster metrics: latency, throughput, cache hits, errors, queue depth  │    │
 │    └─────────────────────────────────────────────────────────────────────────────┘    │
 └───────────────────────────────────────────────────────────────────────────────────────┘
@@ -272,31 +272,31 @@ CI Runner              Frontend           Control Plane        Metadata         
    │                      │ ◀── Allowed ─────── │                 │                  │
    │                      │                     │                 │                  │
    │                      │ ─────────────────────── GetRefs ────▶ │                  │
-   │                      │ ◀──────────────────── refs map ───── │                  │
+   │                      │ ◀──────────────────── refs map ─────  │                  │
    │                      │                     │                 │                  │
-   │                      │ ─────────────────────────────────── CheckPackCache ───▶│
+   │                      │ ───────────────────────────────────── CheckPackCache ───▶│
    │                      │                     │                 │                  │
-   │                      │                     │       ┌─────────┴─────────┐       │
-   │                      │                     │       │    CACHE HIT      │       │
-   │                      │                     │       │    (95% of CI)    │       │
-   │                      │                     │       └─────────┬─────────┘       │
-   │                      │ ◀────────────────────────────────── pack data ─────────│
+   │                      │                     │       ┌─────────┴─────────┐        │
+   │                      │                     │       │    CACHE HIT      │        │
+   │                      │                     │       │    (95% of CI)    │        │
+   │                      │                     │       └─────────┬─────────┘        │
+   │                      │ ◀──────────────────────────────────v── pack data ────────│
    │ ◀── stream pack ──── │                     │                 │                  │
    │                      │                     │                 │                  │
-   │                      │                     │       ┌─────────┴─────────┐       │
-   │                      │                     │       │    CACHE MISS     │       │
-   │                      │                     │       └─────────┬─────────┘       │
+   │                      │                     │       ┌─────────┴─────────┐        │
+   │                      │                     │       │    CACHE MISS     │        │
+   │                      │                     │       └─────────┬─────────┘        │
    │                      │ ◀────────────── GetObjectLocations ─▶ │                  │
    │                      │                     │                 │                  │
    │                      │ ── GetHashRing ───▶ │                 │                  │
    │                      │ ◀── ring topology ─ │                 │                  │
    │                      │                     │                 │                  │
-   │                      │ ─────────────────────────────────── GetObjects(batch) ─▶│
-   │                      │ ◀────────────────────────────────── object data ────────│
+   │                      │ ──────────────────────────────────── GetObjects(batch) ─▶│
+   │                      │ ◀─────────────────────────────────── object data ────────│
    │                      │                     │                 │                  │
    │                      │  [assemble pack]    │                 │                  │
    │                      │                     │                 │                  │
-   │                      │ ─────────────────────────────────── StorePackCache ────▶│
+   │                      │ ──────────────────────────────────── StorePackCache ────▶│
    │ ◀── stream pack ──── │                     │                 │                  │
    │                      │                     │                 │                  │
    │                      │ ── LogAudit(async)▶ │                 │                  │
@@ -322,11 +322,11 @@ CI Runner              Frontend           Control Plane        Metadata         
    │                      │ ── GetHashRing ───▶ │                 │                  │
    │                      │ ◀── ring topology ─ │                 │                  │
    │                      │                     │                 │                  │
-   │                      │ ──────────────────────────────────── StoreObjects ─────▶│
-   │                      │ ◀───────────────────────────────────── OK ──────────────│
+   │                      │ ───────────────────────────────────── StoreObjects ─────▶│
+   │                      │ ◀────────────────────────────────────── OK ──────────────│
    │                      │                     │                 │                  │
    │                      │ ────────────────────── UpdateRefs ──▶ │                  │
-   │                      │ ◀─────────────────────── OK ──────── │                  │
+   │                      │ ◀──────────────────────── OK ──────── │                  │
    │                      │                     │                 │                  │
    │                      │ ─────────────────── InvalidateCache ▶ │                  │
    │                      │                     │                 │                  │
@@ -340,34 +340,34 @@ CI Runner              Frontend           Control Plane        Metadata         
 The Frontend implements all parallel fetching strategies, using topology and health information provided by the Control Plane. Metadata and Object clusters are simple request/response services—they don't coordinate fetching.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            CONTROL PLANE                                     │
-│  Provides to Frontend:                                                       │
-│  • Hash ring topology (object → shard mapping)                              │
-│  • Node health & latency metrics                                            │
-│  • In-flight request counts per node                                        │
-│  • Rate limit decisions                                                      │
-│  • Replica locations for each object                                        │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                            CONTROL PLANE                          │
+│  Provides to Frontend:                                            │
+│  • Hash ring topology (object → shard mapping)                    │
+│  • Node health & latency metrics                                  │
+│  • In-flight request counts per node                              │
+│  • Rate limit decisions                                           │
+│  • Replica locations for each object                              │
+└───────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼ watches/polls
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              FRONTEND                                        │
-│  Implements:                                                                 │
-│  • Shard-aware batching        • Request coalescing                         │
-│  • Streaming assembly          • Locality-aware reads                       │
-│  • Connection pooling          • Prefetch hints                             │
-│  • Pack cache checks                                                         │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                              FRONTEND                             │
+│  Implements:                                                      │
+│  • Shard-aware batching        • Request coalescing               │
+│  • Streaming assembly          • Locality-aware reads             │
+│  • Connection pooling          • Prefetch hints                   │
+│  • Pack cache checks                                              │
+└───────────────────────────────────────────────────────────────────┘
                     │                               │
                     ▼                               ▼
 ┌───────────────────────────────┐   ┌───────────────────────────────┐
-│        METADATA CLUSTER        │   │         OBJECT CLUSTER         │
-│   Simple Request/Response      │   │    Simple Request/Response     │
-│                                │   │                                │
-│   GetRefs(repo) → refs         │   │   GetObjects(oids) → objects   │
-│   UpdateRefs(repo, updates)    │   │   StoreObjects(objects)        │
-│   GetObjectLocations(oids)     │   │   CheckPackCache(key) → pack   │
+│        METADATA CLUSTER       │   │         OBJECT CLUSTER        │
+│   Simple Request/Response     │   │    Simple Request/Response    │
+│                               │   │                               │
+│   GetRefs(repo) → refs        │   │   GetObjects(oids) → objects  │
+│   UpdateRefs(repo, updates)   │   │   StoreObjects(objects)       │
+│   GetObjectLocations(oids)    │   │   CheckPackCache(key) → pack  │
 └───────────────────────────────┘   └───────────────────────────────┘
 ```
 
@@ -430,7 +430,7 @@ Persistent gRPC connection pools to each object node eliminate connection setup 
 ```
 Frontend Node
 ┌────────────────────────────────────────────────────┐
-│                  Connection Pools                   │
+│                  Connection Pools                  │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐│
 │  │ Object Node 1│ │ Object Node 2│ │ Object Node N││
 │  │  10 conns    │ │  10 conns    │ │  10 conns    ││

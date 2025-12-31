@@ -328,4 +328,105 @@ mod tests {
         let cache = DeltaCache::default();
         assert_eq!(cache.hit_rate(), 0.0);
     }
+
+    #[test]
+    fn test_cache_ttl_expiration_on_get() {
+        let config = DeltaCacheConfig {
+            max_entries: 100,
+            max_size_bytes: 1024 * 1024,
+            ttl: Duration::from_millis(1),
+        };
+        let cache = DeltaCache::new(config);
+        let delta = create_test_stored_delta(b"base", b"target");
+
+        cache.put(delta.clone());
+        std::thread::sleep(Duration::from_millis(10));
+
+        let result = cache.get(&delta.base_oid, &delta.target_oid);
+        assert!(result.is_none());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_cache_put_replace_existing() {
+        let cache = DeltaCache::default();
+        let delta1 = create_test_stored_delta(b"base", b"target");
+        let delta2 = create_test_stored_delta(b"base", b"target");
+
+        cache.put(delta1);
+        let size_before = cache.size_bytes();
+        cache.put(delta2);
+        let size_after = cache.size_bytes();
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(size_before, size_after);
+    }
+
+    #[test]
+    fn test_cache_eviction_by_size() {
+        let config = DeltaCacheConfig {
+            max_entries: 100,
+            max_size_bytes: 100,
+            ttl: Duration::from_secs(3600),
+        };
+        let cache = DeltaCache::new(config);
+
+        let delta1 = create_test_stored_delta(b"base1", b"target1_large_data");
+        let delta2 = create_test_stored_delta(b"base2", b"target2_large_data");
+
+        cache.put(delta1);
+        cache.put(delta2);
+
+        assert!(cache.size_bytes() <= 100);
+    }
+
+    #[test]
+    fn test_cache_remove_nonexistent() {
+        let cache = DeltaCache::default();
+        let result = cache.remove(&Oid::hash(b"not"), &Oid::hash(b"there"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_delta_cache_stats_struct() {
+        let stats = DeltaCacheStats {
+            entries: 10,
+            size_bytes: 1024,
+            hits: 50,
+            misses: 10,
+            hit_rate: 0.833,
+        };
+        assert_eq!(stats.entries, 10);
+        assert_eq!(stats.size_bytes, 1024);
+        assert_eq!(stats.hits, 50);
+        assert_eq!(stats.misses, 10);
+    }
+
+    #[test]
+    fn test_cache_entry_debug_clone() {
+        let delta = create_test_stored_delta(b"base", b"target");
+        let entry = CacheEntry {
+            delta: delta.clone(),
+            last_access: Instant::now(),
+            access_count: 1,
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.access_count, entry.access_count);
+        assert!(format!("{:?}", entry).contains("access_count"));
+    }
+
+    #[test]
+    fn test_cache_multiple_get_updates_access() {
+        let cache = DeltaCache::default();
+        let delta = create_test_stored_delta(b"base", b"target");
+
+        cache.put(delta.clone());
+
+        for _ in 0..5 {
+            let _ = cache.get(&delta.base_oid, &delta.target_oid);
+        }
+
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 5);
+    }
 }

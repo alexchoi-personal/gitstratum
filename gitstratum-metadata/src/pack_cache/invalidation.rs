@@ -74,7 +74,9 @@ impl InvalidationTracker {
 
     pub fn get_affected_packs(&self, event: &InvalidationEvent) -> HashSet<PackCacheKey> {
         match event {
-            InvalidationEvent::RefUpdate { repo_id, ref_name, .. } => {
+            InvalidationEvent::RefUpdate {
+                repo_id, ref_name, ..
+            } => {
                 let ref_to_packs = self.ref_to_packs.read();
                 ref_to_packs
                     .get(&(repo_id.clone(), ref_name.clone()))
@@ -216,10 +218,7 @@ mod tests {
         let key = PackCacheKey::new(repo_id.clone(), vec![oid], vec![]);
         tracker.register_pack(&key, &[(ref_name.clone(), oid)], &[]);
 
-        let event = InvalidationEvent::RefDelete {
-            repo_id,
-            ref_name,
-        };
+        let event = InvalidationEvent::RefDelete { repo_id, ref_name };
 
         let affected = tracker.get_affected_packs(&event);
         assert!(affected.contains(&key));
@@ -255,10 +254,7 @@ mod tests {
         let key = PackCacheKey::new(repo_id.clone(), vec![oid], vec![]);
         tracker.register_pack(&key, &[], &[oid]);
 
-        let event = InvalidationEvent::ObjectUpdate {
-            repo_id,
-            oid,
-        };
+        let event = InvalidationEvent::ObjectUpdate { repo_id, oid };
 
         let affected = tracker.get_affected_packs(&event);
         assert!(affected.contains(&key));
@@ -316,5 +312,278 @@ mod tests {
             new_target: oid,
         };
         assert!(tracker.get_affected_packs(&event).is_empty());
+    }
+
+    #[test]
+    fn test_invalidation_tracker_default() {
+        let tracker = InvalidationTracker::default();
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref_name = RefName::new("refs/heads/main").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let event = InvalidationEvent::RefUpdate {
+            repo_id,
+            ref_name,
+            old_target: None,
+            new_target: oid,
+        };
+        assert!(tracker.get_affected_packs(&event).is_empty());
+    }
+
+    #[test]
+    fn test_invalidation_tracker_clear_repo_with_objects() {
+        let tracker = InvalidationTracker::new();
+        let repo1 = RepoId::new("test/repo1").unwrap();
+        let repo2 = RepoId::new("test/repo2").unwrap();
+        let oid1 = Oid::hash(b"obj1");
+        let oid2 = Oid::hash(b"obj2");
+
+        let key1 = PackCacheKey::new(repo1.clone(), vec![oid1], vec![]);
+        let key2 = PackCacheKey::new(repo2.clone(), vec![oid2], vec![]);
+
+        tracker.register_pack(&key1, &[], &[oid1]);
+        tracker.register_pack(&key2, &[], &[oid2]);
+
+        tracker.clear_repo(&repo1);
+
+        let event1 = InvalidationEvent::ObjectUpdate {
+            repo_id: repo1,
+            oid: oid1,
+        };
+        let event2 = InvalidationEvent::ObjectUpdate {
+            repo_id: repo2,
+            oid: oid2,
+        };
+
+        assert!(tracker.get_affected_packs(&event1).is_empty());
+        assert!(!tracker.get_affected_packs(&event2).is_empty());
+    }
+
+    #[test]
+    fn test_invalidation_tracker_get_affected_packs_not_found() {
+        let tracker = InvalidationTracker::new();
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref_name = RefName::new("refs/heads/main").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let event = InvalidationEvent::RefUpdate {
+            repo_id: repo_id.clone(),
+            ref_name: ref_name.clone(),
+            old_target: None,
+            new_target: oid,
+        };
+        assert!(tracker.get_affected_packs(&event).is_empty());
+
+        let event = InvalidationEvent::RefDelete {
+            repo_id: repo_id.clone(),
+            ref_name,
+        };
+        assert!(tracker.get_affected_packs(&event).is_empty());
+
+        let event = InvalidationEvent::ObjectUpdate { repo_id, oid };
+        assert!(tracker.get_affected_packs(&event).is_empty());
+    }
+
+    #[test]
+    fn test_cache_invalidator_new() {
+        let storage = std::sync::Arc::new(PackCacheStorage::new(1024 * 1024));
+        let invalidator = CacheInvalidator::new(storage);
+
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref_name = RefName::new("refs/heads/main").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let event = InvalidationEvent::RefUpdate {
+            repo_id,
+            ref_name,
+            old_target: None,
+            new_target: oid,
+        };
+        assert_eq!(invalidator.invalidate(&event), 0);
+    }
+
+    #[test]
+    fn test_cache_invalidator_register_and_invalidate() {
+        let storage = std::sync::Arc::new(PackCacheStorage::new(1024 * 1024));
+        let invalidator = CacheInvalidator::new(storage.clone());
+
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref_name = RefName::new("refs/heads/main").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let key = PackCacheKey::new(repo_id.clone(), vec![oid], vec![]);
+        let entry = crate::pack_cache::storage::PackCacheEntry::new(
+            "pack-123".to_string(),
+            vec![oid],
+            1024,
+            3600,
+        );
+        storage.put(key.clone(), entry);
+        invalidator.register_pack(&key, &[(ref_name.clone(), oid)], &[]);
+
+        let event = InvalidationEvent::RefUpdate {
+            repo_id,
+            ref_name,
+            old_target: None,
+            new_target: oid,
+        };
+
+        assert_eq!(invalidator.invalidate(&event), 1);
+        assert!(storage.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_cache_invalidator_invalidate_repo_delete() {
+        let storage = std::sync::Arc::new(PackCacheStorage::new(1024 * 1024));
+        let invalidator = CacheInvalidator::new(storage.clone());
+
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref_name = RefName::new("refs/heads/main").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let key = PackCacheKey::new(repo_id.clone(), vec![oid], vec![]);
+        let entry = crate::pack_cache::storage::PackCacheEntry::new(
+            "pack-123".to_string(),
+            vec![oid],
+            1024,
+            3600,
+        );
+        storage.put(key.clone(), entry);
+        invalidator.register_pack(&key, &[(ref_name, oid)], &[]);
+
+        let event = InvalidationEvent::RepoDelete {
+            repo_id: repo_id.clone(),
+        };
+
+        invalidator.invalidate(&event);
+        assert!(storage.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_cache_invalidator_clear() {
+        let storage = std::sync::Arc::new(PackCacheStorage::new(1024 * 1024));
+        let invalidator = CacheInvalidator::new(storage.clone());
+
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref_name = RefName::new("refs/heads/main").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let key = PackCacheKey::new(repo_id.clone(), vec![oid], vec![]);
+        let entry = crate::pack_cache::storage::PackCacheEntry::new(
+            "pack-123".to_string(),
+            vec![oid],
+            1024,
+            3600,
+        );
+        storage.put(key.clone(), entry);
+        invalidator.register_pack(&key, &[(ref_name.clone(), oid)], &[]);
+
+        invalidator.clear();
+
+        assert!(storage.get(&key).is_none());
+        assert_eq!(storage.entry_count(), 0);
+    }
+
+    #[test]
+    fn test_cache_invalidator_invalidate_not_in_storage() {
+        let storage = std::sync::Arc::new(PackCacheStorage::new(1024 * 1024));
+        let invalidator = CacheInvalidator::new(storage);
+
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref_name = RefName::new("refs/heads/main").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let key = PackCacheKey::new(repo_id.clone(), vec![oid], vec![]);
+        invalidator.register_pack(&key, &[(ref_name.clone(), oid)], &[]);
+
+        let event = InvalidationEvent::RefUpdate {
+            repo_id,
+            ref_name,
+            old_target: None,
+            new_target: oid,
+        };
+
+        assert_eq!(invalidator.invalidate(&event), 0);
+    }
+
+    #[test]
+    fn test_invalidation_event_clone_debug() {
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref_name = RefName::new("refs/heads/main").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let event = InvalidationEvent::RefUpdate {
+            repo_id: repo_id.clone(),
+            ref_name: ref_name.clone(),
+            old_target: Some(oid),
+            new_target: oid,
+        };
+        let cloned = event.clone();
+        assert!(format!("{:?}", cloned).contains("RefUpdate"));
+
+        let event = InvalidationEvent::RefDelete {
+            repo_id: repo_id.clone(),
+            ref_name,
+        };
+        let cloned = event.clone();
+        assert!(format!("{:?}", cloned).contains("RefDelete"));
+
+        let event = InvalidationEvent::RepoDelete {
+            repo_id: repo_id.clone(),
+        };
+        let cloned = event.clone();
+        assert!(format!("{:?}", cloned).contains("RepoDelete"));
+
+        let event = InvalidationEvent::ObjectUpdate { repo_id, oid };
+        let cloned = event.clone();
+        assert!(format!("{:?}", cloned).contains("ObjectUpdate"));
+    }
+
+    #[test]
+    fn test_invalidation_tracker_register_multiple_refs() {
+        let tracker = InvalidationTracker::new();
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let ref1 = RefName::new("refs/heads/main").unwrap();
+        let ref2 = RefName::new("refs/heads/develop").unwrap();
+        let oid = Oid::hash(b"commit");
+
+        let key = PackCacheKey::new(repo_id.clone(), vec![oid], vec![]);
+        tracker.register_pack(&key, &[(ref1.clone(), oid), (ref2.clone(), oid)], &[]);
+
+        let event1 = InvalidationEvent::RefUpdate {
+            repo_id: repo_id.clone(),
+            ref_name: ref1,
+            old_target: None,
+            new_target: oid,
+        };
+        let event2 = InvalidationEvent::RefUpdate {
+            repo_id,
+            ref_name: ref2,
+            old_target: None,
+            new_target: oid,
+        };
+
+        assert!(tracker.get_affected_packs(&event1).contains(&key));
+        assert!(tracker.get_affected_packs(&event2).contains(&key));
+    }
+
+    #[test]
+    fn test_invalidation_tracker_register_multiple_objects() {
+        let tracker = InvalidationTracker::new();
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let oid1 = Oid::hash(b"obj1");
+        let oid2 = Oid::hash(b"obj2");
+
+        let key = PackCacheKey::new(repo_id.clone(), vec![oid1, oid2], vec![]);
+        tracker.register_pack(&key, &[], &[oid1, oid2]);
+
+        let event1 = InvalidationEvent::ObjectUpdate {
+            repo_id: repo_id.clone(),
+            oid: oid1,
+        };
+        let event2 = InvalidationEvent::ObjectUpdate { repo_id, oid: oid2 };
+
+        assert!(tracker.get_affected_packs(&event1).contains(&key));
+        assert!(tracker.get_affected_packs(&event2).contains(&key));
     }
 }

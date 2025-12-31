@@ -1,0 +1,171 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitstratum-frontend
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitstratum
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: gitstratum
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gitstratum-frontend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gitstratum
+                    app.kubernetes.io/component: frontend
+                topologyKey: kubernetes.io/hostname
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gitstratum
+                    app.kubernetes.io/component: frontend
+                topologyKey: topology.kubernetes.io/zone
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: frontend
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: frontend
+      containers:
+        - name: frontend
+          image: gitstratum/frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: ssh
+              containerPort: 22
+              protocol: TCP
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            - name: http
+              containerPort: 80
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: grpc
+              containerPort: 9091
+              protocol: TCP
+          env:
+            - name: GITSTRATUM_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GITSTRATUM_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GITSTRATUM_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONTROL_PLANE_SERVICE
+              value: "gitstratum-control-plane-headless.gitstratum-system.svc.cluster.local:9091"
+            - name: METADATA_SERVICE
+              value: "gitstratum-metadata-headless.gitstratum-system.svc.cluster.local:9091"
+            - name: OBJECT_SERVICE
+              value: "gitstratum-object-headless.gitstratum-system.svc.cluster.local:9091"
+            - name: REFS_LRU_SIZE
+              value: "10000"
+            - name: NEGOTIATION_TTL
+              value: "5m"
+            - name: CONNECTION_POOL_CONTROL_PLANE
+              value: "10"
+            - name: CONNECTION_POOL_METADATA
+              value: "50"
+            - name: CONNECTION_POOL_OBJECT
+              value: "100"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: RUST_BACKTRACE
+              value: "1"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/gitstratum
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir:
+            sizeLimit: 1Gi
+      terminationGracePeriodSeconds: 30

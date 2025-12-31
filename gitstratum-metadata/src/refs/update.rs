@@ -57,11 +57,7 @@ impl<'a> AtomicRefUpdater<'a> {
         Self { store }
     }
 
-    pub fn update_single(
-        &self,
-        repo_id: &RepoId,
-        update: &RefUpdate,
-    ) -> Result<()> {
+    pub fn update_single(&self, repo_id: &RepoId, update: &RefUpdate) -> Result<()> {
         self.store.update_ref(
             repo_id,
             &update.ref_name,
@@ -71,11 +67,7 @@ impl<'a> AtomicRefUpdater<'a> {
         )
     }
 
-    pub fn update_batch(
-        &self,
-        repo_id: &RepoId,
-        updates: &[RefUpdate],
-    ) -> Vec<RefUpdateResult> {
+    pub fn update_batch(&self, repo_id: &RepoId, updates: &[RefUpdate]) -> Vec<RefUpdateResult> {
         let mut results = Vec::with_capacity(updates.len());
 
         for update in updates {
@@ -139,8 +131,7 @@ mod tests {
         let old_oid = Oid::hash(b"old");
         let new_oid = Oid::hash(b"new");
 
-        let update = RefUpdate::new(ref_name, new_oid)
-            .with_old_target(old_oid);
+        let update = RefUpdate::new(ref_name, new_oid).with_old_target(old_oid);
 
         assert_eq!(update.old_target, Some(old_oid));
     }
@@ -190,10 +181,16 @@ mod tests {
         let updater = AtomicRefUpdater::new(&store);
 
         let updates = vec![
-            RefUpdate::new(RefName::new("refs/heads/main").unwrap(), Oid::hash(b"commit1"))
-                .with_force(true),
-            RefUpdate::new(RefName::new("refs/heads/feature").unwrap(), Oid::hash(b"commit2"))
-                .with_force(true),
+            RefUpdate::new(
+                RefName::new("refs/heads/main").unwrap(),
+                Oid::hash(b"commit1"),
+            )
+            .with_force(true),
+            RefUpdate::new(
+                RefName::new("refs/heads/feature").unwrap(),
+                Oid::hash(b"commit2"),
+            )
+            .with_force(true),
         ];
 
         let results = updater.update_batch(&repo_id, &updates);
@@ -211,7 +208,9 @@ mod tests {
 
         let ref_name = RefName::new("refs/heads/main").unwrap();
         let oid = Oid::hash(b"commit");
-        store.update_ref(&repo_id, &ref_name, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid, true)
+            .unwrap();
 
         let updater = AtomicRefUpdater::new(&store);
         updater.delete_ref(&repo_id, &ref_name).unwrap();
@@ -251,15 +250,20 @@ mod tests {
 
         let ref_name = RefName::new("refs/heads/main").unwrap();
         let oid1 = Oid::hash(b"commit1");
-        store.update_ref(&repo_id, &ref_name, None, &oid1, true).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid1, true)
+            .unwrap();
 
         let updater = AtomicRefUpdater::new(&store);
 
         let updates = vec![
             RefUpdate::new(ref_name.clone(), Oid::hash(b"commit2"))
                 .with_old_target(Oid::hash(b"wrong")),
-            RefUpdate::new(RefName::new("refs/heads/feature").unwrap(), Oid::hash(b"commit3"))
-                .with_force(true),
+            RefUpdate::new(
+                RefName::new("refs/heads/feature").unwrap(),
+                Oid::hash(b"commit3"),
+            )
+            .with_force(true),
         ];
 
         let results = updater.update_batch(&repo_id, &updates);

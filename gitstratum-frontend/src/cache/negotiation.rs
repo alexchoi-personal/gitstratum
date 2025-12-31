@@ -1,5 +1,7 @@
-use gitstratum_core::Oid;
 use std::collections::HashSet;
+use std::fmt;
+
+use gitstratum_core::Oid;
 
 use crate::error::{FrontendError, Result};
 
@@ -47,10 +49,9 @@ impl NegotiationLine {
         }
 
         if let Some(rest) = line.strip_prefix("deepen-since ") {
-            let timestamp: i64 = rest
-                .trim()
-                .parse()
-                .map_err(|_| FrontendError::InvalidProtocol("invalid deepen-since value".to_string()))?;
+            let timestamp: i64 = rest.trim().parse().map_err(|_| {
+                FrontendError::InvalidProtocol("invalid deepen-since value".to_string())
+            })?;
             return Ok(NegotiationLine::DeepenSince(timestamp));
         }
 
@@ -62,19 +63,24 @@ impl NegotiationLine {
             return Ok(NegotiationLine::Filter(rest.trim().to_string()));
         }
 
-        Err(FrontendError::InvalidProtocol(format!("unknown negotiation line: {}", line)))
+        Err(FrontendError::InvalidProtocol(format!(
+            "unknown negotiation line: {}",
+            line
+        )))
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl fmt::Display for NegotiationLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NegotiationLine::Want(oid) => format!("want {}", oid),
-            NegotiationLine::Have(oid) => format!("have {}", oid),
-            NegotiationLine::Done => "done".to_string(),
-            NegotiationLine::Shallow(oid) => format!("shallow {}", oid),
-            NegotiationLine::Deepen(depth) => format!("deepen {}", depth),
-            NegotiationLine::DeepenSince(ts) => format!("deepen-since {}", ts),
-            NegotiationLine::DeepenNot(ref_name) => format!("deepen-not {}", ref_name),
-            NegotiationLine::Filter(spec) => format!("filter {}", spec),
+            NegotiationLine::Want(oid) => write!(f, "want {}", oid),
+            NegotiationLine::Have(oid) => write!(f, "have {}", oid),
+            NegotiationLine::Done => write!(f, "done"),
+            NegotiationLine::Shallow(oid) => write!(f, "shallow {}", oid),
+            NegotiationLine::Deepen(depth) => write!(f, "deepen {}", depth),
+            NegotiationLine::DeepenSince(ts) => write!(f, "deepen-since {}", ts),
+            NegotiationLine::DeepenNot(ref_name) => write!(f, "deepen-not {}", ref_name),
+            NegotiationLine::Filter(spec) => write!(f, "filter {}", spec),
         }
     }
 }
@@ -387,7 +393,10 @@ mod tests {
     #[test]
     fn test_parse_deepen_not() {
         let parsed = NegotiationLine::parse("deepen-not refs/heads/main").unwrap();
-        assert_eq!(parsed, NegotiationLine::DeepenNot("refs/heads/main".to_string()));
+        assert_eq!(
+            parsed,
+            NegotiationLine::DeepenNot("refs/heads/main".to_string())
+        );
     }
 
     #[test]
@@ -400,8 +409,14 @@ mod tests {
     fn test_negotiation_line_to_string() {
         let oid = make_oid("test");
 
-        assert_eq!(NegotiationLine::Want(oid).to_string(), format!("want {}", oid));
-        assert_eq!(NegotiationLine::Have(oid).to_string(), format!("have {}", oid));
+        assert_eq!(
+            NegotiationLine::Want(oid).to_string(),
+            format!("want {}", oid)
+        );
+        assert_eq!(
+            NegotiationLine::Have(oid).to_string(),
+            format!("have {}", oid)
+        );
         assert_eq!(NegotiationLine::Done.to_string(), "done");
         assert_eq!(NegotiationLine::Deepen(5).to_string(), "deepen 5");
     }
@@ -606,10 +621,22 @@ mod tests {
     fn test_negotiation_line_to_string_all() {
         let oid = make_oid("test");
 
-        assert_eq!(NegotiationLine::Shallow(oid).to_string(), format!("shallow {}", oid));
-        assert_eq!(NegotiationLine::DeepenSince(1704067200).to_string(), "deepen-since 1704067200");
-        assert_eq!(NegotiationLine::DeepenNot("refs/heads/main".to_string()).to_string(), "deepen-not refs/heads/main");
-        assert_eq!(NegotiationLine::Filter("blob:none".to_string()).to_string(), "filter blob:none");
+        assert_eq!(
+            NegotiationLine::Shallow(oid).to_string(),
+            format!("shallow {}", oid)
+        );
+        assert_eq!(
+            NegotiationLine::DeepenSince(1704067200).to_string(),
+            "deepen-since 1704067200"
+        );
+        assert_eq!(
+            NegotiationLine::DeepenNot("refs/heads/main".to_string()).to_string(),
+            "deepen-not refs/heads/main"
+        );
+        assert_eq!(
+            NegotiationLine::Filter("blob:none".to_string()).to_string(),
+            "filter blob:none"
+        );
     }
 
     #[test]

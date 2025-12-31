@@ -4,6 +4,7 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use std::str::FromStr;
 
 use crate::error::{Error, Result};
 use crate::oid::Oid;
@@ -25,8 +26,12 @@ impl ObjectType {
             ObjectType::Tag => "tag",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self> {
+impl FromStr for ObjectType {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
         match s {
             "blob" => Ok(ObjectType::Blob),
             "tree" => Ok(ObjectType::Tree),
@@ -38,6 +43,7 @@ impl ObjectType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum Object {
     Blob(Blob),
     Tree(Tree),
@@ -146,7 +152,15 @@ impl TreeEntryMode {
         }
     }
 
-    pub fn from_str(s: &str) -> Result<Self> {
+    pub fn is_tree(&self) -> bool {
+        matches!(self, TreeEntryMode::Directory)
+    }
+}
+
+impl FromStr for TreeEntryMode {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
         match s {
             "100644" => Ok(TreeEntryMode::File),
             "100755" => Ok(TreeEntryMode::Executable),
@@ -158,10 +172,6 @@ impl TreeEntryMode {
                 s
             ))),
         }
-    }
-
-    pub fn is_tree(&self) -> bool {
-        matches!(self, TreeEntryMode::Directory)
     }
 }
 
@@ -405,7 +415,13 @@ mod tests {
         let author = Signature::new("Author", "author@example.com", 1704067200, "+0000");
         let committer = author.clone();
 
-        let commit = Commit::new(tree, vec![parent1, parent2], author, committer, "Merge commit");
+        let commit = Commit::new(
+            tree,
+            vec![parent1, parent2],
+            author,
+            committer,
+            "Merge commit",
+        );
         assert!(!commit.is_root());
         assert!(commit.is_merge());
         assert_eq!(commit.first_parent(), Some(&parent1));
@@ -482,12 +498,30 @@ mod tests {
 
     #[test]
     fn test_tree_entry_mode_from_str() {
-        assert_eq!(TreeEntryMode::from_str("100644").unwrap(), TreeEntryMode::File);
-        assert_eq!(TreeEntryMode::from_str("100755").unwrap(), TreeEntryMode::Executable);
-        assert_eq!(TreeEntryMode::from_str("120000").unwrap(), TreeEntryMode::Symlink);
-        assert_eq!(TreeEntryMode::from_str("040000").unwrap(), TreeEntryMode::Directory);
-        assert_eq!(TreeEntryMode::from_str("40000").unwrap(), TreeEntryMode::Directory);
-        assert_eq!(TreeEntryMode::from_str("160000").unwrap(), TreeEntryMode::Submodule);
+        assert_eq!(
+            TreeEntryMode::from_str("100644").unwrap(),
+            TreeEntryMode::File
+        );
+        assert_eq!(
+            TreeEntryMode::from_str("100755").unwrap(),
+            TreeEntryMode::Executable
+        );
+        assert_eq!(
+            TreeEntryMode::from_str("120000").unwrap(),
+            TreeEntryMode::Symlink
+        );
+        assert_eq!(
+            TreeEntryMode::from_str("040000").unwrap(),
+            TreeEntryMode::Directory
+        );
+        assert_eq!(
+            TreeEntryMode::from_str("40000").unwrap(),
+            TreeEntryMode::Directory
+        );
+        assert_eq!(
+            TreeEntryMode::from_str("160000").unwrap(),
+            TreeEntryMode::Submodule
+        );
         assert!(TreeEntryMode::from_str("999999").is_err());
     }
 
@@ -558,5 +592,165 @@ mod tests {
         let oid = Oid::hash(b"test");
         let result = Blob::decompress(oid, invalid_compressed_data);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_object_type_debug_clone_copy() {
+        let blob_type = ObjectType::Blob;
+        let copied1 = blob_type;
+        let copied2 = blob_type;
+        assert_eq!(copied1, copied2);
+        assert!(format!("{:?}", blob_type).contains("Blob"));
+
+        let tree_type = ObjectType::Tree;
+        assert!(format!("{:?}", tree_type).contains("Tree"));
+
+        let commit_type = ObjectType::Commit;
+        assert!(format!("{:?}", commit_type).contains("Commit"));
+
+        let tag_type = ObjectType::Tag;
+        assert!(format!("{:?}", tag_type).contains("Tag"));
+    }
+
+    #[test]
+    fn test_tree_entry_mode_debug_clone_copy() {
+        let mode = TreeEntryMode::Executable;
+        let copied1 = mode;
+        let copied2 = mode;
+        assert_eq!(copied1, copied2);
+        assert!(format!("{:?}", mode).contains("Executable"));
+
+        assert!(format!("{:?}", TreeEntryMode::Symlink).contains("Symlink"));
+        assert!(format!("{:?}", TreeEntryMode::Submodule).contains("Submodule"));
+    }
+
+    #[test]
+    fn test_blob_debug_clone() {
+        let blob = Blob::new(b"test data".to_vec());
+        let cloned = blob.clone();
+        assert_eq!(blob.oid, cloned.oid);
+        assert_eq!(blob.data, cloned.data);
+        assert!(format!("{:?}", blob).contains("Blob"));
+    }
+
+    #[test]
+    fn test_tree_debug_clone() {
+        let entries = vec![TreeEntry::file("test.txt", Oid::hash(b"test"))];
+        let tree = Tree::new(entries);
+        let cloned = tree.clone();
+        assert_eq!(tree.oid, cloned.oid);
+        assert_eq!(tree.entries.len(), cloned.entries.len());
+        assert!(format!("{:?}", tree).contains("Tree"));
+    }
+
+    #[test]
+    fn test_commit_debug_clone() {
+        let tree_oid = Oid::hash(b"tree");
+        let author = Signature::new("Author", "a@test.com", 1704067200, "+0000");
+        let committer = author.clone();
+        let commit = Commit::new(tree_oid, vec![], author, committer, "Message");
+        let cloned = commit.clone();
+        assert_eq!(commit.oid, cloned.oid);
+        assert_eq!(commit.message, cloned.message);
+        assert!(format!("{:?}", commit).contains("Commit"));
+    }
+
+    #[test]
+    fn test_signature_debug_clone() {
+        let sig = Signature::new("Test Name", "test@test.com", 1704067200, "-0500");
+        let cloned = sig.clone();
+        assert_eq!(sig.name, cloned.name);
+        assert_eq!(sig.email, cloned.email);
+        assert_eq!(sig.timestamp, cloned.timestamp);
+        assert_eq!(sig.timezone, cloned.timezone);
+        assert!(format!("{:?}", sig).contains("Signature"));
+    }
+
+    #[test]
+    fn test_tree_entry_debug_clone() {
+        let entry = TreeEntry::file("test.txt", Oid::hash(b"content"));
+        let cloned = entry.clone();
+        assert_eq!(entry.name, cloned.name);
+        assert_eq!(entry.oid, cloned.oid);
+        assert!(format!("{:?}", entry).contains("TreeEntry"));
+    }
+
+    #[test]
+    fn test_object_debug_clone() {
+        let blob = Blob::new(b"content".to_vec());
+        let obj = Object::Blob(blob);
+        let cloned = obj.clone();
+        assert!(cloned.is_blob());
+        assert!(format!("{:?}", obj).contains("Blob"));
+    }
+
+    #[test]
+    fn test_blob_compress_large_data() {
+        let large_data = vec![b'x'; 10000];
+        let blob = Blob::new(large_data.clone());
+        let compressed = blob.compress().unwrap();
+        assert!(compressed.len() < large_data.len());
+        let decompressed = Blob::decompress(blob.oid, &compressed).unwrap();
+        assert_eq!(blob.data, decompressed.data);
+    }
+
+    #[test]
+    fn test_commit_first_parent_empty() {
+        let tree_oid = Oid::hash(b"tree");
+        let author = Signature::new("A", "a@test.com", 0, "+0000");
+        let committer = author.clone();
+        let commit = Commit::new(tree_oid, vec![], author, committer, "Root");
+        assert!(commit.first_parent().is_none());
+    }
+
+    #[test]
+    fn test_tree_empty() {
+        let tree = Tree::new(vec![]);
+        assert!(tree.entries.is_empty());
+        assert!(tree.find("anything").is_none());
+        assert_eq!(tree.blobs().count(), 0);
+        assert_eq!(tree.trees().count(), 0);
+    }
+
+    #[test]
+    fn test_blob_empty() {
+        let blob = Blob::new(Vec::new());
+        assert!(blob.data.is_empty());
+        let compressed = blob.compress().unwrap();
+        let decompressed = Blob::decompress(blob.oid, &compressed).unwrap();
+        assert!(decompressed.data.is_empty());
+    }
+
+    #[test]
+    fn test_tree_entry_executable() {
+        let entry = TreeEntry::new(TreeEntryMode::Executable, "script.sh", Oid::hash(b"script"));
+        assert_eq!(entry.mode, TreeEntryMode::Executable);
+        assert_eq!(entry.name, "script.sh");
+    }
+
+    #[test]
+    fn test_tree_entry_symlink() {
+        let entry = TreeEntry::new(TreeEntryMode::Symlink, "link", Oid::hash(b"target"));
+        assert_eq!(entry.mode, TreeEntryMode::Symlink);
+        assert!(!entry.mode.is_tree());
+    }
+
+    #[test]
+    fn test_tree_entry_submodule() {
+        let entry = TreeEntry::new(TreeEntryMode::Submodule, "submod", Oid::hash(b"commit"));
+        assert_eq!(entry.mode, TreeEntryMode::Submodule);
+        assert!(!entry.mode.is_tree());
+    }
+
+    #[test]
+    fn test_commit_single_parent() {
+        let tree_oid = Oid::hash(b"tree");
+        let parent = Oid::hash(b"parent");
+        let author = Signature::new("A", "a@test.com", 0, "+0000");
+        let committer = author.clone();
+        let commit = Commit::new(tree_oid, vec![parent], author, committer, "Child");
+        assert!(!commit.is_root());
+        assert!(!commit.is_merge());
+        assert_eq!(commit.first_parent(), Some(&parent));
     }
 }

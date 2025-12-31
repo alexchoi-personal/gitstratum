@@ -107,7 +107,9 @@ impl HotRefsCache {
 
     pub fn set_hot_refs(&self, repo_id: &RepoId, refs: Vec<(RefName, Oid)>) {
         self.hot_refs.write().insert(repo_id.clone(), refs);
-        self.last_updated.write().insert(repo_id.clone(), Instant::now());
+        self.last_updated
+            .write()
+            .insert(repo_id.clone(), Instant::now());
     }
 
     pub fn invalidate(&self, repo_id: &RepoId) {
@@ -236,8 +238,14 @@ mod tests {
         assert!(cache.get_hot_refs(&repo_id).is_none());
 
         let refs = vec![
-            (RefName::new("refs/heads/main").unwrap(), Oid::hash(b"commit1")),
-            (RefName::new("refs/heads/dev").unwrap(), Oid::hash(b"commit2")),
+            (
+                RefName::new("refs/heads/main").unwrap(),
+                Oid::hash(b"commit1"),
+            ),
+            (
+                RefName::new("refs/heads/dev").unwrap(),
+                Oid::hash(b"commit2"),
+            ),
         ];
 
         cache.set_hot_refs(&repo_id, refs.clone());
@@ -250,7 +258,10 @@ mod tests {
         let cache = HotRefsCache::new(Duration::from_millis(1));
         let repo_id = RepoId::new("test/repo").unwrap();
 
-        let refs = vec![(RefName::new("refs/heads/main").unwrap(), Oid::hash(b"commit"))];
+        let refs = vec![(
+            RefName::new("refs/heads/main").unwrap(),
+            Oid::hash(b"commit"),
+        )];
         cache.set_hot_refs(&repo_id, refs);
 
         std::thread::sleep(Duration::from_millis(10));
@@ -263,7 +274,10 @@ mod tests {
         let cache = HotRefsCache::new(Duration::from_secs(60));
         let repo_id = RepoId::new("test/repo").unwrap();
 
-        let refs = vec![(RefName::new("refs/heads/main").unwrap(), Oid::hash(b"commit"))];
+        let refs = vec![(
+            RefName::new("refs/heads/main").unwrap(),
+            Oid::hash(b"commit"),
+        )];
         cache.set_hot_refs(&repo_id, refs);
         cache.invalidate(&repo_id);
 
@@ -276,7 +290,10 @@ mod tests {
         let repo1 = RepoId::new("test/repo1").unwrap();
         let repo2 = RepoId::new("test/repo2").unwrap();
 
-        let refs = vec![(RefName::new("refs/heads/main").unwrap(), Oid::hash(b"commit"))];
+        let refs = vec![(
+            RefName::new("refs/heads/main").unwrap(),
+            Oid::hash(b"commit"),
+        )];
         cache.set_hot_refs(&repo1, refs.clone());
         cache.set_hot_refs(&repo2, refs);
 

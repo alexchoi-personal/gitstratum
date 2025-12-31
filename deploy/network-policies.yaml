@@ -1,0 +1,383 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitstratum-frontend
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 22
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: operator
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: control-plane
+      ports:
+        - protocol: TCP
+          port: 9091
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: metadata
+      ports:
+        - protocol: TCP
+          port: 9091
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: object
+      ports:
+        - protocol: TCP
+          port: 9091
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitstratum-control-plane
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: control-plane
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: frontend
+      ports:
+        - protocol: TCP
+          port: 9091
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: control-plane
+      ports:
+        - protocol: TCP
+          port: 9091
+        - protocol: TCP
+          port: 9092
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: metadata
+      ports:
+        - protocol: TCP
+          port: 9091
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: object
+      ports:
+        - protocol: TCP
+          port: 9091
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: operator
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: control-plane
+      ports:
+        - protocol: TCP
+          port: 9091
+        - protocol: TCP
+          port: 9092
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitstratum-metadata
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: metadata
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: metadata
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: frontend
+      ports:
+        - protocol: TCP
+          port: 9091
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: operator
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: control-plane
+      ports:
+        - protocol: TCP
+          port: 9091
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitstratum-object
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: object
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: object
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: frontend
+      ports:
+        - protocol: TCP
+          port: 9091
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: object
+      ports:
+        - protocol: TCP
+          port: 9091
+        - protocol: TCP
+          port: 9093
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: operator
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: control-plane
+      ports:
+        - protocol: TCP
+          port: 9091
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: object
+      ports:
+        - protocol: TCP
+          port: 9091
+        - protocol: TCP
+          port: 9093
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitstratum-operator
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: operator
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: frontend
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: control-plane
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: metadata
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: object
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443

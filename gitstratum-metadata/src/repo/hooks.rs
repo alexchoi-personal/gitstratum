@@ -96,7 +96,10 @@ impl RepoHooks {
     }
 
     pub fn is_enabled(&self, hook_type: HookType) -> bool {
-        self.hooks.get(&hook_type).map(|h| h.enabled).unwrap_or(false)
+        self.hooks
+            .get(&hook_type)
+            .map(|h| h.enabled)
+            .unwrap_or(false)
     }
 
     pub fn list_hooks(&self) -> Vec<&HookConfig> {
@@ -165,11 +168,20 @@ mod tests {
 
     #[test]
     fn test_hook_type_from_str() {
-        assert_eq!(HookType::from_str("pre-receive"), Some(HookType::PreReceive));
-        assert_eq!(HookType::from_str("post-receive"), Some(HookType::PostReceive));
+        assert_eq!(
+            HookType::from_str("pre-receive"),
+            Some(HookType::PreReceive)
+        );
+        assert_eq!(
+            HookType::from_str("post-receive"),
+            Some(HookType::PostReceive)
+        );
         assert_eq!(HookType::from_str("update"), Some(HookType::Update));
         assert_eq!(HookType::from_str("pre-push"), Some(HookType::PrePush));
-        assert_eq!(HookType::from_str("post-update"), Some(HookType::PostUpdate));
+        assert_eq!(
+            HookType::from_str("post-update"),
+            Some(HookType::PostUpdate)
+        );
         assert_eq!(HookType::from_str("unknown"), None);
     }
 

@@ -90,10 +90,12 @@ impl<R: Read> PktLineReader<R> {
             return Ok(Some(PktLine::ResponseEnd));
         }
 
-        let len_str = std::str::from_utf8(&len_buf)
-            .map_err(|e| FrontendError::InvalidProtocol(format!("invalid pkt-line length: {}", e)))?;
-        let len = u16::from_str_radix(len_str, 16)
-            .map_err(|e| FrontendError::InvalidProtocol(format!("invalid pkt-line length: {}", e)))?;
+        let len_str = std::str::from_utf8(&len_buf).map_err(|e| {
+            FrontendError::InvalidProtocol(format!("invalid pkt-line length: {}", e))
+        })?;
+        let len = u16::from_str_radix(len_str, 16).map_err(|e| {
+            FrontendError::InvalidProtocol(format!("invalid pkt-line length: {}", e))
+        })?;
 
         if len < 4 {
             return Err(FrontendError::InvalidProtocol(format!(
@@ -299,5 +301,150 @@ mod tests {
     fn test_pktline_response_end_constructor() {
         let pkt = PktLine::response_end();
         assert_eq!(pkt, PktLine::ResponseEnd);
+    }
+
+    #[test]
+    fn test_pktline_reader_io_error_not_eof() {
+        struct FailReader;
+        impl Read for FailReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "access denied",
+                ))
+            }
+        }
+        let mut reader = PktLineReader::new(FailReader);
+        let result = reader.read_pkt();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pktline_reader_invalid_utf8_length() {
+        let data = Cursor::new([0x80, 0x81, 0x82, 0x83]);
+        let mut reader = PktLineReader::new(data);
+        let result = reader.read_pkt();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pktline_reader_data_read_error() {
+        struct PartialReader {
+            data: Vec<u8>,
+            pos: usize,
+        }
+        impl Read for PartialReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.pos < 4 {
+                    let to_read = std::cmp::min(buf.len(), 4 - self.pos);
+                    buf[..to_read].copy_from_slice(&self.data[self.pos..self.pos + to_read]);
+                    self.pos += to_read;
+                    Ok(to_read)
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "connection reset",
+                    ))
+                }
+            }
+        }
+        let mut reader = PktLineReader::new(PartialReader {
+            data: b"0009".to_vec(),
+            pos: 0,
+        });
+        let result = reader.read_pkt();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pktline_read_all_empty() {
+        let data = Cursor::new(b"");
+        let mut reader = PktLineReader::new(data);
+        let packets = reader.read_all().unwrap();
+        assert!(packets.is_empty());
+    }
+
+    #[test]
+    fn test_pktline_writer_write_pkt_directly() {
+        let mut buf = Vec::new();
+        {
+            let mut writer = PktLineWriter::new(&mut buf);
+            writer.write_pkt(&PktLine::ResponseEnd).unwrap();
+        }
+        assert_eq!(&buf, b"0002");
+    }
+
+    #[test]
+    fn test_pktline_debug() {
+        let data = PktLine::Data(Bytes::from("test"));
+        let debug_str = format!("{:?}", data);
+        assert!(debug_str.contains("Data"));
+
+        let flush = PktLine::Flush;
+        let debug_str = format!("{:?}", flush);
+        assert!(debug_str.contains("Flush"));
+
+        let delim = PktLine::Delim;
+        let debug_str = format!("{:?}", delim);
+        assert!(debug_str.contains("Delim"));
+
+        let response_end = PktLine::ResponseEnd;
+        let debug_str = format!("{:?}", response_end);
+        assert!(debug_str.contains("ResponseEnd"));
+    }
+
+    #[test]
+    fn test_pktline_clone() {
+        let pkt = PktLine::data("test");
+        let cloned = pkt.clone();
+        assert_eq!(pkt, cloned);
+    }
+
+    #[test]
+    fn test_pktline_reader_length_zero() {
+        let data = Cursor::new(b"0004");
+        let mut reader = PktLineReader::new(data);
+        let pkt = reader.read_pkt().unwrap().unwrap();
+        assert_eq!(pkt, PktLine::Data(Bytes::from("")));
+    }
+
+    #[test]
+    fn test_pktline_writer_error_propagation() {
+        struct FailWriter;
+        impl Write for FailWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "broken pipe",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "broken pipe",
+                ))
+            }
+        }
+        let mut writer = PktLineWriter::new(FailWriter);
+        assert!(writer.write_data("test").is_err());
+        assert!(writer.flush().is_err());
+    }
+
+    #[test]
+    fn test_pktline_as_data_for_non_data_variants() {
+        assert!(PktLine::Delim.as_data().is_none());
+        assert!(PktLine::ResponseEnd.as_data().is_none());
+    }
+
+    #[test]
+    fn test_pktline_is_flush_for_non_flush_variants() {
+        assert!(!PktLine::Delim.is_flush());
+        assert!(!PktLine::ResponseEnd.is_flush());
+    }
+
+    #[test]
+    fn test_pktline_is_data_for_non_data_variants() {
+        assert!(!PktLine::Delim.is_data());
+        assert!(!PktLine::ResponseEnd.is_data());
     }
 }

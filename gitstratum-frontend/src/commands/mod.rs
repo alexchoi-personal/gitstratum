@@ -1,4 +1,5 @@
 pub mod ls_refs;
+#[allow(clippy::result_large_err)]
 pub mod receive_pack;
 pub mod upload_pack;
 

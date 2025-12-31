@@ -1,0 +1,18 @@
+[package]
+name = "gitstratum-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true
+
+[lints]
+workspace = true

@@ -21,7 +21,10 @@ impl RepoId {
         if id.len() > 256 {
             return Err(Error::InvalidRefName("repo id too long".to_string()));
         }
-        if !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/') {
+        if !id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/')
+        {
             return Err(Error::InvalidRefName(
                 "repo id contains invalid characters".to_string(),
             ));
@@ -38,7 +41,7 @@ impl RepoId {
     }
 
     pub fn name(&self) -> &str {
-        self.0.split('/').last().unwrap_or(&self.0)
+        self.0.split('/').next_back().unwrap_or(&self.0)
     }
 }
 
@@ -92,7 +95,9 @@ impl RefName {
 
     fn validate(name: &str) -> Result<()> {
         if name.is_empty() {
-            return Err(Error::InvalidRefName("ref name cannot be empty".to_string()));
+            return Err(Error::InvalidRefName(
+                "ref name cannot be empty".to_string(),
+            ));
         }
         if name == "HEAD" {
             return Ok(());

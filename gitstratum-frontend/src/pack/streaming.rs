@@ -2,8 +2,8 @@ use bytes::{Bytes, BytesMut};
 use gitstratum_core::Object;
 use tokio::sync::mpsc;
 
-use crate::error::Result;
 use super::assembly::{PackEntry, PackWriter};
+use crate::error::Result;
 
 #[derive(Debug, Clone)]
 pub struct PackStreamConfig {
@@ -74,7 +74,7 @@ impl StreamingPackWriter {
     }
 
     fn flush_current(&mut self) -> Result<Bytes> {
-        let old_writer = std::mem::replace(&mut self.current_writer, PackWriter::new());
+        let old_writer = std::mem::take(&mut self.current_writer);
         self.current_size = 0;
         self.object_count = 0;
         old_writer.build()
@@ -301,7 +301,9 @@ mod tests {
         let objects = vec![Object::Blob(blob)];
 
         tokio::spawn(async move {
-            stream_objects_to_channel(objects, config, tx).await.unwrap();
+            stream_objects_to_channel(objects, config, tx)
+                .await
+                .unwrap();
         });
 
         let mut received = Vec::new();

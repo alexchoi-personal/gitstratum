@@ -5,15 +5,15 @@ use k8s_openapi::api::apps::v1::{
     StatefulSetSpec, StatefulSetUpdateStrategy,
 };
 use k8s_openapi::api::autoscaling::v2::{
-    CrossVersionObjectReference, HorizontalPodAutoscaler, HorizontalPodAutoscalerBehavior,
-    HorizontalPodAutoscalerSpec, HPAScalingPolicy, HPAScalingRules, MetricSpec, MetricTarget,
+    CrossVersionObjectReference, HPAScalingPolicy, HPAScalingRules, HorizontalPodAutoscaler,
+    HorizontalPodAutoscalerBehavior, HorizontalPodAutoscalerSpec, MetricSpec, MetricTarget,
     ResourceMetricSource,
 };
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, EnvVarSource, ObjectFieldSelector,
-    PersistentVolumeClaim, PersistentVolumeClaimSpec, PodSpec, PodTemplateSpec, Probe,
-    ResourceRequirements as K8sResourceRequirements, Service, ServicePort, ServiceSpec as K8sServiceSpec,
-    VolumeMount,
+    Container, ContainerPort, EnvVar, EnvVarSource, ObjectFieldSelector, PersistentVolumeClaim,
+    PersistentVolumeClaimSpec, PodSpec, PodTemplateSpec, Probe,
+    ResourceRequirements as K8sResourceRequirements, Service, ServicePort,
+    ServiceSpec as K8sServiceSpec, VolumeMount,
 };
 use k8s_openapi::api::policy::v1::{PodDisruptionBudget, PodDisruptionBudgetSpec};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -34,12 +34,18 @@ fn cluster_name(cluster: &GitStratumCluster) -> String {
 
 fn labels(cluster: &GitStratumCluster, component: &str) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::new();
-    labels.insert("app.kubernetes.io/name".to_string(), "gitstratum".to_string());
+    labels.insert(
+        "app.kubernetes.io/name".to_string(),
+        "gitstratum".to_string(),
+    );
     labels.insert(
         "app.kubernetes.io/instance".to_string(),
         cluster_name(cluster),
     );
-    labels.insert("app.kubernetes.io/component".to_string(), component.to_string());
+    labels.insert(
+        "app.kubernetes.io/component".to_string(),
+        component.to_string(),
+    );
     labels.insert(
         "app.kubernetes.io/managed-by".to_string(),
         "gitstratum-operator".to_string(),
@@ -47,15 +53,19 @@ fn labels(cluster: &GitStratumCluster, component: &str) -> BTreeMap<String, Stri
     labels
 }
 
-fn owner_reference(cluster: &GitStratumCluster) -> Vec<k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference> {
-    vec![k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
-        api_version: "gitstratum.io/v1".to_string(),
-        kind: "GitStratumCluster".to_string(),
-        name: cluster_name(cluster),
-        uid: cluster.metadata.uid.clone().unwrap_or_default(),
-        controller: Some(true),
-        block_owner_deletion: Some(true),
-    }]
+fn owner_reference(
+    cluster: &GitStratumCluster,
+) -> Vec<k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference> {
+    vec![
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+            api_version: "gitstratum.io/v1".to_string(),
+            kind: "GitStratumCluster".to_string(),
+            name: cluster_name(cluster),
+            uid: cluster.metadata.uid.clone().unwrap_or_default(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        },
+    ]
 }
 
 pub fn build_control_plane_statefulset(cluster: &GitStratumCluster) -> StatefulSet {
@@ -159,7 +169,12 @@ pub fn build_control_plane_statefulset(cluster: &GitStratumCluster) -> StatefulS
                             let mut map = BTreeMap::new();
                             map.insert(
                                 "storage".to_string(),
-                                Quantity(spec.resources.storage.clone().unwrap_or_else(|| "50Gi".to_string())),
+                                Quantity(
+                                    spec.resources
+                                        .storage
+                                        .clone()
+                                        .unwrap_or_else(|| "50Gi".to_string()),
+                                ),
                             );
                             map
                         }),
@@ -350,7 +365,12 @@ pub fn build_metadata_statefulset(cluster: &GitStratumCluster) -> StatefulSet {
                             let mut map = BTreeMap::new();
                             map.insert(
                                 "storage".to_string(),
-                                Quantity(spec.resources.storage.clone().unwrap_or_else(|| "500Gi".to_string())),
+                                Quantity(
+                                    spec.resources
+                                        .storage
+                                        .clone()
+                                        .unwrap_or_else(|| "500Gi".to_string()),
+                                ),
                             );
                             map
                         }),
@@ -542,7 +562,12 @@ pub fn build_object_statefulset(cluster: &GitStratumCluster) -> StatefulSet {
                             let mut map = BTreeMap::new();
                             map.insert(
                                 "storage".to_string(),
-                                Quantity(spec.resources.storage.clone().unwrap_or_else(|| "500Gi".to_string())),
+                                Quantity(
+                                    spec.resources
+                                        .storage
+                                        .clone()
+                                        .unwrap_or_else(|| "500Gi".to_string()),
+                                ),
                             );
                             map
                         }),
@@ -875,9 +900,7 @@ pub fn build_frontend_hpa(cluster: &GitStratumCluster) -> HorizontalPodAutoscale
     }
 }
 
-fn build_resource_requirements(
-    spec: &crate::crd::ResourceRequirements,
-) -> K8sResourceRequirements {
+fn build_resource_requirements(spec: &crate::crd::ResourceRequirements) -> K8sResourceRequirements {
     let mut requests = BTreeMap::new();
     let mut limits = BTreeMap::new();
 
@@ -995,7 +1018,10 @@ mod tests {
         );
 
         let labels = sts.metadata.labels.as_ref().unwrap();
-        assert_eq!(labels.get("app.kubernetes.io/component"), Some(&"control-plane".to_string()));
+        assert_eq!(
+            labels.get("app.kubernetes.io/component"),
+            Some(&"control-plane".to_string())
+        );
     }
 
     #[test]
@@ -1031,10 +1057,7 @@ mod tests {
         let cluster = create_test_cluster();
         let sts = build_metadata_statefulset(&cluster);
 
-        assert_eq!(
-            sts.metadata.name,
-            Some("test-cluster-metadata".to_string())
-        );
+        assert_eq!(sts.metadata.name, Some("test-cluster-metadata".to_string()));
 
         let spec = sts.spec.as_ref().unwrap();
         assert_eq!(spec.replicas, Some(3));
@@ -1112,10 +1135,7 @@ mod tests {
         let cluster = create_test_cluster();
         let svc = build_frontend_service(&cluster);
 
-        assert_eq!(
-            svc.metadata.name,
-            Some("test-cluster-frontend".to_string())
-        );
+        assert_eq!(svc.metadata.name, Some("test-cluster-frontend".to_string()));
 
         let spec = svc.spec.as_ref().unwrap();
         assert_eq!(spec.type_, Some("LoadBalancer".to_string()));
@@ -1172,7 +1192,10 @@ mod tests {
         let cluster = create_test_cluster();
         let labels = labels(&cluster, "control-plane");
 
-        assert_eq!(labels.get("app.kubernetes.io/name"), Some(&"gitstratum".to_string()));
+        assert_eq!(
+            labels.get("app.kubernetes.io/name"),
+            Some(&"gitstratum".to_string())
+        );
         assert_eq!(
             labels.get("app.kubernetes.io/instance"),
             Some(&"test-cluster".to_string())
@@ -1217,13 +1240,11 @@ mod tests {
     #[test]
     fn test_frontend_service_custom_target_port() {
         let mut cluster = create_test_cluster();
-        cluster.spec.frontend.service.ports = vec![
-            CrdServicePort {
-                name: "custom".to_string(),
-                port: 8080,
-                target_port: Some(8081),
-            },
-        ];
+        cluster.spec.frontend.service.ports = vec![CrdServicePort {
+            name: "custom".to_string(),
+            port: 8080,
+            target_port: Some(8081),
+        }];
 
         let svc = build_frontend_service(&cluster);
         let spec = svc.spec.as_ref().unwrap();
@@ -1243,7 +1264,13 @@ mod tests {
         let spec = sts.spec.as_ref().unwrap();
         let pvcs = spec.volume_claim_templates.as_ref().unwrap();
         let pvc_spec = pvcs[0].spec.as_ref().unwrap();
-        let requests = pvc_spec.resources.as_ref().unwrap().requests.as_ref().unwrap();
+        let requests = pvc_spec
+            .resources
+            .as_ref()
+            .unwrap()
+            .requests
+            .as_ref()
+            .unwrap();
         let storage = requests.get("storage").unwrap();
 
         assert_eq!(storage.0, "50Gi");
@@ -1258,7 +1285,13 @@ mod tests {
         let spec = sts.spec.as_ref().unwrap();
         let pvcs = spec.volume_claim_templates.as_ref().unwrap();
         let pvc_spec = pvcs[0].spec.as_ref().unwrap();
-        let requests = pvc_spec.resources.as_ref().unwrap().requests.as_ref().unwrap();
+        let requests = pvc_spec
+            .resources
+            .as_ref()
+            .unwrap()
+            .requests
+            .as_ref()
+            .unwrap();
         let storage = requests.get("storage").unwrap();
 
         assert_eq!(storage.0, "500Gi");
@@ -1273,7 +1306,13 @@ mod tests {
         let spec = sts.spec.as_ref().unwrap();
         let pvcs = spec.volume_claim_templates.as_ref().unwrap();
         let pvc_spec = pvcs[0].spec.as_ref().unwrap();
-        let requests = pvc_spec.resources.as_ref().unwrap().requests.as_ref().unwrap();
+        let requests = pvc_spec
+            .resources
+            .as_ref()
+            .unwrap()
+            .requests
+            .as_ref()
+            .unwrap();
         let storage = requests.get("storage").unwrap();
 
         assert_eq!(storage.0, "500Gi");

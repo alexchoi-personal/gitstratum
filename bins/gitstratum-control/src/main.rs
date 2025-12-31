@@ -29,7 +29,9 @@ async fn main() -> Result<()> {
 
     let node_id = args.node_id.unwrap_or(1);
 
-    let data_dir = args.data_dir.unwrap_or_else(|| PathBuf::from("./data/control"));
+    let data_dir = args
+        .data_dir
+        .unwrap_or_else(|| PathBuf::from("./data/control"));
 
     println!(
         "[INFO] Starting GitStratum Control Plane (node_id={}, grpc={}, raft={}, data_dir={})",

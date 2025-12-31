@@ -50,7 +50,11 @@ impl PackCacheKey {
         let mut haves = haves;
         wants.sort();
         haves.sort();
-        Self { repo_id, wants, haves }
+        Self {
+            repo_id,
+            wants,
+            haves,
+        }
     }
 
     pub fn cache_id(&self) -> String {
@@ -214,12 +218,7 @@ mod tests {
 
     #[test]
     fn test_pack_cache_entry_expired() {
-        let mut entry = PackCacheEntry::new(
-            "pack-123".to_string(),
-            vec![],
-            1024,
-            0,
-        );
+        let mut entry = PackCacheEntry::new("pack-123".to_string(), vec![], 1024, 0);
         entry.expires_at = entry.created_at - 1;
         assert!(entry.is_expired());
     }
@@ -296,8 +295,14 @@ mod tests {
         let key1 = PackCacheKey::new(repo1.clone(), vec![Oid::hash(b"want")], vec![]);
         let key2 = PackCacheKey::new(repo2.clone(), vec![Oid::hash(b"want")], vec![]);
 
-        storage.put(key1.clone(), PackCacheEntry::new("pack-1".to_string(), vec![], 1024, 3600));
-        storage.put(key2.clone(), PackCacheEntry::new("pack-2".to_string(), vec![], 1024, 3600));
+        storage.put(
+            key1.clone(),
+            PackCacheEntry::new("pack-1".to_string(), vec![], 1024, 3600),
+        );
+        storage.put(
+            key2.clone(),
+            PackCacheEntry::new("pack-2".to_string(), vec![], 1024, 3600),
+        );
 
         storage.remove_by_repo(&repo1);
 
@@ -316,11 +321,17 @@ mod tests {
         let key1 = PackCacheKey::new(repo_id.clone(), vec![Oid::hash(b"want1")], vec![]);
         let key2 = PackCacheKey::new(repo_id, vec![Oid::hash(b"want2")], vec![]);
 
-        storage.put(key1.clone(), PackCacheEntry::new("pack-1".to_string(), vec![], 1024, 3600));
+        storage.put(
+            key1.clone(),
+            PackCacheEntry::new("pack-1".to_string(), vec![], 1024, 3600),
+        );
         assert_eq!(storage.current_size(), 1024);
         assert_eq!(storage.entry_count(), 1);
 
-        storage.put(key2, PackCacheEntry::new("pack-2".to_string(), vec![], 2048, 3600));
+        storage.put(
+            key2,
+            PackCacheEntry::new("pack-2".to_string(), vec![], 2048, 3600),
+        );
         assert_eq!(storage.current_size(), 3072);
         assert_eq!(storage.entry_count(), 2);
 
@@ -334,7 +345,10 @@ mod tests {
         let repo_id = RepoId::new("test/repo").unwrap();
 
         let key = PackCacheKey::new(repo_id, vec![Oid::hash(b"want")], vec![]);
-        storage.put(key, PackCacheEntry::new("pack-1".to_string(), vec![], 1024, 3600));
+        storage.put(
+            key,
+            PackCacheEntry::new("pack-1".to_string(), vec![], 1024, 3600),
+        );
 
         storage.clear();
         assert_eq!(storage.current_size(), 0);
@@ -350,5 +364,133 @@ mod tests {
         let entry = PackCacheEntry::new("pack-1".to_string(), vec![], 2048, 3600);
 
         assert!(!storage.put(key, entry));
+    }
+
+    #[test]
+    fn test_pack_cache_storage_get_expired() {
+        let storage = PackCacheStorage::new(1024 * 1024);
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let key = PackCacheKey::new(repo_id, vec![Oid::hash(b"want")], vec![]);
+
+        let mut entry = PackCacheEntry::new("pack-123".to_string(), vec![], 1024, 3600);
+        entry.expires_at = entry.created_at - 1;
+        storage.put(key.clone(), entry);
+
+        assert_eq!(storage.current_size(), 1024);
+        assert!(storage.get(&key).is_none());
+        assert_eq!(storage.current_size(), 0);
+    }
+
+    #[test]
+    fn test_pack_cache_storage_remove_nonexistent() {
+        let storage = PackCacheStorage::new(1024 * 1024);
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let key = PackCacheKey::new(repo_id, vec![Oid::hash(b"want")], vec![]);
+
+        assert!(!storage.remove(&key));
+    }
+
+    #[test]
+    fn test_pack_cache_storage_evict_expired_on_put() {
+        let storage = PackCacheStorage::new(2000);
+        let repo_id = RepoId::new("test/repo").unwrap();
+
+        let key1 = PackCacheKey::new(repo_id.clone(), vec![Oid::hash(b"want1")], vec![]);
+        let mut entry1 = PackCacheEntry::new("pack-1".to_string(), vec![], 1000, 3600);
+        entry1.expires_at = entry1.created_at - 1;
+        storage.put(key1.clone(), entry1);
+
+        let key2 = PackCacheKey::new(repo_id, vec![Oid::hash(b"want2")], vec![]);
+        let entry2 = PackCacheEntry::new("pack-2".to_string(), vec![], 1500, 3600);
+        assert!(storage.put(key2.clone(), entry2));
+
+        assert!(storage.get(&key1).is_none());
+        assert!(storage.get(&key2).is_some());
+    }
+
+    #[test]
+    fn test_pack_cache_key_with_haves() {
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let wants = vec![Oid::hash(b"want1")];
+        let haves = vec![Oid::hash(b"have1"), Oid::hash(b"have2")];
+
+        let key = PackCacheKey::new(repo_id, wants, haves);
+        let cache_id = key.cache_id();
+        assert!(cache_id.contains("test/repo"));
+        assert!(cache_id.contains(","));
+    }
+
+    #[test]
+    fn test_pack_cache_key_empty_haves() {
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let wants = vec![Oid::hash(b"want1")];
+        let haves: Vec<Oid> = vec![];
+
+        let key = PackCacheKey::new(repo_id, wants, haves);
+        let cache_id = key.cache_id();
+        assert!(cache_id.ends_with(":"));
+    }
+
+    #[test]
+    fn test_pack_cache_key_debug_clone() {
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let key = PackCacheKey::new(repo_id, vec![Oid::hash(b"want")], vec![]);
+        let cloned = key.clone();
+        assert_eq!(key, cloned);
+        assert!(format!("{:?}", key).contains("PackCacheKey"));
+    }
+
+    #[test]
+    fn test_pack_cache_entry_debug_clone() {
+        let entry =
+            PackCacheEntry::new("pack-123".to_string(), vec![Oid::hash(b"obj")], 1024, 3600);
+        let cloned = entry.clone();
+        assert_eq!(cloned.pack_id, entry.pack_id);
+        assert_eq!(cloned.size_bytes, entry.size_bytes);
+        assert_eq!(cloned.objects.len(), entry.objects.len());
+        assert!(format!("{:?}", entry).contains("pack-123"));
+    }
+
+    #[test]
+    fn test_pack_cache_storage_remove_by_repo_empty() {
+        let storage = PackCacheStorage::new(1024 * 1024);
+        let repo_id = RepoId::new("test/repo").unwrap();
+
+        storage.remove_by_repo(&repo_id);
+        assert_eq!(storage.entry_count(), 0);
+    }
+
+    #[test]
+    fn test_pack_cache_key_hash_equality() {
+        use std::collections::HashSet;
+
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let oid1 = Oid::hash(b"oid1");
+        let oid2 = Oid::hash(b"oid2");
+
+        let key1 = PackCacheKey::new(repo_id.clone(), vec![oid1, oid2], vec![]);
+        let key2 = PackCacheKey::new(repo_id, vec![oid2, oid1], vec![]);
+
+        let mut set = HashSet::new();
+        set.insert(key1);
+        assert!(set.contains(&key2));
+    }
+
+    #[test]
+    fn test_pack_cache_storage_no_eviction_when_space_available() {
+        let storage = PackCacheStorage::new(5000);
+        let repo_id = RepoId::new("test/repo").unwrap();
+
+        let key1 = PackCacheKey::new(repo_id.clone(), vec![Oid::hash(b"want1")], vec![]);
+        let entry1 = PackCacheEntry::new("pack-1".to_string(), vec![], 1000, 3600);
+        storage.put(key1.clone(), entry1);
+
+        let key2 = PackCacheKey::new(repo_id, vec![Oid::hash(b"want2")], vec![]);
+        let entry2 = PackCacheEntry::new("pack-2".to_string(), vec![], 1000, 3600);
+        storage.put(key2.clone(), entry2);
+
+        assert!(storage.get(&key1).is_some());
+        assert!(storage.get(&key2).is_some());
+        assert_eq!(storage.entry_count(), 2);
     }
 }

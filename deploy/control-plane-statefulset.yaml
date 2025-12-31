@@ -1,0 +1,167 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gitstratum-control-plane
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  serviceName: gitstratum-control-plane-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: control-plane
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitstratum
+        app.kubernetes.io/component: control-plane
+        app.kubernetes.io/part-of: gitstratum
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gitstratum-control-plane
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: gitstratum
+                  app.kubernetes.io/component: control-plane
+              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gitstratum
+                    app.kubernetes.io/component: control-plane
+                topologyKey: topology.kubernetes.io/zone
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitstratum
+              app.kubernetes.io/component: control-plane
+      containers:
+        - name: control-plane
+          image: gitstratum/control-plane:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 9091
+              protocol: TCP
+            - name: raft
+              containerPort: 9092
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: GITSTRATUM_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GITSTRATUM_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GITSTRATUM_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: RAFT_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RAFT_PEERS
+              value: "gitstratum-control-plane-0.gitstratum-control-plane-headless.gitstratum-system.svc.cluster.local:9092,gitstratum-control-plane-1.gitstratum-control-plane-headless.gitstratum-system.svc.cluster.local:9092,gitstratum-control-plane-2.gitstratum-control-plane-headless.gitstratum-system.svc.cluster.local:9092"
+            - name: RAFT_ELECTION_TIMEOUT
+              value: "1s"
+            - name: RAFT_HEARTBEAT_INTERVAL
+              value: "100ms"
+            - name: AUTH_TOKEN_TTL
+              value: "5m"
+            - name: RATE_LIMIT_PER_CLIENT
+              value: "100"
+            - name: RATE_LIMIT_PER_REPO
+              value: "1000"
+            - name: RATE_LIMIT_GLOBAL
+              value: "10000"
+            - name: DATA_DIR
+              value: "/data"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: RUST_BACKTRACE
+              value: "1"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          livenessProbe:
+            grpc:
+              port: 9091
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            grpc:
+              port: 9091
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            grpc:
+              port: 9091
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      terminationGracePeriodSeconds: 60
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: gitstratum
+          app.kubernetes.io/component: control-plane
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: fast-ssd
+        resources:
+          requests:
+            storage: 10Gi

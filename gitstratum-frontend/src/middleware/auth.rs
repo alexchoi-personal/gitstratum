@@ -75,7 +75,9 @@ where
     pub async fn authenticate_token(&self, token: &str) -> Result<AuthResult> {
         let result = self.validator.validate_token(token).await?;
         if self.require_auth && !result.authenticated {
-            return Err(FrontendError::InvalidProtocol("authentication required".to_string()));
+            return Err(FrontendError::InvalidProtocol(
+                "authentication required".to_string(),
+            ));
         }
         Ok(result)
     }
@@ -83,7 +85,9 @@ where
     pub async fn authenticate_ssh(&self, key_fingerprint: &str) -> Result<AuthResult> {
         let result = self.validator.validate_ssh_key(key_fingerprint).await?;
         if self.require_auth && !result.authenticated {
-            return Err(FrontendError::InvalidProtocol("authentication required".to_string()));
+            return Err(FrontendError::InvalidProtocol(
+                "authentication required".to_string(),
+            ));
         }
         Ok(result)
     }
@@ -219,7 +223,9 @@ mod tests {
         assert!(middleware.check_read_permission(&auth, "repo").is_ok());
 
         let auth_no_read = AuthResult::authenticated("user");
-        assert!(middleware.check_read_permission(&auth_no_read, "repo").is_err());
+        assert!(middleware
+            .check_read_permission(&auth_no_read, "repo")
+            .is_err());
     }
 
     #[tokio::test]
@@ -233,6 +239,8 @@ mod tests {
         assert!(middleware.check_write_permission(&auth, "repo").is_ok());
 
         let auth_no_write = AuthResult::authenticated("user").with_permission("read");
-        assert!(middleware.check_write_permission(&auth_no_write, "repo").is_err());
+        assert!(middleware
+            .check_write_permission(&auth_no_write, "repo")
+            .is_err());
     }
 }

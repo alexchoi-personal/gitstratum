@@ -19,9 +19,11 @@ pub use client::{
     RebalanceStatus as ClientRebalanceStatus,
 };
 pub use error::{ControlPlaneError, Result};
-pub use membership::{ClusterState, ClusterStateSnapshot, ExtendedNodeInfo, LockInfo, NodeType, RefLockKey};
+pub use membership::{
+    ClusterState, ClusterStateSnapshot, ExtendedNodeInfo, LockInfo, NodeType, RefLockKey,
+};
 pub use raft::{
-    create_stores, ControlPlaneRaft, ControlPlaneStore, LogStore, NodeId,
-    Request as RaftRequest, Response as RaftResponse, StateMachineStore, TypeConfig,
+    create_stores, ControlPlaneRaft, ControlPlaneStore, LogStore, NodeId, Request as RaftRequest,
+    Response as RaftResponse, StateMachineStore, TypeConfig,
 };
 pub use server::{start_server, ControlPlaneServer};

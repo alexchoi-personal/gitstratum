@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn};
 
+use super::hot_repos::HotRepoTracker;
 use super::{PackCache, PackCacheKey, PackData};
 use crate::store::ObjectStore;
 
@@ -17,6 +18,8 @@ pub struct PrecomputeConfig {
     pub check_interval: Duration,
     pub default_depth: u32,
     pub max_depth: u32,
+    pub shallow_depth: u32,
+    pub hot_repo_threshold: u64,
 }
 
 impl PrecomputeConfig {
@@ -33,6 +36,8 @@ impl PrecomputeConfig {
             check_interval,
             default_depth,
             max_depth,
+            shallow_depth: 1,
+            hot_repo_threshold: 10,
         }
     }
 }
@@ -45,6 +50,8 @@ impl Default for PrecomputeConfig {
             check_interval: Duration::from_secs(60),
             default_depth: 50,
             max_depth: 500,
+            shallow_depth: 1,
+            hot_repo_threshold: 10,
         }
     }
 }
@@ -86,14 +93,12 @@ pub struct PackPrecomputer {
     request_rx: Option<mpsc::Receiver<PrecomputeRequest>>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
+    hot_tracker: Option<Arc<HotRepoTracker>>,
+    ref_tips: Arc<dashmap::DashMap<String, Oid>>,
 }
 
 impl PackPrecomputer {
-    pub fn new(
-        config: PrecomputeConfig,
-        cache: Arc<PackCache>,
-        store: Arc<ObjectStore>,
-    ) -> Self {
+    pub fn new(config: PrecomputeConfig, cache: Arc<PackCache>, store: Arc<ObjectStore>) -> Self {
         let (request_tx, request_rx) = mpsc::channel(config.queue_size);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -106,7 +111,68 @@ impl PackPrecomputer {
             request_rx: Some(request_rx),
             shutdown_tx,
             shutdown_rx,
+            hot_tracker: None,
+            ref_tips: Arc::new(dashmap::DashMap::new()),
         }
+    }
+
+    pub fn with_hot_tracker(mut self, tracker: Arc<HotRepoTracker>) -> Self {
+        self.hot_tracker = Some(tracker);
+        self
+    }
+
+    pub fn set_ref_tip(&self, repo_id: &str, ref_name: &str, tip_oid: Oid) {
+        let key = format!("{}:{}", repo_id, ref_name);
+        self.ref_tips.insert(key, tip_oid);
+    }
+
+    pub fn get_ref_tip(&self, repo_id: &str, ref_name: &str) -> Option<Oid> {
+        let key = format!("{}:{}", repo_id, ref_name);
+        self.ref_tips.get(&key).map(|entry| *entry.value())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn precompute_for_hot_repos(&self) {
+        let tracker = match &self.hot_tracker {
+            Some(t) => t,
+            None => {
+                debug!("no hot tracker configured, skipping hot repo precompute");
+                return;
+            }
+        };
+
+        let hot_repos = tracker.get_hot_repos(self.config.hot_repo_threshold);
+
+        if hot_repos.is_empty() {
+            debug!("no hot repos found");
+            return;
+        }
+
+        info!(count = hot_repos.len(), "precomputing packs for hot repos");
+
+        for repo_id in hot_repos {
+            if let Some(tip_oid) = self.get_ref_tip(&repo_id, "refs/heads/main") {
+                let full_clone_request = PrecomputeRequest::new(
+                    &repo_id,
+                    "refs/heads/main",
+                    tip_oid,
+                    self.config.default_depth,
+                );
+                self.submit(full_clone_request);
+
+                let shallow_request = PrecomputeRequest::new(
+                    &repo_id,
+                    "refs/heads/main",
+                    tip_oid,
+                    self.config.shallow_depth,
+                );
+                self.submit(shallow_request);
+            }
+        }
+    }
+
+    pub fn hot_tracker(&self) -> Option<&Arc<HotRepoTracker>> {
+        self.hot_tracker.as_ref()
     }
 
     #[instrument(skip(self))]
@@ -139,7 +205,10 @@ impl PackPrecomputer {
         let mut rx = self.request_rx.take().expect("start called twice");
         let mut shutdown_rx = self.shutdown_rx.clone();
 
-        info!(workers = self.config.worker_count, "starting pack precomputer");
+        info!(
+            workers = self.config.worker_count,
+            "starting pack precomputer"
+        );
 
         loop {
             tokio::select! {
@@ -334,12 +403,7 @@ mod tests {
 
         let request = PrecomputeRequest::new("repo1", "refs/heads/main", Oid::hash(b"tip"), 50);
 
-        let pack = PackData::new(
-            Bytes::from(vec![0u8; 100]),
-            10,
-            100,
-            Oid::hash(b"tip"),
-        );
+        let pack = PackData::new(Bytes::from(vec![0u8; 100]), 10, 100, Oid::hash(b"tip"));
         cache.put(request.cache_key(), pack).unwrap();
 
         assert!(!precomputer.submit(request));
@@ -398,5 +462,103 @@ mod tests {
         let config = PrecomputeConfig::default();
         let cloned = config.clone();
         assert_eq!(cloned.worker_count, config.worker_count);
+    }
+
+    #[test]
+    fn test_precompute_config_new_fields() {
+        let config = PrecomputeConfig::default();
+        assert_eq!(config.shallow_depth, 1);
+        assert_eq!(config.hot_repo_threshold, 10);
+    }
+
+    #[test]
+    fn test_with_hot_tracker() {
+        let (store, _dir) = create_test_store();
+        let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
+        let config = PrecomputeConfig::default();
+
+        let tracker = Arc::new(HotRepoTracker::new(Duration::from_secs(60)));
+        let precomputer = PackPrecomputer::new(config, cache, store).with_hot_tracker(tracker);
+
+        assert!(precomputer.hot_tracker().is_some());
+    }
+
+    #[test]
+    fn test_set_and_get_ref_tip() {
+        let (store, _dir) = create_test_store();
+        let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
+        let config = PrecomputeConfig::default();
+        let precomputer = PackPrecomputer::new(config, cache, store);
+
+        let oid = Oid::hash(b"tip");
+        precomputer.set_ref_tip("repo1", "refs/heads/main", oid);
+
+        assert_eq!(
+            precomputer.get_ref_tip("repo1", "refs/heads/main"),
+            Some(oid)
+        );
+        assert_eq!(precomputer.get_ref_tip("repo1", "refs/heads/dev"), None);
+        assert_eq!(precomputer.get_ref_tip("repo2", "refs/heads/main"), None);
+    }
+
+    #[tokio::test]
+    async fn test_precompute_for_hot_repos_no_tracker() {
+        let (store, _dir) = create_test_store();
+        let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
+        let config = PrecomputeConfig::default();
+        let precomputer = PackPrecomputer::new(config, cache, store);
+
+        precomputer.precompute_for_hot_repos().await;
+        assert_eq!(precomputer.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_precompute_for_hot_repos_no_hot_repos() {
+        let (store, _dir) = create_test_store();
+        let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
+        let config = PrecomputeConfig::default();
+
+        let tracker = Arc::new(HotRepoTracker::new(Duration::from_secs(60)));
+        let precomputer = PackPrecomputer::new(config, cache, store).with_hot_tracker(tracker);
+
+        precomputer.precompute_for_hot_repos().await;
+        assert_eq!(precomputer.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_precompute_for_hot_repos_with_repos() {
+        let (store, _dir) = create_test_store();
+        let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
+        let mut config = PrecomputeConfig::default();
+        config.hot_repo_threshold = 5;
+
+        let tracker = Arc::new(HotRepoTracker::new(Duration::from_secs(60)));
+        for _ in 0..10 {
+            tracker.record_access("hot-repo");
+        }
+
+        let precomputer = PackPrecomputer::new(config, cache, store).with_hot_tracker(tracker);
+
+        let tip_oid = Oid::hash(b"tip");
+        precomputer.set_ref_tip("hot-repo", "refs/heads/main", tip_oid);
+
+        precomputer.precompute_for_hot_repos().await;
+        assert_eq!(precomputer.pending_count(), 2);
+    }
+
+    #[test]
+    fn test_hot_tracker_accessor() {
+        let (store, _dir) = create_test_store();
+        let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
+        let config = PrecomputeConfig::default();
+
+        let precomputer_without_tracker =
+            PackPrecomputer::new(config.clone(), cache.clone(), store.clone());
+        assert!(precomputer_without_tracker.hot_tracker().is_none());
+
+        let tracker = Arc::new(HotRepoTracker::new(Duration::from_secs(60)));
+        let precomputer_with_tracker =
+            PackPrecomputer::new(config, cache, store).with_hot_tracker(tracker.clone());
+        assert!(precomputer_with_tracker.hot_tracker().is_some());
     }
 }

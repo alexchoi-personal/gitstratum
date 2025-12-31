@@ -58,7 +58,10 @@ where
     R: RefSource + 'static,
 {
     pub fn new(ref_source: Arc<R>, repo_id: String) -> Self {
-        Self { ref_source, repo_id }
+        Self {
+            ref_source,
+            repo_id,
+        }
     }
 
     pub async fn list(&self, options: &LsRefsOptions) -> Result<Vec<(String, Oid)>> {
@@ -199,10 +202,16 @@ mod tests {
         let oid = Oid::hash(b"commit");
         source.add_ref("refs/heads/main", oid).await;
 
-        let result = source.get_ref("test-repo", "refs/heads/main").await.unwrap();
+        let result = source
+            .get_ref("test-repo", "refs/heads/main")
+            .await
+            .unwrap();
         assert_eq!(result, Some(oid));
 
-        let missing = source.get_ref("test-repo", "refs/heads/missing").await.unwrap();
+        let missing = source
+            .get_ref("test-repo", "refs/heads/missing")
+            .await
+            .unwrap();
         assert!(missing.is_none());
     }
 }

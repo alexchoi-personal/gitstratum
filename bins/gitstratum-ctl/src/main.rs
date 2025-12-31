@@ -148,12 +148,10 @@ async fn main() -> Result<()> {
             }
         }
 
-        Command::RemoveNode { node_id } => {
-            match client.remove_node(&node_id).await {
-                Ok(()) => println!("Node {} removed successfully", node_id),
-                Err(e) => println!("Failed to remove node {}: {}", node_id, e),
-            }
-        }
+        Command::RemoveNode { node_id } => match client.remove_node(&node_id).await {
+            Ok(()) => println!("Node {} removed successfully", node_id),
+            Err(e) => println!("Failed to remove node {}: {}", node_id, e),
+        },
 
         Command::SetNodeState { node_id, state } => {
             match client.set_node_state(&node_id, state).await {
@@ -162,19 +160,17 @@ async fn main() -> Result<()> {
             }
         }
 
-        Command::Rebalance { reason } => {
-            match client.trigger_rebalance(&reason).await {
-                Ok(Some(rebalance_id)) => {
-                    println!("Rebalance started with ID: {}", rebalance_id);
-                }
-                Ok(None) => {
-                    println!("Rebalance did not start");
-                }
-                Err(e) => {
-                    println!("Failed to start rebalance: {}", e);
-                }
+        Command::Rebalance { reason } => match client.trigger_rebalance(&reason).await {
+            Ok(Some(rebalance_id)) => {
+                println!("Rebalance started with ID: {}", rebalance_id);
             }
-        }
+            Ok(None) => {
+                println!("Rebalance did not start");
+            }
+            Err(e) => {
+                println!("Failed to start rebalance: {}", e);
+            }
+        },
 
         Command::RebalanceStatus { rebalance_id } => {
             match client.get_rebalance_status(&rebalance_id).await {

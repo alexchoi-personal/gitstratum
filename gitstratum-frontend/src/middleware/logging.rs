@@ -32,7 +32,12 @@ impl LoggingMiddleware {
         self
     }
 
-    pub fn log_request_start(&self, request_id: &str, operation: &str, repo_id: &str) -> RequestLog {
+    pub fn log_request_start(
+        &self,
+        request_id: &str,
+        operation: &str,
+        repo_id: &str,
+    ) -> RequestLog {
         if self.include_request_id {
             info!(request_id, operation, repo_id, "request started");
         } else {
@@ -195,5 +200,119 @@ mod tests {
     fn test_log_rate_limit() {
         let logging = LoggingMiddleware::new();
         logging.log_rate_limit("req-1", "user-1", "user");
+    }
+
+    #[test]
+    fn test_log_request_start_without_request_id() {
+        let logging = LoggingMiddleware::new().with_request_id(false);
+        let log = logging.log_request_start("req-1", "push", "repo-2");
+
+        assert_eq!(log.request_id(), "req-1");
+        assert_eq!(log.operation(), "push");
+        assert_eq!(log.repo_id(), "repo-2");
+    }
+
+    #[test]
+    fn test_log_request_success_without_timing() {
+        let logging = LoggingMiddleware::new().with_timing(false);
+        let log = logging.log_request_start("req-2", "clone", "repo-3");
+        logging.log_request_success(&log, Some(2048));
+    }
+
+    #[test]
+    fn test_log_request_success_without_bytes() {
+        let logging = LoggingMiddleware::new();
+        let log = logging.log_request_start("req-3", "ls-refs", "repo-4");
+        logging.log_request_success(&log, None);
+    }
+
+    #[test]
+    fn test_log_request_success_without_timing_and_bytes() {
+        let logging = LoggingMiddleware::new().with_timing(false);
+        let log = logging.log_request_start("req-4", "fetch", "repo-5");
+        logging.log_request_success(&log, None);
+    }
+
+    #[test]
+    fn test_with_level_trace() {
+        let logging = LoggingMiddleware::new().with_level(Level::TRACE);
+        assert_eq!(logging.level, Level::TRACE);
+    }
+
+    #[test]
+    fn test_with_level_error() {
+        let logging = LoggingMiddleware::new().with_level(Level::ERROR);
+        assert_eq!(logging.level, Level::ERROR);
+    }
+
+    #[test]
+    fn test_with_level_warn() {
+        let logging = LoggingMiddleware::new().with_level(Level::WARN);
+        assert_eq!(logging.level, Level::WARN);
+    }
+
+    #[test]
+    fn test_request_log_elapsed_millis_zero() {
+        let logging = LoggingMiddleware::new();
+        let log = logging.log_request_start("req-5", "fetch", "repo-6");
+        let elapsed = log.elapsed_millis();
+        assert!(elapsed < 100);
+    }
+
+    #[test]
+    fn test_logging_middleware_debug_impl() {
+        let logging = LoggingMiddleware::new();
+        let debug_str = format!("{:?}", logging);
+        assert!(debug_str.contains("LoggingMiddleware"));
+    }
+
+    #[test]
+    fn test_logging_middleware_clone() {
+        let logging = LoggingMiddleware::new()
+            .with_level(Level::DEBUG)
+            .with_timing(false)
+            .with_request_id(false);
+        let cloned = logging.clone();
+
+        assert_eq!(cloned.level, Level::DEBUG);
+        assert!(!cloned.include_timing);
+        assert!(!cloned.include_request_id);
+    }
+
+    #[test]
+    fn test_full_request_lifecycle_with_error() {
+        let logging = LoggingMiddleware::new();
+        let log = logging.log_request_start("req-6", "push", "repo-7");
+        logging.log_request_error(&log, "permission denied");
+    }
+
+    #[test]
+    fn test_auth_and_rate_limit_sequence() {
+        let logging = LoggingMiddleware::new();
+        logging.log_auth_success("req-7", "user-2");
+        logging.log_rate_limit("req-7", "user-2", "global");
+    }
+
+    #[test]
+    fn test_multiple_log_levels() {
+        let info_logging = LoggingMiddleware::new().with_level(Level::INFO);
+        let debug_logging = LoggingMiddleware::new().with_level(Level::DEBUG);
+        let trace_logging = LoggingMiddleware::new().with_level(Level::TRACE);
+
+        assert_eq!(info_logging.level, Level::INFO);
+        assert_eq!(debug_logging.level, Level::DEBUG);
+        assert_eq!(trace_logging.level, Level::TRACE);
+    }
+
+    #[test]
+    fn test_request_log_accessors_multiple_times() {
+        let logging = LoggingMiddleware::new();
+        let log = logging.log_request_start("multi-req", "fetch", "multi-repo");
+
+        for _ in 0..3 {
+            assert_eq!(log.request_id(), "multi-req");
+            assert_eq!(log.operation(), "fetch");
+            assert_eq!(log.repo_id(), "multi-repo");
+        }
     }
 }

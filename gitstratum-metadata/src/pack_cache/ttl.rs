@@ -67,7 +67,11 @@ impl TtlCalculator {
         self.calculate(temperature)
     }
 
-    pub fn calculate_from_access_count(&self, access_count: u64, time_window_secs: u64) -> Duration {
+    pub fn calculate_from_access_count(
+        &self,
+        access_count: u64,
+        time_window_secs: u64,
+    ) -> Duration {
         let rate = access_count as f64 / time_window_secs as f64;
 
         let temperature = if rate >= 1.0 {

@@ -276,10 +276,7 @@ impl ConsistentHashRing {
         let mut result = Vec::with_capacity(self.replication_factor);
         let mut seen_nodes = std::collections::HashSet::new();
 
-        let iter = ring
-            .range(position..)
-            .chain(ring.iter())
-            .map(|(_, v)| v);
+        let iter = ring.range(position..).chain(ring.iter()).map(|(_, v)| v);
 
         for vnode in iter {
             if seen_nodes.contains(&vnode.node_id) {
@@ -474,7 +471,10 @@ mod tests {
             .unwrap();
 
         let result = ring.nodes_for_key(b"test");
-        assert!(matches!(result, Err(HashRingError::InsufficientNodes(3, 2))));
+        assert!(matches!(
+            result,
+            Err(HashRingError::InsufficientNodes(3, 2))
+        ));
     }
 
     #[test]
@@ -577,10 +577,7 @@ mod tests {
 
     #[test]
     fn test_with_nodes() {
-        let nodes = vec![
-            create_test_node("node-1"),
-            create_test_node("node-2"),
-        ];
+        let nodes = vec![create_test_node("node-1"), create_test_node("node-2")];
         let ring = ConsistentHashRing::with_nodes(nodes, 16, 2).unwrap();
         assert_eq!(ring.node_count(), 2);
     }
@@ -625,7 +622,8 @@ mod tests {
             .build()
             .unwrap();
 
-        ring.set_node_state(&NodeId::new("node-1"), NodeState::Down).unwrap();
+        ring.set_node_state(&NodeId::new("node-1"), NodeState::Down)
+            .unwrap();
 
         let active = ring.active_nodes();
         assert_eq!(active.len(), 1);
@@ -694,7 +692,10 @@ mod tests {
     fn test_nodes_for_key_empty() {
         let ring = ConsistentHashRing::new(16, 2);
         let result = ring.nodes_for_key(b"test");
-        assert!(matches!(result, Err(HashRingError::InsufficientNodes(_, _))));
+        assert!(matches!(
+            result,
+            Err(HashRingError::InsufficientNodes(_, _))
+        ));
     }
 
     #[test]
@@ -705,7 +706,8 @@ mod tests {
         ring.add_node(create_test_node("node-1")).unwrap();
         assert_eq!(ring.version(), 1);
 
-        ring.set_node_state(&NodeId::new("node-1"), NodeState::Draining).unwrap();
+        ring.set_node_state(&NodeId::new("node-1"), NodeState::Draining)
+            .unwrap();
         assert_eq!(ring.version(), 2);
 
         ring.remove_node(&NodeId::new("node-1")).unwrap();
@@ -722,7 +724,8 @@ mod tests {
             .build()
             .unwrap();
 
-        ring.set_node_state(&NodeId::new("node-1"), NodeState::Draining).unwrap();
+        ring.set_node_state(&NodeId::new("node-1"), NodeState::Draining)
+            .unwrap();
 
         let nodes = ring.nodes_for_key(b"test").unwrap();
         assert_eq!(nodes.len(), 2);
@@ -757,7 +760,10 @@ mod tests {
             .unwrap();
 
         let result = ring.nodes_for_key(b"test-key");
-        assert!(matches!(result, Err(HashRingError::InsufficientNodes(3, _))));
+        assert!(matches!(
+            result,
+            Err(HashRingError::InsufficientNodes(3, _))
+        ));
     }
 
     #[test]
@@ -776,7 +782,10 @@ mod tests {
             .unwrap();
 
         let result = ring.nodes_for_key(b"test-key");
-        assert!(matches!(result, Err(HashRingError::InsufficientNodes(2, 0))));
+        assert!(matches!(
+            result,
+            Err(HashRingError::InsufficientNodes(2, 0))
+        ));
     }
 
     #[test]

@@ -16,7 +16,7 @@ pub struct GraphCache {
     timestamps: RwLock<HashMap<CacheKey, Instant>>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum CacheKey {
     Ancestry(RepoId, Oid, Oid),
     Reachable(RepoId, Oid),
@@ -60,7 +60,13 @@ impl GraphCache {
         cache.get(&key).copied()
     }
 
-    pub fn put_ancestry(&self, repo_id: &RepoId, ancestor: &Oid, descendant: &Oid, is_ancestor: bool) {
+    pub fn put_ancestry(
+        &self,
+        repo_id: &RepoId,
+        ancestor: &Oid,
+        descendant: &Oid,
+        is_ancestor: bool,
+    ) {
         let key = (repo_id.clone(), *ancestor, *descendant);
         let cache_key = CacheKey::Ancestry(repo_id.clone(), *ancestor, *descendant);
 
@@ -209,7 +215,10 @@ mod tests {
         assert!(cache.get_merge_base(&repo_id, &commits).is_none());
 
         cache.put_merge_base(&repo_id, &commits, Some(merge_base));
-        assert_eq!(cache.get_merge_base(&repo_id, &commits), Some(Some(merge_base)));
+        assert_eq!(
+            cache.get_merge_base(&repo_id, &commits),
+            Some(Some(merge_base))
+        );
     }
 
     #[test]
@@ -255,5 +264,137 @@ mod tests {
         std::thread::sleep(Duration::from_millis(10));
 
         assert!(cache.get_ancestry(&repo_id, &oid1, &oid2).is_none());
+    }
+
+    #[test]
+    fn test_invalidate_repo_all_cache_types() {
+        let cache = GraphCache::new(100, Duration::from_secs(60));
+        let repo1 = RepoId::new("test/repo1").unwrap();
+        let repo2 = RepoId::new("test/repo2").unwrap();
+        let oid1 = Oid::hash(b"oid1");
+        let oid2 = Oid::hash(b"oid2");
+        let from = Oid::hash(b"from");
+        let commits = vec![Oid::hash(b"c1"), Oid::hash(b"c2")];
+        let merge_base = Oid::hash(b"base");
+
+        cache.put_ancestry(&repo1, &oid1, &oid2, true);
+        cache.put_ancestry(&repo2, &oid1, &oid2, false);
+
+        let mut reachable = HashSet::new();
+        reachable.insert(oid1);
+        cache.put_reachable(&repo1, &from, reachable.clone());
+        cache.put_reachable(&repo2, &from, reachable);
+
+        cache.put_merge_base(&repo1, &commits, Some(merge_base));
+        cache.put_merge_base(&repo2, &commits, Some(merge_base));
+
+        cache.invalidate_repo(&repo1);
+
+        assert!(cache.get_ancestry(&repo1, &oid1, &oid2).is_none());
+        assert_eq!(cache.get_ancestry(&repo2, &oid1, &oid2), Some(false));
+        assert!(cache.get_reachable(&repo1, &from).is_none());
+        assert!(cache.get_reachable(&repo2, &from).is_some());
+        assert!(cache.get_merge_base(&repo1, &commits).is_none());
+        assert_eq!(
+            cache.get_merge_base(&repo2, &commits),
+            Some(Some(merge_base))
+        );
+    }
+
+    #[test]
+    fn test_ttl_expiration_reachable() {
+        let cache = GraphCache::new(100, Duration::from_millis(1));
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let from = Oid::hash(b"from");
+
+        let mut reachable = HashSet::new();
+        reachable.insert(Oid::hash(b"oid1"));
+        cache.put_reachable(&repo_id, &from, reachable);
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert!(cache.get_reachable(&repo_id, &from).is_none());
+    }
+
+    #[test]
+    fn test_ttl_expiration_merge_base() {
+        let cache = GraphCache::new(100, Duration::from_millis(1));
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let commits = vec![Oid::hash(b"c1"), Oid::hash(b"c2")];
+        let merge_base = Oid::hash(b"base");
+
+        cache.put_merge_base(&repo_id, &commits, Some(merge_base));
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert!(cache.get_merge_base(&repo_id, &commits).is_none());
+    }
+
+    #[test]
+    fn test_merge_base_none() {
+        let cache = GraphCache::new(100, Duration::from_secs(60));
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let commits = vec![Oid::hash(b"c1"), Oid::hash(b"c2")];
+
+        cache.put_merge_base(&repo_id, &commits, None);
+        assert_eq!(cache.get_merge_base(&repo_id, &commits), Some(None));
+    }
+
+    #[test]
+    fn test_cache_key_clone_eq_hash() {
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let oid1 = Oid::hash(b"oid1");
+        let oid2 = Oid::hash(b"oid2");
+
+        let key1 = CacheKey::Ancestry(repo_id.clone(), oid1, oid2);
+        let key2 = key1.clone();
+        assert_eq!(key1, key2);
+
+        let key3 = CacheKey::Reachable(repo_id.clone(), oid1);
+        let key4 = key3.clone();
+        assert_eq!(key3, key4);
+
+        let key5 = CacheKey::MergeBase(repo_id, vec![oid1, oid2]);
+        let key6 = key5.clone();
+        assert_eq!(key5, key6);
+
+        let mut set = std::collections::HashSet::new();
+        set.insert(key1);
+        set.insert(key3);
+        set.insert(key5);
+        assert_eq!(set.len(), 3);
+    }
+
+    #[test]
+    fn test_clear_all_caches() {
+        let cache = GraphCache::new(100, Duration::from_secs(60));
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let oid1 = Oid::hash(b"oid1");
+        let oid2 = Oid::hash(b"oid2");
+        let from = Oid::hash(b"from");
+        let commits = vec![Oid::hash(b"c1")];
+
+        cache.put_ancestry(&repo_id, &oid1, &oid2, true);
+        let mut reachable = HashSet::new();
+        reachable.insert(oid1);
+        cache.put_reachable(&repo_id, &from, reachable);
+        cache.put_merge_base(&repo_id, &commits, Some(Oid::hash(b"base")));
+
+        cache.clear();
+
+        assert!(cache.get_ancestry(&repo_id, &oid1, &oid2).is_none());
+        assert!(cache.get_reachable(&repo_id, &from).is_none());
+        assert!(cache.get_merge_base(&repo_id, &commits).is_none());
+    }
+
+    #[test]
+    fn test_graph_cache_new_with_zero_capacity() {
+        let cache = GraphCache::new(0, Duration::from_secs(60));
+        let repo_id = RepoId::new("test/repo").unwrap();
+        let oid1 = Oid::hash(b"oid1");
+        let oid2 = Oid::hash(b"oid2");
+
+        cache.put_ancestry(&repo_id, &oid1, &oid2, true);
+        assert!(cache.get_ancestry(&repo_id, &oid1, &oid2).is_some());
     }
 }

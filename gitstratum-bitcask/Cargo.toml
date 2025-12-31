@@ -1,0 +1,71 @@
+[package]
+name = "gitstratum-bitcask"
+description = "NVMe-optimized Bitcask key-value store for GitStratum"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gitstratum-core = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# io_uring (Linux only)
+io-uring = { version = "0.7", optional = true }
+
+# Serialization
+serde = { workspace = true }
+bincode = { workspace = true }
+
+# Checksums
+crc32fast = "1.4"
+
+# Concurrent data structures
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam-channel = "0.5"
+
+# Compression (optional)
+flate2 = { workspace = true }
+
+# Caching
+lru = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Metrics
+metrics = { workspace = true }
+
+# Utilities
+bytes = { workspace = true }
+bitflags = "2.4"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+criterion = "0.5"
+rand = { workspace = true }
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[features]
+default = []
+compression = []
+io_uring = ["dep:io-uring"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { version = "0.7", optional = true }
+
+[lints]
+workspace = true

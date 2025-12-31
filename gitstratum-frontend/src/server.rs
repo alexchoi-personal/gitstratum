@@ -1,19 +1,23 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use gitstratum_core::{Blob, Commit, Oid, Tree};
-use gitstratum_hashring::{ConsistentHashRing, NodeInfo};
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{debug, info, instrument};
+use tracing::{info, instrument};
 
-use crate::error::{FrontendError, Result};
 use crate::cache::negotiation::NegotiationRequest;
 use crate::commands::receive_pack::{GitReceivePack, PushResult, RefUpdate};
 use crate::commands::upload_pack::GitUploadPack;
+use crate::error::{FrontendError, Result};
 
 #[async_trait]
 pub trait ControlPlaneConnection: Send + Sync {
-    async fn acquire_ref_lock(&self, repo_id: &str, ref_name: &str, holder_id: &str, timeout_ms: u64) -> Result<String>;
+    async fn acquire_ref_lock(
+        &self,
+        repo_id: &str,
+        ref_name: &str,
+        holder_id: &str,
+        timeout_ms: u64,
+    ) -> Result<String>;
     async fn release_ref_lock(&self, lock_id: &str) -> Result<()>;
     async fn get_cluster_state(&self) -> Result<ClusterState>;
 }
@@ -23,10 +27,23 @@ pub trait MetadataConnection: Send + Sync {
     async fn get_commit(&self, repo_id: &str, oid: &Oid) -> Result<Option<Commit>>;
     async fn get_tree(&self, repo_id: &str, oid: &Oid) -> Result<Option<Tree>>;
     async fn list_refs(&self, repo_id: &str, prefix: &str) -> Result<Vec<(String, Oid)>>;
-    async fn walk_commits(&self, repo_id: &str, from: Vec<Oid>, until: Vec<Oid>, limit: u32) -> Result<Vec<Commit>>;
+    async fn walk_commits(
+        &self,
+        repo_id: &str,
+        from: Vec<Oid>,
+        until: Vec<Oid>,
+        limit: u32,
+    ) -> Result<Vec<Commit>>;
     async fn put_commit(&self, repo_id: &str, commit: &Commit) -> Result<()>;
     async fn put_tree(&self, repo_id: &str, tree: &Tree) -> Result<()>;
-    async fn update_ref(&self, repo_id: &str, ref_name: &str, old_oid: Oid, new_oid: Oid, force: bool) -> Result<bool>;
+    async fn update_ref(
+        &self,
+        repo_id: &str,
+        ref_name: &str,
+        old_oid: Oid,
+        new_oid: Oid,
+        force: bool,
+    ) -> Result<bool>;
     async fn get_ref(&self, repo_id: &str, ref_name: &str) -> Result<Option<Oid>>;
 }
 
@@ -40,10 +57,10 @@ pub trait ObjectConnection: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct ClusterState {
-    pub control_plane_nodes: Vec<NodeInfo>,
-    pub metadata_nodes: Vec<NodeInfo>,
-    pub object_nodes: Vec<NodeInfo>,
-    pub frontend_nodes: Vec<NodeInfo>,
+    pub control_plane_nodes: Vec<gitstratum_hashring::NodeInfo>,
+    pub metadata_nodes: Vec<gitstratum_hashring::NodeInfo>,
+    pub object_nodes: Vec<gitstratum_hashring::NodeInfo>,
+    pub frontend_nodes: Vec<gitstratum_hashring::NodeInfo>,
     pub leader_id: Option<String>,
     pub version: u64,
 }
@@ -71,9 +88,7 @@ pub struct GitFrontend<C, M, O> {
     control_plane: Arc<C>,
     metadata: Arc<M>,
     object: Arc<O>,
-    object_ring: Arc<RwLock<ConsistentHashRing>>,
     node_id: String,
-    cluster_state: Arc<RwLock<ClusterState>>,
 }
 
 impl<C, M, O> GitFrontend<C, M, O>
@@ -82,52 +97,18 @@ where
     M: MetadataConnection + 'static,
     O: ObjectConnection + 'static,
 {
-    pub fn new(
-        control_plane: Arc<C>,
-        metadata: Arc<M>,
-        object: Arc<O>,
-        node_id: String,
-    ) -> Self {
+    pub fn new(control_plane: Arc<C>, metadata: Arc<M>, object: Arc<O>, node_id: String) -> Self {
         Self {
             control_plane,
             metadata,
             object,
-            object_ring: Arc::new(RwLock::new(ConsistentHashRing::new(16, 2))),
             node_id,
-            cluster_state: Arc::new(RwLock::new(ClusterState::new())),
         }
-    }
-
-    pub fn with_object_ring(mut self, ring: ConsistentHashRing) -> Self {
-        self.object_ring = Arc::new(RwLock::new(ring));
-        self
     }
 
     #[instrument(skip(self))]
-    pub async fn refresh_cluster_state(&self) -> Result<()> {
-        let state = self.control_plane.get_cluster_state().await?;
-        let new_version = state.version;
-
-        {
-            let ring = self.object_ring.write().await;
-            for node in &state.object_nodes {
-                if ring.get_node(&node.id).is_none() {
-                    let _ = ring.add_node(node.clone());
-                }
-            }
-        }
-
-        {
-            let mut current = self.cluster_state.write().await;
-            *current = state;
-        }
-
-        debug!(version = new_version, "refreshed cluster state");
-        Ok(())
-    }
-
-    pub async fn cluster_state(&self) -> ClusterState {
-        self.cluster_state.read().await.clone()
+    pub async fn get_cluster_state(&self) -> Result<ClusterState> {
+        self.control_plane.get_cluster_state().await
     }
 
     #[instrument(skip(self))]
@@ -137,11 +118,7 @@ where
     }
 
     #[instrument(skip(self, request))]
-    pub async fn handle_fetch(
-        &self,
-        repo_id: &str,
-        request: NegotiationRequest,
-    ) -> Result<Bytes> {
+    pub async fn handle_fetch(&self, repo_id: &str, request: NegotiationRequest) -> Result<Bytes> {
         info!(
             repo_id,
             wants = request.wants.len(),
@@ -240,7 +217,13 @@ impl<M: MetadataConnection> crate::commands::upload_pack::MetadataClient for Met
         self.client.list_refs(repo_id, prefix).await
     }
 
-    async fn walk_commits(&self, repo_id: &str, from: Vec<Oid>, until: Vec<Oid>, limit: u32) -> Result<Vec<Commit>> {
+    async fn walk_commits(
+        &self,
+        repo_id: &str,
+        from: Vec<Oid>,
+        until: Vec<Oid>,
+        limit: u32,
+    ) -> Result<Vec<Commit>> {
         self.client.walk_commits(repo_id, from, until, limit).await
     }
 }
@@ -266,9 +249,19 @@ struct ControlPlaneAdapter<C> {
 }
 
 #[async_trait]
-impl<C: ControlPlaneConnection> crate::commands::receive_pack::ControlPlaneClient for ControlPlaneAdapter<C> {
-    async fn acquire_ref_lock(&self, repo_id: &str, ref_name: &str, holder_id: &str, timeout_ms: u64) -> Result<String> {
-        self.client.acquire_ref_lock(repo_id, ref_name, holder_id, timeout_ms).await
+impl<C: ControlPlaneConnection> crate::commands::receive_pack::ControlPlaneClient
+    for ControlPlaneAdapter<C>
+{
+    async fn acquire_ref_lock(
+        &self,
+        repo_id: &str,
+        ref_name: &str,
+        holder_id: &str,
+        timeout_ms: u64,
+    ) -> Result<String> {
+        self.client
+            .acquire_ref_lock(repo_id, ref_name, holder_id, timeout_ms)
+            .await
     }
 
     async fn release_ref_lock(&self, lock_id: &str) -> Result<()> {
@@ -281,7 +274,9 @@ struct MetadataWriterAdapter<M> {
 }
 
 #[async_trait]
-impl<M: MetadataConnection> crate::commands::receive_pack::MetadataWriter for MetadataWriterAdapter<M> {
+impl<M: MetadataConnection> crate::commands::receive_pack::MetadataWriter
+    for MetadataWriterAdapter<M>
+{
     async fn put_commit(&self, repo_id: &str, commit: &Commit) -> Result<()> {
         self.client.put_commit(repo_id, commit).await
     }
@@ -290,8 +285,17 @@ impl<M: MetadataConnection> crate::commands::receive_pack::MetadataWriter for Me
         self.client.put_tree(repo_id, tree).await
     }
 
-    async fn update_ref(&self, repo_id: &str, ref_name: &str, old_oid: Oid, new_oid: Oid, force: bool) -> Result<bool> {
-        self.client.update_ref(repo_id, ref_name, old_oid, new_oid, force).await
+    async fn update_ref(
+        &self,
+        repo_id: &str,
+        ref_name: &str,
+        old_oid: Oid,
+        new_oid: Oid,
+        force: bool,
+    ) -> Result<bool> {
+        self.client
+            .update_ref(repo_id, ref_name, old_oid, new_oid, force)
+            .await
     }
 
     async fn get_ref(&self, repo_id: &str, ref_name: &str) -> Result<Option<Oid>> {
@@ -320,7 +324,6 @@ pub struct FrontendBuilder<C, M, O> {
     metadata: Option<Arc<M>>,
     object: Option<Arc<O>>,
     node_id: String,
-    object_ring: Option<ConsistentHashRing>,
 }
 
 impl<C, M, O> FrontendBuilder<C, M, O>
@@ -335,7 +338,6 @@ where
             metadata: None,
             object: None,
             node_id: node_id.into(),
-            object_ring: None,
         }
     }
 
@@ -354,24 +356,18 @@ where
         self
     }
 
-    pub fn object_ring(mut self, ring: ConsistentHashRing) -> Self {
-        self.object_ring = Some(ring);
-        self
-    }
-
     pub fn build(self) -> Result<GitFrontend<C, M, O>> {
-        let control_plane = self.control_plane
-            .ok_or_else(|| FrontendError::InvalidProtocol("control plane client required".to_string()))?;
-        let metadata = self.metadata
-            .ok_or_else(|| FrontendError::InvalidProtocol("metadata client required".to_string()))?;
-        let object = self.object
+        let control_plane = self.control_plane.ok_or_else(|| {
+            FrontendError::InvalidProtocol("control plane client required".to_string())
+        })?;
+        let metadata = self.metadata.ok_or_else(|| {
+            FrontendError::InvalidProtocol("metadata client required".to_string())
+        })?;
+        let object = self
+            .object
             .ok_or_else(|| FrontendError::InvalidProtocol("object client required".to_string()))?;
 
-        let mut frontend = GitFrontend::new(control_plane, metadata, object, self.node_id);
-
-        if let Some(ring) = self.object_ring {
-            frontend = frontend.with_object_ring(ring);
-        }
+        let frontend = GitFrontend::new(control_plane, metadata, object, self.node_id);
 
         Ok(frontend)
     }
@@ -400,11 +396,20 @@ mod tests {
 
     #[async_trait]
     impl ControlPlaneConnection for MockControlPlane {
-        async fn acquire_ref_lock(&self, _repo_id: &str, ref_name: &str, _holder_id: &str, _timeout_ms: u64) -> Result<String> {
+        async fn acquire_ref_lock(
+            &self,
+            _repo_id: &str,
+            ref_name: &str,
+            _holder_id: &str,
+            _timeout_ms: u64,
+        ) -> Result<String> {
             let mut id = self.next_id.lock().await;
             let lock_id = format!("lock-{}", *id);
             *id += 1;
-            self.locks.lock().await.insert(lock_id.clone(), ref_name.to_string());
+            self.locks
+                .lock()
+                .await
+                .insert(lock_id.clone(), ref_name.to_string());
             Ok(lock_id)
         }
 
@@ -458,10 +463,22 @@ mod tests {
         }
 
         async fn list_refs(&self, _repo_id: &str, _prefix: &str) -> Result<Vec<(String, Oid)>> {
-            Ok(self.refs.lock().await.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            Ok(self
+                .refs
+                .lock()
+                .await
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect())
         }
 
-        async fn walk_commits(&self, _repo_id: &str, _from: Vec<Oid>, _until: Vec<Oid>, _limit: u32) -> Result<Vec<Commit>> {
+        async fn walk_commits(
+            &self,
+            _repo_id: &str,
+            _from: Vec<Oid>,
+            _until: Vec<Oid>,
+            _limit: u32,
+        ) -> Result<Vec<Commit>> {
             Ok(self.commits.lock().await.values().cloned().collect())
         }
 
@@ -475,7 +492,14 @@ mod tests {
             Ok(())
         }
 
-        async fn update_ref(&self, _repo_id: &str, ref_name: &str, _old_oid: Oid, new_oid: Oid, _force: bool) -> Result<bool> {
+        async fn update_ref(
+            &self,
+            _repo_id: &str,
+            ref_name: &str,
+            _old_oid: Oid,
+            new_oid: Oid,
+            _force: bool,
+        ) -> Result<bool> {
             if new_oid.is_zero() {
                 self.refs.lock().await.remove(ref_name);
             } else {
@@ -514,7 +538,10 @@ mod tests {
 
         async fn get_blobs(&self, oids: Vec<Oid>) -> Result<Vec<Blob>> {
             let blobs = self.blobs.lock().await;
-            Ok(oids.iter().filter_map(|oid| blobs.get(oid).cloned()).collect())
+            Ok(oids
+                .iter()
+                .filter_map(|oid| blobs.get(oid).cloned())
+                .collect())
         }
 
         async fn put_blob(&self, blob: &Blob) -> Result<()> {
@@ -592,7 +619,10 @@ mod tests {
             Oid::hash(b"new"),
         )];
 
-        let result = frontend.handle_push("test-repo", updates, pack_data).await.unwrap();
+        let result = frontend
+            .handle_push("test-repo", updates, pack_data)
+            .await
+            .unwrap();
         assert!(result.all_successful());
     }
 
@@ -626,9 +656,10 @@ mod tests {
     async fn test_frontend_builder_missing_client() {
         let control = Arc::new(MockControlPlane::new());
 
-        let result: Result<GitFrontend<_, MockMetadata, MockObject>> = FrontendBuilder::new("frontend-1")
-            .control_plane(control)
-            .build();
+        let result: Result<GitFrontend<_, MockMetadata, MockObject>> =
+            FrontendBuilder::new("frontend-1")
+                .control_plane(control)
+                .build();
 
         assert!(result.is_err());
     }
@@ -647,7 +678,10 @@ mod tests {
         let result = frontend.get_ref("repo", "refs/heads/main").await.unwrap();
         assert_eq!(result, Some(oid));
 
-        let missing = frontend.get_ref("repo", "refs/heads/missing").await.unwrap();
+        let missing = frontend
+            .get_ref("repo", "refs/heads/missing")
+            .await
+            .unwrap();
         assert!(missing.is_none());
     }
 
@@ -687,39 +721,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cluster_state() {
+    async fn test_get_cluster_state() {
         let control = Arc::new(MockControlPlane::new());
         let metadata = Arc::new(MockMetadata::new());
         let object = Arc::new(MockObject::new());
 
         let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
 
-        let state = frontend.cluster_state().await;
+        let state = frontend.get_cluster_state().await.unwrap();
         assert_eq!(state.version, 0);
-    }
-
-    #[tokio::test]
-    async fn test_refresh_cluster_state() {
-        let control = Arc::new(MockControlPlane::new());
-        let metadata = Arc::new(MockMetadata::new());
-        let object = Arc::new(MockObject::new());
-
-        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
-
-        frontend.refresh_cluster_state().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_with_object_ring() {
-        let control = Arc::new(MockControlPlane::new());
-        let metadata = Arc::new(MockMetadata::new());
-        let object = Arc::new(MockObject::new());
-
-        let ring = ConsistentHashRing::new(32, 3);
-        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string())
-            .with_object_ring(ring);
-
-        assert_eq!(frontend.node_id(), "frontend-1");
     }
 
     #[test]
@@ -746,23 +756,5 @@ mod tests {
 
         let result = frontend.get_tree("repo", &tree.oid).await.unwrap();
         assert!(result.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_builder_with_object_ring() {
-        let control = Arc::new(MockControlPlane::new());
-        let metadata = Arc::new(MockMetadata::new());
-        let object = Arc::new(MockObject::new());
-
-        let ring = ConsistentHashRing::new(32, 3);
-        let frontend = FrontendBuilder::new("frontend-1")
-            .control_plane(control)
-            .metadata(metadata)
-            .object(object)
-            .object_ring(ring)
-            .build()
-            .unwrap();
-
-        assert_eq!(frontend.node_id(), "frontend-1");
     }
 }

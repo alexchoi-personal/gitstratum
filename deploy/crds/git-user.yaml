@@ -1,0 +1,148 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gitusers.gitstratum.io
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: crd
+spec:
+  group: gitstratum.io
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [username, email]
+              properties:
+                username:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  pattern: "^[a-zA-Z0-9_-]+$"
+                email:
+                  type: string
+                  format: email
+                display_name:
+                  type: string
+                  maxLength: 256
+                ssh_keys:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, public_key]
+                    properties:
+                      name:
+                        type: string
+                      public_key:
+                        type: string
+                      fingerprint:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+                      last_used:
+                        type: string
+                        format: date-time
+                tokens:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, scopes]
+                    properties:
+                      name:
+                        type: string
+                      scopes:
+                        type: array
+                        items:
+                          type: string
+                          enum: ["read", "write", "admin", "repo:read", "repo:write", "user:read", "user:write"]
+                      expires_at:
+                        type: string
+                        format: date-time
+                      created_at:
+                        type: string
+                        format: date-time
+                      last_used:
+                        type: string
+                        format: date-time
+                rate_limit_override:
+                  type: object
+                  properties:
+                    requests_per_minute:
+                      type: integer
+                    requests_per_hour:
+                      type: integer
+                    bytes_per_minute:
+                      type: integer
+                disabled:
+                  type: boolean
+                  default: false
+                role:
+                  type: string
+                  enum: [user, admin, service_account]
+                  default: user
+            status:
+              type: object
+              properties:
+                state:
+                  type: string
+                  enum: [Active, Suspended, Deleted]
+                last_login:
+                  type: string
+                  format: date-time
+                total_repos:
+                  type: integer
+                total_storage_bytes:
+                  type: integer
+                rate_limit_remaining:
+                  type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Username
+          type: string
+          jsonPath: .spec.username
+        - name: Email
+          type: string
+          jsonPath: .spec.email
+        - name: Role
+          type: string
+          jsonPath: .spec.role
+        - name: State
+          type: string
+          jsonPath: .status.state
+        - name: Last Login
+          type: string
+          jsonPath: .status.last_login
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+  scope: Namespaced
+  names:
+    plural: gitusers
+    singular: gituser
+    kind: GitUser
+    shortNames:
+      - gu
+      - gituser

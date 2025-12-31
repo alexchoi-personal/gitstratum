@@ -1,0 +1,178 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: packcachepolicies.gitstratum.io
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: crd
+spec:
+  group: gitstratum.io
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                description:
+                  type: string
+                  maxLength: 512
+                enabled:
+                  type: boolean
+                  default: true
+                targets:
+                  type: object
+                  properties:
+                    repositories:
+                      type: array
+                      items:
+                        type: string
+                    namespaceSelector:
+                      type: object
+                      properties:
+                        matchLabels:
+                          type: object
+                          additionalProperties:
+                            type: string
+                        matchExpressions:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              key:
+                                type: string
+                              operator:
+                                type: string
+                                enum: [In, NotIn, Exists, DoesNotExist]
+                              values:
+                                type: array
+                                items:
+                                  type: string
+                cache_rules:
+                  type: object
+                  properties:
+                    ttl:
+                      type: string
+                      pattern: "^[0-9]+(s|m|h|d)$"
+                    max_size_bytes:
+                      type: integer
+                    max_entries:
+                      type: integer
+                    eviction_policy:
+                      type: string
+                      enum: [LRU, LFU, FIFO, TTL]
+                      default: LRU
+                precompute:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    refs:
+                      type: array
+                      items:
+                        type: string
+                    depths:
+                      type: array
+                      items:
+                        type: integer
+                    schedule:
+                      type: string
+                    on_push:
+                      type: boolean
+                      default: true
+                invalidation:
+                  type: object
+                  properties:
+                    on_push:
+                      type: boolean
+                      default: true
+                    on_ref_update:
+                      type: boolean
+                      default: true
+                    stale_after:
+                      type: string
+                      pattern: "^[0-9]+(s|m|h|d)$"
+                priority:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                  default: 50
+            status:
+              type: object
+              properties:
+                state:
+                  type: string
+                  enum: [Active, Inactive, Error]
+                affected_repositories:
+                  type: integer
+                cache_stats:
+                  type: object
+                  properties:
+                    total_entries:
+                      type: integer
+                    total_size_bytes:
+                      type: integer
+                    hit_rate:
+                      type: string
+                    miss_rate:
+                      type: string
+                    evictions:
+                      type: integer
+                last_precompute:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Enabled
+          type: boolean
+          jsonPath: .spec.enabled
+        - name: TTL
+          type: string
+          jsonPath: .spec.cache_rules.ttl
+        - name: State
+          type: string
+          jsonPath: .status.state
+        - name: Hit Rate
+          type: string
+          jsonPath: .status.cache_stats.hit_rate
+        - name: Repos
+          type: integer
+          jsonPath: .status.affected_repositories
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+  scope: Namespaced
+  names:
+    plural: packcachepolicies
+    singular: packcachepolicy
+    kind: PackCachePolicy
+    shortNames:
+      - pcp
+      - packcache

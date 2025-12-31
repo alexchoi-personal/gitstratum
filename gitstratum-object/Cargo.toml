@@ -25,8 +25,13 @@ bytes = { workspace = true }
 flate2 = { workspace = true }
 
 rocksdb = { workspace = true }
+dashmap = { workspace = true }
+lru = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
 rand = { workspace = true }
+
+[lints]
+workspace = true

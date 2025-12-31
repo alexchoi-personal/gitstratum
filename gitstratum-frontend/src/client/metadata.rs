@@ -35,14 +35,27 @@ impl MetadataClientConfig {
 pub trait MetadataClusterClient: Send + Sync {
     async fn get_refs(&self, repo_id: &str, prefix: &str) -> Result<Vec<(String, Oid)>>;
     async fn get_ref(&self, repo_id: &str, ref_name: &str) -> Result<Option<Oid>>;
-    async fn update_ref(&self, repo_id: &str, ref_name: &str, old_oid: Oid, new_oid: Oid, force: bool) -> Result<bool>;
+    async fn update_ref(
+        &self,
+        repo_id: &str,
+        ref_name: &str,
+        old_oid: Oid,
+        new_oid: Oid,
+        force: bool,
+    ) -> Result<bool>;
     async fn get_commit(&self, repo_id: &str, oid: &Oid) -> Result<Option<Commit>>;
     async fn get_commits(&self, repo_id: &str, oids: &[Oid]) -> Result<Vec<Commit>>;
     async fn put_commit(&self, repo_id: &str, commit: &Commit) -> Result<()>;
     async fn get_tree(&self, repo_id: &str, oid: &Oid) -> Result<Option<Tree>>;
     async fn get_trees(&self, repo_id: &str, oids: &[Oid]) -> Result<Vec<Tree>>;
     async fn put_tree(&self, repo_id: &str, tree: &Tree) -> Result<()>;
-    async fn walk_commits(&self, repo_id: &str, from: Vec<Oid>, until: Vec<Oid>, limit: u32) -> Result<Vec<Commit>>;
+    async fn walk_commits(
+        &self,
+        repo_id: &str,
+        from: Vec<Oid>,
+        until: Vec<Oid>,
+        limit: u32,
+    ) -> Result<Vec<Commit>>;
     async fn get_commit_ancestry(&self, repo_id: &str, oid: &Oid, depth: u32) -> Result<Vec<Oid>>;
 }
 

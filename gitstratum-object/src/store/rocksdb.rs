@@ -32,7 +32,10 @@ impl RocksDbStore {
     }
 
     #[instrument(skip_all, fields(path = %path.as_ref().display()))]
-    pub fn with_compression(path: impl AsRef<Path>, compression_config: CompressionConfig) -> Result<Self> {
+    pub fn with_compression(
+        path: impl AsRef<Path>,
+        compression_config: CompressionConfig,
+    ) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.set_compression_type(rocksdb::DBCompressionType::None);
@@ -134,8 +137,8 @@ impl RocksDbStore {
     pub fn iter(&self) -> impl Iterator<Item = Result<(Oid, Blob)>> + '_ {
         self.db.iterator(rocksdb::IteratorMode::Start).map(|item| {
             let (key, value) = item?;
-            let oid = Oid::from_slice(&key)
-                .map_err(|e| ObjectStoreError::InvalidOid(e.to_string()))?;
+            let oid =
+                Oid::from_slice(&key).map_err(|e| ObjectStoreError::InvalidOid(e.to_string()))?;
             let blob = self.decompress(&oid, &value)?;
             Ok((oid, blob))
         })

@@ -93,22 +93,22 @@ fn parse_storage_size(size_str: &str) -> i64 {
         return 0;
     }
 
-    let (num_str, multiplier) = if size_str.ends_with("Ti") {
-        (&size_str[..size_str.len() - 2], 1024i64 * 1024 * 1024 * 1024)
-    } else if size_str.ends_with("Gi") {
-        (&size_str[..size_str.len() - 2], 1024i64 * 1024 * 1024)
-    } else if size_str.ends_with("Mi") {
-        (&size_str[..size_str.len() - 2], 1024i64 * 1024)
-    } else if size_str.ends_with("Ki") {
-        (&size_str[..size_str.len() - 2], 1024i64)
-    } else if size_str.ends_with("T") {
-        (&size_str[..size_str.len() - 1], 1000i64 * 1000 * 1000 * 1000)
-    } else if size_str.ends_with("G") {
-        (&size_str[..size_str.len() - 1], 1000i64 * 1000 * 1000)
-    } else if size_str.ends_with("M") {
-        (&size_str[..size_str.len() - 1], 1000i64 * 1000)
-    } else if size_str.ends_with("K") {
-        (&size_str[..size_str.len() - 1], 1000i64)
+    let (num_str, multiplier) = if let Some(s) = size_str.strip_suffix("Ti") {
+        (s, 1024i64 * 1024 * 1024 * 1024)
+    } else if let Some(s) = size_str.strip_suffix("Gi") {
+        (s, 1024i64 * 1024 * 1024)
+    } else if let Some(s) = size_str.strip_suffix("Mi") {
+        (s, 1024i64 * 1024)
+    } else if let Some(s) = size_str.strip_suffix("Ki") {
+        (s, 1024i64)
+    } else if let Some(s) = size_str.strip_suffix('T') {
+        (s, 1000i64 * 1000 * 1000 * 1000)
+    } else if let Some(s) = size_str.strip_suffix('G') {
+        (s, 1000i64 * 1000 * 1000)
+    } else if let Some(s) = size_str.strip_suffix('M') {
+        (s, 1000i64 * 1000)
+    } else if let Some(s) = size_str.strip_suffix('K') {
+        (s, 1000i64)
     } else {
         (size_str, 1i64)
     };
@@ -138,10 +138,7 @@ pub fn calculate_scale_up_target(
     std::cmp::min(target, max_replicas)
 }
 
-pub fn calculate_scale_down_target(
-    current_replicas: i32,
-    min_replicas: i32,
-) -> i32 {
+pub fn calculate_scale_down_target(current_replicas: i32, min_replicas: i32) -> i32 {
     std::cmp::max(current_replicas - 1, min_replicas)
 }
 
@@ -162,10 +159,7 @@ pub fn can_safely_scale_down(
     current_replicas > replication_factor as i32
 }
 
-pub fn estimate_rebalance_time_seconds(
-    data_per_node_gb: f64,
-    network_bandwidth_gbps: f64,
-) -> f64 {
+pub fn estimate_rebalance_time_seconds(data_per_node_gb: f64, network_bandwidth_gbps: f64) -> f64 {
     let data_to_move_gb = data_per_node_gb / 2.0;
     let bandwidth_gbs = network_bandwidth_gbps / 8.0;
 
@@ -348,7 +342,10 @@ mod tests {
         assert_eq!(parse_storage_size("1024"), 1024);
         assert_eq!(parse_storage_size(""), 0);
         assert_eq!(parse_storage_size("invalid"), 0);
-        assert_eq!(parse_storage_size("4.8Ti"), (4.8 * 1024.0 * 1024.0 * 1024.0 * 1024.0) as i64);
+        assert_eq!(
+            parse_storage_size("4.8Ti"),
+            (4.8 * 1024.0 * 1024.0 * 1024.0 * 1024.0) as i64
+        );
     }
 
     #[test]
@@ -444,9 +441,15 @@ mod tests {
 
     #[test]
     fn test_scaling_decision_equality() {
-        let scale_up1 = ScalingDecision::ScaleUp { target_replicas: 10 };
-        let scale_up2 = ScalingDecision::ScaleUp { target_replicas: 10 };
-        let scale_up3 = ScalingDecision::ScaleUp { target_replicas: 11 };
+        let scale_up1 = ScalingDecision::ScaleUp {
+            target_replicas: 10,
+        };
+        let scale_up2 = ScalingDecision::ScaleUp {
+            target_replicas: 10,
+        };
+        let scale_up3 = ScalingDecision::ScaleUp {
+            target_replicas: 11,
+        };
         let scale_down = ScalingDecision::ScaleDown { target_replicas: 5 };
 
         assert_eq!(scale_up1, scale_up2);
@@ -457,7 +460,9 @@ mod tests {
 
     #[test]
     fn test_scaling_decision_debug() {
-        let decision = ScalingDecision::ScaleUp { target_replicas: 10 };
+        let decision = ScalingDecision::ScaleUp {
+            target_replicas: 10,
+        };
         let debug_str = format!("{:?}", decision);
         assert!(debug_str.contains("ScaleUp"));
         assert!(debug_str.contains("10"));

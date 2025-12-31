@@ -1,0 +1,231 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitstratum-operator
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: operator
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitstratum
+        app.kubernetes.io/component: operator
+        app.kubernetes.io/part-of: gitstratum
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gitstratum-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: operator
+          image: gitstratum/operator:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --leader-elect=true
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --enable-webhooks=true
+            - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: webhook
+              containerPort: 9443
+              protocol: TCP
+          env:
+            - name: GITSTRATUM_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GITSTRATUM_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GITSTRATUM_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: LEADER_ELECTION_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: LEADER_ELECTION_ID
+              value: "gitstratum-operator-leader"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: RUST_BACKTRACE
+              value: "1"
+            - name: FRONTEND_IMAGE
+              value: "gitstratum/frontend:latest"
+            - name: CONTROL_PLANE_IMAGE
+              value: "gitstratum/control-plane:latest"
+            - name: METADATA_IMAGE
+              value: "gitstratum/metadata:latest"
+            - name: OBJECT_IMAGE
+              value: "gitstratum/object:latest"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: webhook-certs
+          secret:
+            secretName: gitstratum-operator-webhook-certs
+            optional: true
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gitstratum-operator
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: operator
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gitstratum-frontend
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: frontend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gitstratum-control-plane
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: control-plane
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gitstratum-metadata
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: metadata
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: metadata
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gitstratum-object
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: object
+    app.kubernetes.io/part-of: gitstratum
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitstratum
+      app.kubernetes.io/component: object

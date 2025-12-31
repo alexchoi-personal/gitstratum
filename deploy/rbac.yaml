@@ -1,0 +1,409 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/part-of: gitstratum
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitstratum-operator
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: gitstratum
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitstratum-frontend
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: gitstratum
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitstratum-control-plane
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: gitstratum
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitstratum-metadata
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: metadata
+    app.kubernetes.io/part-of: gitstratum
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitstratum-object
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: object
+    app.kubernetes.io/part-of: gitstratum
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitstratum-operator
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: gitstratum
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - services
+      - endpoints
+      - persistentvolumeclaims
+      - events
+      - configmaps
+      - secrets
+      - serviceaccounts
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+      - daemonsets
+      - replicasets
+      - statefulsets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - roles
+      - rolebindings
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - gitstratum.io
+    resources:
+      - gitstratumclusters
+      - gitstratumclusters/status
+      - gitstratumclusters/finalizers
+      - gitrepositories
+      - gitrepositories/status
+      - gitrepositories/finalizers
+      - gitusers
+      - gitusers/status
+      - gitusers/finalizers
+      - packcachepolicies
+      - packcachepolicies/status
+      - packcachepolicies/finalizers
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitstratum-operator
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: gitstratum
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitstratum-operator
+subjects:
+  - kind: ServiceAccount
+    name: gitstratum-operator
+    namespace: gitstratum-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitstratum-frontend
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: gitstratum
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitstratum-frontend
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: gitstratum
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitstratum-frontend
+subjects:
+  - kind: ServiceAccount
+    name: gitstratum-frontend
+    namespace: gitstratum-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitstratum-control-plane
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: gitstratum
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitstratum-control-plane
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: gitstratum
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitstratum-control-plane
+subjects:
+  - kind: ServiceAccount
+    name: gitstratum-control-plane
+    namespace: gitstratum-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitstratum-metadata
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: metadata
+    app.kubernetes.io/part-of: gitstratum
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitstratum-metadata
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: metadata
+    app.kubernetes.io/part-of: gitstratum
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitstratum-metadata
+subjects:
+  - kind: ServiceAccount
+    name: gitstratum-metadata
+    namespace: gitstratum-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitstratum-object
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: object
+    app.kubernetes.io/part-of: gitstratum
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitstratum-object
+  namespace: gitstratum-system
+  labels:
+    app.kubernetes.io/name: gitstratum
+    app.kubernetes.io/component: object
+    app.kubernetes.io/part-of: gitstratum
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitstratum-object
+subjects:
+  - kind: ServiceAccount
+    name: gitstratum-object
+    namespace: gitstratum-system

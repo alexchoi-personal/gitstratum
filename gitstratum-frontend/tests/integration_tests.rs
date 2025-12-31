@@ -2,10 +2,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use gitstratum_core::{Blob, Commit, Object, Oid, Signature, Tree, TreeEntry};
 use gitstratum_frontend::{
-    ClusterState, ControlPlaneClient, ControlPlaneConnection, FrontendBuilder,
-    GitReceivePack, GitUploadPack, MetadataClient, MetadataConnection, MetadataWriter,
-    NegotiationRequest, ObjectClient, ObjectConnection, ObjectWriter, PackReader, PackWriter,
-    RefUpdate, Result,
+    ClusterState, ControlPlaneClient, ControlPlaneConnection, FrontendBuilder, GitReceivePack,
+    GitUploadPack, MetadataClient, MetadataConnection, MetadataWriter, NegotiationRequest,
+    ObjectClient, ObjectConnection, ObjectWriter, PackReader, PackWriter, RefUpdate, Result,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,7 +36,10 @@ impl ControlPlaneConnection for TestControlPlane {
         let mut id = self.next_id.lock().await;
         let lock_id = format!("lock-{}", *id);
         *id += 1;
-        self.locks.lock().await.insert(lock_id.clone(), ref_name.to_string());
+        self.locks
+            .lock()
+            .await
+            .insert(lock_id.clone(), ref_name.to_string());
         Ok(lock_id)
     }
 
@@ -63,7 +65,10 @@ impl ControlPlaneClient for TestControlPlane {
         let mut id = self.next_id.lock().await;
         let lock_id = format!("lock-{}", *id);
         *id += 1;
-        self.locks.lock().await.insert(lock_id.clone(), ref_name.to_string());
+        self.locks
+            .lock()
+            .await
+            .insert(lock_id.clone(), ref_name.to_string());
         Ok(lock_id)
     }
 
@@ -112,7 +117,13 @@ impl MetadataConnection for TestMetadata {
     }
 
     async fn list_refs(&self, _repo_id: &str, _prefix: &str) -> Result<Vec<(String, Oid)>> {
-        Ok(self.refs.lock().await.iter().map(|(k, v)| (k.clone(), *v)).collect())
+        Ok(self
+            .refs
+            .lock()
+            .await
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect())
     }
 
     async fn walk_commits(
@@ -167,7 +178,13 @@ impl MetadataClient for TestMetadata {
     }
 
     async fn list_refs(&self, _repo_id: &str, _prefix: &str) -> Result<Vec<(String, Oid)>> {
-        Ok(self.refs.lock().await.iter().map(|(k, v)| (k.clone(), *v)).collect())
+        Ok(self
+            .refs
+            .lock()
+            .await
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect())
     }
 
     async fn walk_commits(
@@ -238,7 +255,10 @@ impl ObjectConnection for TestObject {
 
     async fn get_blobs(&self, oids: Vec<Oid>) -> Result<Vec<Blob>> {
         let blobs = self.blobs.lock().await;
-        Ok(oids.iter().filter_map(|oid| blobs.get(oid).cloned()).collect())
+        Ok(oids
+            .iter()
+            .filter_map(|oid| blobs.get(oid).cloned())
+            .collect())
     }
 
     async fn put_blob(&self, blob: &Blob) -> Result<()> {
@@ -263,7 +283,10 @@ impl ObjectClient for TestObject {
 
     async fn get_blobs(&self, oids: Vec<Oid>) -> Result<Vec<Blob>> {
         let blobs = self.blobs.lock().await;
-        Ok(oids.iter().filter_map(|oid| blobs.get(oid).cloned()).collect())
+        Ok(oids
+            .iter()
+            .filter_map(|oid| blobs.get(oid).cloned())
+            .collect())
     }
 }
 
@@ -418,7 +441,10 @@ async fn test_push_workflow() {
         commit.oid,
     )];
 
-    let result = frontend.handle_push("test-repo", updates, pack_data).await.unwrap();
+    let result = frontend
+        .handle_push("test-repo", updates, pack_data)
+        .await
+        .unwrap();
 
     assert!(result.all_successful());
     assert!(result.objects_received > 0);
@@ -464,7 +490,10 @@ async fn test_push_update_existing_ref() {
         new_commit.oid,
     )];
 
-    let result = frontend.handle_push("test-repo", updates, pack_data).await.unwrap();
+    let result = frontend
+        .handle_push("test-repo", updates, pack_data)
+        .await
+        .unwrap();
     assert!(result.all_successful());
 }
 
@@ -553,7 +582,11 @@ async fn test_pack_roundtrip_all_object_types() {
     let blob = Blob::new(b"blob content".to_vec());
     let tree = Tree::new(vec![
         TreeEntry::file("file.txt", blob.oid),
-        TreeEntry::new(gitstratum_core::TreeEntryMode::Executable, "script.sh", Oid::hash(b"script")),
+        TreeEntry::new(
+            gitstratum_core::TreeEntryMode::Executable,
+            "script.sh",
+            Oid::hash(b"script"),
+        ),
     ]);
     let author = Signature::new("Author", "author@test.com", 1704067200, "+0530");
     let committer = Signature::new("Committer", "committer@test.com", 1704067300, "-0800");
@@ -672,7 +705,11 @@ async fn test_ref_update_validation() {
     let updates = vec![
         RefUpdate::new("refs/heads/valid".to_string(), Oid::ZERO, Oid::hash(b"1")),
         RefUpdate::new("invalid".to_string(), Oid::ZERO, Oid::hash(b"2")),
-        RefUpdate::new("refs/heads/bad..name".to_string(), Oid::ZERO, Oid::hash(b"3")),
+        RefUpdate::new(
+            "refs/heads/bad..name".to_string(),
+            Oid::ZERO,
+            Oid::hash(b"3"),
+        ),
     ];
 
     let results = receive_pack.validate_updates(&updates).await.unwrap();

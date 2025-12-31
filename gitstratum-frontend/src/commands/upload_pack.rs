@@ -1,14 +1,16 @@
+use std::collections::{HashSet, VecDeque};
+use std::fmt;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use gitstratum_core::{Blob, Commit, Object, Oid, Tree};
-use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::error::{FrontendError, Result};
 use crate::cache::negotiation::{NegotiationRequest, NegotiationResponse, ObjectWalker};
+use crate::error::{FrontendError, Result};
 use crate::pack::assembly::{PackEntry, PackWriter};
 
 #[async_trait]
@@ -16,7 +18,13 @@ pub trait MetadataClient: Send + Sync {
     async fn get_commit(&self, repo_id: &str, oid: &Oid) -> Result<Option<Commit>>;
     async fn get_tree(&self, repo_id: &str, oid: &Oid) -> Result<Option<Tree>>;
     async fn list_refs(&self, repo_id: &str, prefix: &str) -> Result<Vec<(String, Oid)>>;
-    async fn walk_commits(&self, repo_id: &str, from: Vec<Oid>, until: Vec<Oid>, limit: u32) -> Result<Vec<Commit>>;
+    async fn walk_commits(
+        &self,
+        repo_id: &str,
+        from: Vec<Oid>,
+        until: Vec<Oid>,
+        limit: u32,
+    ) -> Result<Vec<Commit>>;
 }
 
 #[async_trait]
@@ -66,18 +74,30 @@ where
         let mut available = HashSet::new();
 
         for have in &request.haves {
-            if self.metadata_client.get_commit(&self.repo_id, have).await?.is_some() {
+            if self
+                .metadata_client
+                .get_commit(&self.repo_id, have)
+                .await?
+                .is_some()
+            {
                 available.insert(*have);
             }
         }
 
         for want in &request.wants {
-            if self.metadata_client.get_commit(&self.repo_id, want).await?.is_some() {
+            if self
+                .metadata_client
+                .get_commit(&self.repo_id, want)
+                .await?
+                .is_some()
+            {
                 available.insert(*want);
             }
         }
 
-        Ok(crate::cache::negotiation::negotiate_refs(request, &available))
+        Ok(crate::cache::negotiation::negotiate_refs(
+            request, &available,
+        ))
     }
 
     pub async fn handle_request(&self, request: NegotiationRequest) -> Result<Bytes> {
@@ -237,7 +257,12 @@ where
 
     pub async fn wants_are_valid(&self, wants: &[Oid]) -> Result<bool> {
         for want in wants {
-            if self.metadata_client.get_commit(&self.repo_id, want).await?.is_none() {
+            if self
+                .metadata_client
+                .get_commit(&self.repo_id, want)
+                .await?
+                .is_none()
+            {
                 return Ok(false);
             }
         }
@@ -319,8 +344,10 @@ impl UploadPackCapabilities {
 
         caps
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl fmt::Display for UploadPackCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut caps = Vec::new();
 
         if self.multi_ack {
@@ -360,7 +387,7 @@ impl UploadPackCapabilities {
             caps.push("filter");
         }
 
-        caps.join(" ")
+        write!(f, "{}", caps.join(" "))
     }
 }
 
@@ -370,16 +397,19 @@ impl Default for UploadPackCapabilities {
     }
 }
 
-pub fn format_ref_advertisement(refs: &[(String, Oid)], capabilities: &UploadPackCapabilities) -> String {
+pub fn format_ref_advertisement(
+    refs: &[(String, Oid)],
+    capabilities: &UploadPackCapabilities,
+) -> String {
     let mut result = String::new();
 
     if refs.is_empty() {
         let zero = Oid::ZERO;
-        result.push_str(&format!("{} capabilities^{{}}\0{}\n", zero, capabilities.to_string()));
+        result.push_str(&format!("{} capabilities^{{}}\0{}\n", zero, capabilities));
     } else {
         for (i, (name, oid)) in refs.iter().enumerate() {
             if i == 0 {
-                result.push_str(&format!("{} {}\0{}\n", oid, name, capabilities.to_string()));
+                result.push_str(&format!("{} {}\0{}\n", oid, name, capabilities));
             } else {
                 result.push_str(&format!("{} {}\n", oid, name));
             }
@@ -439,7 +469,13 @@ mod tests {
             Ok(self.refs.read().await.clone())
         }
 
-        async fn walk_commits(&self, _repo_id: &str, _from: Vec<Oid>, _until: Vec<Oid>, _limit: u32) -> Result<Vec<Commit>> {
+        async fn walk_commits(
+            &self,
+            _repo_id: &str,
+            _from: Vec<Oid>,
+            _until: Vec<Oid>,
+            _limit: u32,
+        ) -> Result<Vec<Commit>> {
             Ok(self.commits.read().await.values().cloned().collect())
         }
     }
@@ -469,7 +505,10 @@ mod tests {
 
         async fn get_blobs(&self, oids: Vec<Oid>) -> Result<Vec<Blob>> {
             let blobs = self.blobs.read().await;
-            Ok(oids.iter().filter_map(|oid| blobs.get(oid).cloned()).collect())
+            Ok(oids
+                .iter()
+                .filter_map(|oid| blobs.get(oid).cloned())
+                .collect())
         }
     }
 
@@ -616,7 +655,10 @@ mod tests {
         let upload_pack = GitUploadPack::new(metadata, objects, "test-repo".to_string());
 
         assert!(upload_pack.wants_are_valid(&[commit.oid]).await.unwrap());
-        assert!(!upload_pack.wants_are_valid(&[Oid::hash(b"nonexistent")]).await.unwrap());
+        assert!(!upload_pack
+            .wants_are_valid(&[Oid::hash(b"nonexistent")])
+            .await
+            .unwrap());
     }
 
     #[test]
@@ -794,7 +836,11 @@ mod tests {
         let commit = create_test_commit("Initial commit", tree.oid, vec![]);
         metadata.add_commit(commit.clone()).await;
 
-        let upload_pack = Arc::new(GitUploadPack::new(metadata, objects, "test-repo".to_string()));
+        let upload_pack = Arc::new(GitUploadPack::new(
+            metadata,
+            objects,
+            "test-repo".to_string(),
+        ));
 
         let mut request = NegotiationRequest::new();
         request.add_want(commit.oid);
@@ -863,11 +909,17 @@ mod tests {
             metadata.add_commit(commit.clone()).await;
         }
 
-        let first_commit_oid = metadata.commits.read().await.keys().copied().next().unwrap();
+        let first_commit_oid = metadata
+            .commits
+            .read()
+            .await
+            .keys()
+            .copied()
+            .next()
+            .unwrap();
 
         let upload_pack = Arc::new(
-            GitUploadPack::new(metadata, objects, "test-repo".to_string())
-                .with_max_pack_size(1000)
+            GitUploadPack::new(metadata, objects, "test-repo".to_string()).with_max_pack_size(1000),
         );
 
         let mut request = NegotiationRequest::new();

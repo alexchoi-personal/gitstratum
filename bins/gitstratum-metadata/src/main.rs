@@ -50,9 +50,7 @@ async fn main() -> Result<()> {
 
     println!("[INFO] Starting gRPC server");
     tonic::transport::Server::builder()
-        .add_service(
-            gitstratum_proto::metadata_service_server::MetadataServiceServer::new(service),
-        )
+        .add_service(gitstratum_proto::metadata_service_server::MetadataServiceServer::new(service))
         .serve(args.grpc_addr)
         .await?;
 

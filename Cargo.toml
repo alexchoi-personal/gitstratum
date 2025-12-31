@@ -10,6 +10,7 @@ members = [
     "gitstratum-proto",
     "gitstratum-operator",
     "gitstratum-metrics",
+    "gitstratum-bitcask",
     "bins/gitstratum-control",
     "bins/gitstratum-ctl",
     "bins/gitstratum-frontend",
@@ -95,6 +96,45 @@ gitstratum-object = { path = "gitstratum-object" }
 gitstratum-frontend = { path = "gitstratum-frontend" }
 gitstratum-proto = { path = "gitstratum-proto" }
 gitstratum-operator = { path = "gitstratum-operator" }
+gitstratum-bitcask = { path = "gitstratum-bitcask" }
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+unused_variables = "allow"
+unused_mut = "allow"
+dead_code = "allow"
+
+[workspace.lints.clippy]
+type_complexity = "allow"
+result_large_err = "allow"
+field_reassign_with_default = "allow"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+for_kv_map = "allow"
+let_and_return = "allow"
+derivable_impls = "allow"
+should_implement_trait = "allow"
+enum_variant_names = "allow"
+await_holding_lock = "allow"
+unnecessary_get_then_check = "allow"
+new_without_default = "allow"
+match_like_matches_macro = "allow"
+len_without_is_empty = "allow"
+from_over_into = "allow"
+unnecessary_map_or = "allow"
+useless_conversion = "allow"
+implicit_saturating_sub = "allow"
+manual_flatten = "allow"
+extra_unused_type_parameters = "allow"
+needless_borrows_for_generic_args = "allow"
+vec_init_then_push = "allow"
+needless_update = "allow"
+io_other_error = "allow"
+assertions_on_constants = "allow"
+single_match = "allow"
+if_same_then_else = "allow"
+redundant_pattern_matching = "allow"
+clone_on_copy = "allow"
 
 [profile.release]
 lto = true

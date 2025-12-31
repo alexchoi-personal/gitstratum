@@ -126,4 +126,76 @@ mod tests {
         let compressor = Compressor::default();
         assert_eq!(compressor.config.compression_type, CompressionType::Zlib);
     }
+
+    #[test]
+    fn test_decompress_invalid_zlib() {
+        let compressor = Compressor::default();
+        let invalid_data = b"this is not valid zlib data";
+        let result = compressor.decompress(invalid_data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compression_type_debug_clone_copy() {
+        let ct = CompressionType::Zlib;
+        let cloned = ct.clone();
+        let copied = ct;
+        assert_eq!(cloned, copied);
+        assert!(format!("{:?}", ct).contains("Zlib"));
+
+        let none = CompressionType::None;
+        assert!(format!("{:?}", none).contains("None"));
+    }
+
+    #[test]
+    fn test_compression_config_debug_clone() {
+        let config = CompressionConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.compression_type, config.compression_type);
+        assert_eq!(cloned.level, config.level);
+        assert!(format!("{:?}", config).contains("CompressionConfig"));
+    }
+
+    #[test]
+    fn test_compress_empty_data() {
+        let compressor = Compressor::default();
+        let empty: &[u8] = &[];
+        let compressed = compressor.compress(empty).unwrap();
+        let decompressed = compressor.decompress(&compressed).unwrap();
+        assert!(decompressed.is_empty());
+    }
+
+    #[test]
+    fn test_compress_large_data() {
+        let compressor = Compressor::default();
+        let large_data: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
+        let compressed = compressor.compress(&large_data).unwrap();
+        let decompressed = compressor.decompress(&compressed).unwrap();
+        assert_eq!(large_data, decompressed);
+    }
+
+    #[test]
+    fn test_compress_with_different_levels() {
+        for level in [0, 3, 6, 9] {
+            let config = CompressionConfig {
+                compression_type: CompressionType::Zlib,
+                level,
+            };
+            let compressor = Compressor::new(config);
+            let data = b"test data for compression level testing";
+            let compressed = compressor.compress(data).unwrap();
+            let decompressed = compressor.decompress(&compressed).unwrap();
+            assert_eq!(data.as_slice(), decompressed.as_slice());
+        }
+    }
+
+    #[test]
+    fn test_compressor_new() {
+        let config = CompressionConfig {
+            compression_type: CompressionType::None,
+            level: 0,
+        };
+        let compressor = Compressor::new(config);
+        assert_eq!(compressor.config.compression_type, CompressionType::None);
+    }
 }
