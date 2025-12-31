@@ -1,6 +1,6 @@
 [package]
-name = "gitstratum-frontend"
-description = "Git protocol frontend for GitStratum (HTTP and SSH serving)"
+name = "gitstratum-metadata-cluster"
+description = "Metadata storage cluster for GitStratum (commits, trees, refs)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 gitstratum-core = { workspace = true }
-gitstratum-hashring = { workspace = true }
 gitstratum-proto = { workspace = true }
 
 tokio = { workspace = true }
@@ -18,12 +17,16 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 tonic = { workspace = true }
 serde = { workspace = true }
+bincode = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+parking_lot = { workspace = true }
 bytes = { workspace = true }
-flate2 = { workspace = true }
-siphasher = "1.0"
-dashmap = "5.5"
+lru = { workspace = true }
+chrono = { workspace = true }
+siphasher = { workspace = true }
+
+rocksdb = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

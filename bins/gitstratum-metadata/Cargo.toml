@@ -11,7 +11,7 @@ name = "gitstratum-metadata"
 path = "src/main.rs"
 
 [dependencies]
-gitstratum-metadata = { path = "../../gitstratum-metadata" }
+gitstratum-metadata-cluster = { path = "../../gitstratum-metadata-cluster" }
 gitstratum-core = { path = "../../gitstratum-core" }
 gitstratum-proto = { path = "../../gitstratum-proto" }
 tokio.workspace = true

@@ -43,8 +43,8 @@ async fn main() -> Result<()> {
 
     std::fs::create_dir_all(&data_dir)?;
 
-    let store = gitstratum_control_plane::ControlPlaneStore::with_db(&data_dir)?;
-    let (_log_store, _state_machine) = gitstratum_control_plane::create_stores(store);
+    let store = gitstratum_control_plane_cluster::ControlPlaneStore::with_db(&data_dir)?;
+    let (_log_store, _state_machine) = gitstratum_control_plane_cluster::create_stores(store);
 
     println!("[INFO] RocksDB store initialized");
 

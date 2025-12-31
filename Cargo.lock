@@ -990,7 +990,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "gitstratum-control-plane",
+ "gitstratum-control-plane-cluster",
  "gitstratum-core",
  "gitstratum-hashring",
  "gitstratum-proto",
@@ -1000,7 +1000,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitstratum-control-plane"
+name = "gitstratum-control-plane-cluster"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -1042,7 +1042,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "gitstratum-control-plane",
+ "gitstratum-control-plane-cluster",
  "gitstratum-core",
  "gitstratum-hashring",
  "gitstratum-proto",
@@ -1050,7 +1050,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitstratum-frontend"
+name = "gitstratum-frontend-bin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "gitstratum-control-plane-cluster",
+ "gitstratum-core",
+ "gitstratum-frontend-cluster",
+ "gitstratum-hashring",
+ "gitstratum-metadata-cluster",
+ "gitstratum-object-cluster",
+ "gitstratum-proto",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "gitstratum-frontend-cluster"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -1073,23 +1090,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitstratum-frontend-bin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "gitstratum-control-plane",
- "gitstratum-core",
- "gitstratum-frontend",
- "gitstratum-hashring",
- "gitstratum-metadata",
- "gitstratum-object",
- "gitstratum-proto",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "gitstratum-hashring"
 version = "0.1.0"
 dependencies = [
@@ -1103,7 +1103,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitstratum-metadata"
+name = "gitstratum-metadata-bin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "gitstratum-core",
+ "gitstratum-metadata-cluster",
+ "gitstratum-proto",
+ "tokio",
+ "tonic",
+ "uuid",
+]
+
+[[package]]
+name = "gitstratum-metadata-cluster"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -1128,20 +1142,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitstratum-metadata-bin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "gitstratum-core",
- "gitstratum-metadata",
- "gitstratum-proto",
- "tokio",
- "tonic",
- "uuid",
-]
-
-[[package]]
 name = "gitstratum-metrics"
 version = "0.1.0"
 dependencies = [
@@ -1152,7 +1152,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitstratum-object"
+name = "gitstratum-object-bin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "gitstratum-core",
+ "gitstratum-object-cluster",
+ "gitstratum-proto",
+ "tokio",
+ "tonic",
+ "uuid",
+]
+
+[[package]]
+name = "gitstratum-object-cluster"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -1175,20 +1189,6 @@ dependencies = [
  "tokio-test",
  "tonic",
  "tracing",
-]
-
-[[package]]
-name = "gitstratum-object-bin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "gitstratum-core",
- "gitstratum-object",
- "gitstratum-proto",
- "tokio",
- "tonic",
- "uuid",
 ]
 
 [[package]]

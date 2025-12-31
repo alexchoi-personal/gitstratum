@@ -11,7 +11,7 @@ name = "gitstratum-control"
 path = "src/main.rs"
 
 [dependencies]
-gitstratum-control-plane = { path = "../../gitstratum-control-plane" }
+gitstratum-control-plane-cluster = { path = "../../gitstratum-control-plane-cluster" }
 gitstratum-core = { path = "../../gitstratum-core" }
 gitstratum-proto = { path = "../../gitstratum-proto" }
 gitstratum-hashring = { path = "../../gitstratum-hashring" }

@@ -550,7 +550,7 @@ gitstratum-cluster/
 │                         FRONTEND CLUSTER
 │   ════════════════════════════════════════════════════════════════
 │
-├── gitstratum-frontend/
+├── gitstratum-frontend-cluster/
 │   └── src/
 │       ├── lib.rs
 │       ├── server.rs              # SSH + HTTPS server
@@ -592,7 +592,7 @@ gitstratum-cluster/
 │                       CONTROL PLANE CLUSTER
 │   ════════════════════════════════════════════════════════════════
 │
-├── gitstratum-control-plane/
+├── gitstratum-control-plane-cluster/
 │   └── src/
 │       ├── lib.rs
 │       ├── raft/
@@ -636,7 +636,7 @@ gitstratum-cluster/
 │                         METADATA CLUSTER
 │   ════════════════════════════════════════════════════════════════
 │
-├── gitstratum-metadata/
+├── gitstratum-metadata-cluster/
 │   └── src/
 │       ├── lib.rs
 │       ├── store/
@@ -672,7 +672,7 @@ gitstratum-cluster/
 │                          OBJECT CLUSTER
 │   ════════════════════════════════════════════════════════════════
 │
-├── gitstratum-object/
+├── gitstratum-object-cluster/
 │   └── src/
 │       ├── lib.rs
 │       ├── store/
@@ -736,10 +736,10 @@ gitstratum-cluster/
 │           └── object.rs
 │
 └── bins/                          # Binaries
-    ├── gitstratum-frontend/
+    ├── gitstratum-frontend-cluster/
     ├── gitstratum-control/
-    ├── gitstratum-metadata/
-    ├── gitstratum-object/
+    ├── gitstratum-metadata-cluster/
+    ├── gitstratum-object-cluster/
     └── gitstratum-ctl/
 ```
 

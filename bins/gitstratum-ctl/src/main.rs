@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use gitstratum_control_plane::{ClusterStateResponse, ControlPlaneClient};
+use gitstratum_control_plane_cluster::{ClusterStateResponse, ControlPlaneClient};
 use gitstratum_hashring::NodeState;
 
 #[derive(Parser, Debug)]
@@ -30,7 +30,7 @@ enum Command {
         port: u16,
 
         #[arg(long, value_parser = parse_node_type)]
-        node_type: gitstratum_control_plane::NodeType,
+        node_type: gitstratum_control_plane_cluster::NodeType,
     },
 
     #[command(name = "remove-node")]
@@ -63,12 +63,12 @@ enum Command {
     HashRing,
 }
 
-fn parse_node_type(s: &str) -> Result<gitstratum_control_plane::NodeType, String> {
+fn parse_node_type(s: &str) -> Result<gitstratum_control_plane_cluster::NodeType, String> {
     match s.to_lowercase().as_str() {
-        "control-plane" | "control" => Ok(gitstratum_control_plane::NodeType::ControlPlane),
-        "metadata" => Ok(gitstratum_control_plane::NodeType::Metadata),
-        "object" => Ok(gitstratum_control_plane::NodeType::Object),
-        "frontend" => Ok(gitstratum_control_plane::NodeType::Frontend),
+        "control-plane" | "control" => Ok(gitstratum_control_plane_cluster::NodeType::ControlPlane),
+        "metadata" => Ok(gitstratum_control_plane_cluster::NodeType::Metadata),
+        "object" => Ok(gitstratum_control_plane_cluster::NodeType::Object),
+        "frontend" => Ok(gitstratum_control_plane_cluster::NodeType::Frontend),
         _ => Err(format!(
             "invalid node type: {}. Valid types: control-plane, metadata, object, frontend",
             s
@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
             port,
             node_type,
         } => {
-            let node = gitstratum_control_plane::ExtendedNodeInfo {
+            let node = gitstratum_control_plane_cluster::ExtendedNodeInfo {
                 id: node_id.clone(),
                 address,
                 port,

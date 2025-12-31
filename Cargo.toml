@@ -3,10 +3,10 @@ resolver = "2"
 members = [
     "gitstratum-core",
     "gitstratum-hashring",
-    "gitstratum-control-plane",
-    "gitstratum-metadata",
-    "gitstratum-object",
-    "gitstratum-frontend",
+    "gitstratum-control-plane-cluster",
+    "gitstratum-metadata-cluster",
+    "gitstratum-object-cluster",
+    "gitstratum-frontend-cluster",
     "gitstratum-proto",
     "gitstratum-operator",
     "gitstratum-metrics",
@@ -90,10 +90,10 @@ proptest = "1.4"
 # Internal crates
 gitstratum-core = { path = "gitstratum-core" }
 gitstratum-hashring = { path = "gitstratum-hashring" }
-gitstratum-control-plane = { path = "gitstratum-control-plane" }
-gitstratum-metadata = { path = "gitstratum-metadata" }
-gitstratum-object = { path = "gitstratum-object" }
-gitstratum-frontend = { path = "gitstratum-frontend" }
+gitstratum-control-plane-cluster = { path = "gitstratum-control-plane-cluster" }
+gitstratum-metadata-cluster = { path = "gitstratum-metadata-cluster" }
+gitstratum-object-cluster = { path = "gitstratum-object-cluster" }
+gitstratum-frontend-cluster = { path = "gitstratum-frontend-cluster" }
 gitstratum-proto = { path = "gitstratum-proto" }
 gitstratum-operator = { path = "gitstratum-operator" }
 gitstratum-storage = { path = "gitstratum-storage" }

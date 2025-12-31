@@ -37,10 +37,10 @@ GitStratum is a horizontally scalable Git hosting backend that separates storage
 | Crate | Description |
 |-------|-------------|
 | `gitstratum-core` | Core types (Oid, Blob, Commit, Tree, etc.) |
-| `gitstratum-control-plane` | Raft consensus and cluster coordination |
-| `gitstratum-metadata` | Commit/tree/ref storage |
-| `gitstratum-object` | Blob storage with compression |
-| `gitstratum-frontend` | Git protocol implementation |
+| `gitstratum-control-plane-cluster` | Raft consensus and cluster coordination |
+| `gitstratum-metadata-cluster` | Commit/tree/ref storage |
+| `gitstratum-object-cluster` | Blob storage with compression |
+| `gitstratum-frontend-cluster` | Git protocol implementation |
 | `gitstratum-operator` | Kubernetes operator |
 | `gitstratum-storage` | NVMe-optimized storage engine |
 | `gitstratum-hashring` | Consistent hashing |

@@ -11,7 +11,7 @@ name = "gitstratum-object"
 path = "src/main.rs"
 
 [dependencies]
-gitstratum-object = { path = "../../gitstratum-object" }
+gitstratum-object-cluster = { path = "../../gitstratum-object-cluster" }
 gitstratum-core = { path = "../../gitstratum-core" }
 gitstratum-proto = { path = "../../gitstratum-proto" }
 tokio.workspace = true

@@ -38,8 +38,8 @@ async fn main() -> Result<()> {
 
     std::fs::create_dir_all(&args.data_dir)?;
 
-    let store = Arc::new(gitstratum_metadata::MetadataStore::open(&args.data_dir)?);
-    let service = gitstratum_metadata::MetadataServiceImpl::new(store);
+    let store = Arc::new(gitstratum_metadata_cluster::MetadataStore::open(&args.data_dir)?);
+    let service = gitstratum_metadata_cluster::MetadataServiceImpl::new(store);
 
     println!("[INFO] RocksDB store initialized");
 

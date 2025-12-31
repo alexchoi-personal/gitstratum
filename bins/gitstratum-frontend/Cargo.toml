@@ -11,10 +11,10 @@ name = "gitstratum-frontend"
 path = "src/main.rs"
 
 [dependencies]
-gitstratum-frontend = { path = "../../gitstratum-frontend" }
-gitstratum-control-plane = { path = "../../gitstratum-control-plane" }
-gitstratum-metadata = { path = "../../gitstratum-metadata" }
-gitstratum-object = { path = "../../gitstratum-object" }
+gitstratum-frontend-cluster = { path = "../../gitstratum-frontend-cluster" }
+gitstratum-control-plane-cluster = { path = "../../gitstratum-control-plane-cluster" }
+gitstratum-metadata-cluster = { path = "../../gitstratum-metadata-cluster" }
+gitstratum-object-cluster = { path = "../../gitstratum-object-cluster" }
 gitstratum-core = { path = "../../gitstratum-core" }
 gitstratum-proto = { path = "../../gitstratum-proto" }
 gitstratum-hashring = { path = "../../gitstratum-hashring" }
