@@ -100,6 +100,9 @@ gitstratum-operator = { path = "gitstratum-operator" }
 gitstratum-storage = { path = "gitstratum-storage" }
 gitstratum-lfs = { path = "gitstratum-lfs" }
 
+# External HA framework (has newer k8s dependencies, enable via kubernetes feature)
+# k8s-operator = { path = "../k8s-operator" }
+
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 unused_variables = "allow"

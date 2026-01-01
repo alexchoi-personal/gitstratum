@@ -196,7 +196,8 @@ impl ClusterStateSnapshot {
 
     pub fn add_node(&mut self, node: ExtendedNodeInfo) {
         let node_type = node.node_type;
-        self.nodes_by_type_mut(node_type).insert(node.id.clone(), node);
+        self.nodes_by_type_mut(node_type)
+            .insert(node.id.clone(), node);
         self.version += 1;
     }
 

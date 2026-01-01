@@ -34,16 +34,29 @@ pub enum Request {
     CleanupExpiredLocks,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum Response {
+    #[default]
     Success,
     NodeAdded,
-    NodeRemoved { found: bool },
-    NodeStateSet { found: bool },
-    LockAcquired { lock_id: String },
-    LockNotAcquired { reason: String },
-    LockReleased { found: bool },
-    LocksCleanedUp { count: usize },
+    NodeRemoved {
+        found: bool,
+    },
+    NodeStateSet {
+        found: bool,
+    },
+    LockAcquired {
+        lock_id: String,
+    },
+    LockNotAcquired {
+        reason: String,
+    },
+    LockReleased {
+        found: bool,
+    },
+    LocksCleanedUp {
+        count: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -163,6 +176,50 @@ pub fn apply_request(state: &mut ClusterStateSnapshot, request: &Request) -> Res
 }
 
 pub type StateMachineStore = Adaptor<TypeConfig, super::node::ControlPlaneStore>;
+
+#[derive(Debug, Clone, Default)]
+pub struct GitStratumStateMachine {
+    pub state: ClusterStateSnapshot,
+}
+
+impl GitStratumStateMachine {
+    pub fn new() -> Self {
+        Self {
+            state: ClusterStateSnapshot::new(),
+        }
+    }
+
+    pub fn with_state(state: ClusterStateSnapshot) -> Self {
+        Self { state }
+    }
+
+    pub fn state(&self) -> &ClusterStateSnapshot {
+        &self.state
+    }
+
+    pub fn state_mut(&mut self) -> &mut ClusterStateSnapshot {
+        &mut self.state
+    }
+}
+
+#[cfg(feature = "kubernetes")]
+impl k8s_operator::raft::StateMachine for GitStratumStateMachine {
+    type Request = Request;
+    type Response = Response;
+    type Snapshot = ClusterStateSnapshot;
+
+    fn apply(&mut self, request: &Self::Request) -> Self::Response {
+        apply_request(&mut self.state, request)
+    }
+
+    fn snapshot(&self) -> Self::Snapshot {
+        self.state.clone()
+    }
+
+    fn restore(&mut self, snapshot: Self::Snapshot) {
+        self.state = snapshot;
+    }
+}
 
 #[cfg(test)]
 mod tests {

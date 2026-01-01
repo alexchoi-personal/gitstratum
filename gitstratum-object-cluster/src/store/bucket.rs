@@ -1,5 +1,3 @@
-#![cfg(feature = "bucketstore")]
-
 use std::pin::Pin;
 use std::task::{Context, Poll};
 

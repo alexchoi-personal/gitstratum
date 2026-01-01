@@ -10,6 +10,6 @@ pub use log::{LogReader, LogStore};
 pub use network::RaftNetwork;
 pub use node::{create_stores, ControlPlaneRaft, ControlPlaneStore, NodeId, TypeConfig};
 pub use state_machine::{
-    apply_request, Request, Response, StateMachineData, StateMachineSnapshotBuilder,
-    StateMachineStore, StoredSnapshot,
+    apply_request, GitStratumStateMachine, Request, Response, StateMachineData,
+    StateMachineSnapshotBuilder, StateMachineStore, StoredSnapshot,
 };

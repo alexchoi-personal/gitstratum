@@ -27,9 +27,18 @@ uuid = { workspace = true }
 openraft = { workspace = true }
 rocksdb = { workspace = true }
 
+# k8s-operator integration (requires vendoring k8s-openapi 0.26+, kube 2.0+)
+# Uncomment when vendor is updated:
+# k8s-operator = { path = "../../k8s-operator", optional = true }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
+
+[features]
+default = []
+# Uncomment when k8s-operator dependency is enabled:
+# kubernetes = ["dep:k8s-operator"]
 
 [lints]
 workspace = true
