@@ -131,11 +131,19 @@ impl ConsistentHashRing {
         u64::from_le_bytes(result[..8].try_into().unwrap())
     }
 
+    /// Compute position for arbitrary keys by hashing them.
+    /// Use this for non-OID keys that need uniform distribution.
     fn key_position(key: &[u8]) -> u64 {
         let mut hasher = Sha256::new();
         hasher.update(key);
         let result = hasher.finalize();
         u64::from_le_bytes(result[..8].try_into().unwrap())
+    }
+
+    /// Compute position for OIDs directly from their bytes.
+    /// OIDs are already SHA-256 hashes, so no additional hashing needed.
+    fn oid_position(oid: &Oid) -> u64 {
+        u64::from_le_bytes(oid.as_bytes()[..8].try_into().unwrap())
     }
 
     pub fn add_node(&self, node: NodeInfo) -> Result<()> {
@@ -229,8 +237,7 @@ impl ConsistentHashRing {
         *self.version.read()
     }
 
-    pub fn primary_node(&self, key: &[u8]) -> Result<NodeInfo> {
-        let position = Self::key_position(key);
+    fn primary_node_at_position(&self, position: u64) -> Result<NodeInfo> {
         let ring = self.ring.read();
 
         if ring.is_empty() {
@@ -251,11 +258,17 @@ impl ConsistentHashRing {
             .ok_or_else(|| HashRingError::NodeNotFound(vnode.node_id.to_string()))
     }
 
-    pub fn primary_node_for_oid(&self, oid: &Oid) -> Result<NodeInfo> {
-        self.primary_node(oid.as_bytes())
+    pub fn primary_node(&self, key: &[u8]) -> Result<NodeInfo> {
+        let position = Self::key_position(key);
+        self.primary_node_at_position(position)
     }
 
-    pub fn nodes_for_key(&self, key: &[u8]) -> Result<Vec<NodeInfo>> {
+    pub fn primary_node_for_oid(&self, oid: &Oid) -> Result<NodeInfo> {
+        let position = Self::oid_position(oid);
+        self.primary_node_at_position(position)
+    }
+
+    fn nodes_at_position(&self, position: u64) -> Result<Vec<NodeInfo>> {
         let nodes = self.nodes.read();
         let active_count = nodes.values().filter(|n| n.state.can_serve_reads()).count();
 
@@ -266,7 +279,6 @@ impl ConsistentHashRing {
             ));
         }
 
-        let position = Self::key_position(key);
         let ring = self.ring.read();
 
         if ring.is_empty() {
@@ -309,8 +321,14 @@ impl ConsistentHashRing {
         Ok(result)
     }
 
+    pub fn nodes_for_key(&self, key: &[u8]) -> Result<Vec<NodeInfo>> {
+        let position = Self::key_position(key);
+        self.nodes_at_position(position)
+    }
+
     pub fn nodes_for_oid(&self, oid: &Oid) -> Result<Vec<NodeInfo>> {
-        self.nodes_for_key(oid.as_bytes())
+        let position = Self::oid_position(oid);
+        self.nodes_at_position(position)
     }
 
     pub fn nodes_for_prefix(&self, prefix: u8) -> Vec<NodeInfo> {
