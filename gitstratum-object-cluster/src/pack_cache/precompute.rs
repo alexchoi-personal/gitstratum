@@ -9,6 +9,7 @@ use tracing::{debug, info, instrument, warn};
 
 use super::hot_repos::HotRepoTracker;
 use super::{PackCache, PackCacheKey, PackData};
+use crate::store::ObjectStorage;
 use crate::store::ObjectStore;
 
 #[derive(Debug, Clone)]
@@ -264,7 +265,7 @@ impl PackPrecomputer {
 
             visited.insert(oid);
 
-            if let Some(blob) = self.store.get(&oid)? {
+            if let Some(blob) = self.store.get(&oid).await? {
                 objects.push((oid, blob.data));
             }
         }
@@ -324,9 +325,35 @@ fn encode_object_header(obj_type: u8, size: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::ObjectStorage;
     use gitstratum_core::Blob;
     use tempfile::TempDir;
 
+    #[cfg(feature = "bucketstore")]
+    async fn create_test_store() -> (Arc<ObjectStore>, TempDir) {
+        use gitstratum_storage::BucketStoreConfig;
+        use std::time::Duration;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = BucketStoreConfig {
+            data_dir: temp_dir.path().to_path_buf(),
+            bucket_count: 64,
+            bucket_cache_size: 16,
+            max_data_file_size: 1024 * 1024,
+            sync_writes: true,
+            io_queue_depth: 4,
+            io_queue_count: 1,
+            compaction: gitstratum_storage::config::CompactionConfig {
+                fragmentation_threshold: 0.4,
+                check_interval: Duration::from_secs(300),
+                max_concurrent: 1,
+            },
+        };
+        let store = Arc::new(ObjectStore::new(config).await.unwrap());
+        (store, temp_dir)
+    }
+
+    #[cfg(not(feature = "bucketstore"))]
     fn create_test_store() -> (Arc<ObjectStore>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let store = Arc::new(ObjectStore::new(temp_dir.path()).unwrap());
@@ -382,7 +409,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_precomputer_submit() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();
         let precomputer = PackPrecomputer::new(config, cache, store);
@@ -396,7 +427,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_precomputer_submit_cached() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();
         let precomputer = PackPrecomputer::new(config, cache.clone(), store);
@@ -411,10 +446,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_precomputer_process_request() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
 
         let blob = Blob::new(b"test content".to_vec());
-        store.put(&blob).unwrap();
+        store.put(&blob).await.unwrap();
 
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();
@@ -429,6 +467,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_precomputer_shutdown() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();
@@ -471,9 +512,13 @@ mod tests {
         assert_eq!(config.hot_repo_threshold, 10);
     }
 
-    #[test]
-    fn test_with_hot_tracker() {
+    #[tokio::test]
+    async fn test_with_hot_tracker() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();
 
@@ -483,9 +528,13 @@ mod tests {
         assert!(precomputer.hot_tracker().is_some());
     }
 
-    #[test]
-    fn test_set_and_get_ref_tip() {
+    #[tokio::test]
+    async fn test_set_and_get_ref_tip() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();
         let precomputer = PackPrecomputer::new(config, cache, store);
@@ -503,6 +552,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_precompute_for_hot_repos_no_tracker() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();
@@ -514,6 +566,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_precompute_for_hot_repos_no_hot_repos() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();
@@ -527,6 +582,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_precompute_for_hot_repos_with_repos() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let mut config = PrecomputeConfig::default();
@@ -546,8 +604,11 @@ mod tests {
         assert_eq!(precomputer.pending_count(), 2);
     }
 
-    #[test]
-    fn test_hot_tracker_accessor() {
+    #[tokio::test]
+    async fn test_hot_tracker_accessor() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
         let config = PrecomputeConfig::default();

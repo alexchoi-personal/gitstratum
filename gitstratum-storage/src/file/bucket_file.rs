@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::bucket::{DiskBucket, BUCKET_SIZE};
 use crate::error::Result;
@@ -8,6 +8,22 @@ use crate::error::Result;
 pub struct BucketFile {
     file: File,
     bucket_count: u32,
+    path: PathBuf,
+}
+
+impl Clone for BucketFile {
+    fn clone(&self) -> Self {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)
+            .expect("failed to clone bucket file");
+        Self {
+            file,
+            bucket_count: self.bucket_count,
+            path: self.path.clone(),
+        }
+    }
 }
 
 impl BucketFile {
@@ -22,7 +38,11 @@ impl BucketFile {
         let total_size = bucket_count as u64 * BUCKET_SIZE as u64;
         file.set_len(total_size)?;
 
-        Ok(Self { file, bucket_count })
+        Ok(Self {
+            file,
+            bucket_count,
+            path: path.to_path_buf(),
+        })
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -31,7 +51,11 @@ impl BucketFile {
         let metadata = file.metadata()?;
         let bucket_count = (metadata.len() / BUCKET_SIZE as u64) as u32;
 
-        Ok(Self { file, bucket_count })
+        Ok(Self {
+            file,
+            bucket_count,
+            path: path.to_path_buf(),
+        })
     }
 
     pub fn read_bucket(&mut self, bucket_id: u32) -> Result<DiskBucket> {

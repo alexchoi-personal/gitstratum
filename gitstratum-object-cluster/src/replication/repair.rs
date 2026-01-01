@@ -7,7 +7,7 @@ use gitstratum_core::Oid;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn};
 
-use crate::store::ObjectStore;
+use crate::store::{ObjectStorage, ObjectStore};
 
 #[derive(Debug, Clone)]
 pub struct RepairTask {
@@ -198,7 +198,7 @@ impl ReplicationRepairer {
     async fn process_repair(&self, oid: Oid, task: RepairTask) {
         self.repairs_attempted.fetch_add(1, Ordering::Relaxed);
 
-        let blob = match self.store.get(&oid) {
+        let blob = match self.store.get(&oid).await {
             Ok(Some(blob)) => blob,
             Ok(None) => {
                 debug!(oid = %oid, "blob not found locally, removing repair task");
@@ -290,9 +290,35 @@ impl RepairerStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::ObjectStorage;
     use gitstratum_core::Blob;
     use tempfile::TempDir;
 
+    #[cfg(feature = "bucketstore")]
+    async fn create_test_store() -> (Arc<ObjectStore>, TempDir) {
+        use gitstratum_storage::BucketStoreConfig;
+        use std::time::Duration;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = BucketStoreConfig {
+            data_dir: temp_dir.path().to_path_buf(),
+            bucket_count: 64,
+            bucket_cache_size: 16,
+            max_data_file_size: 1024 * 1024,
+            sync_writes: true,
+            io_queue_depth: 4,
+            io_queue_count: 1,
+            compaction: gitstratum_storage::config::CompactionConfig {
+                fragmentation_threshold: 0.4,
+                check_interval: Duration::from_secs(300),
+                max_concurrent: 1,
+            },
+        };
+        let store = Arc::new(ObjectStore::new(config).await.unwrap());
+        (store, temp_dir)
+    }
+
+    #[cfg(not(feature = "bucketstore"))]
     fn create_test_store() -> (Arc<ObjectStore>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let store = Arc::new(ObjectStore::new(temp_dir.path()).unwrap());
@@ -343,16 +369,24 @@ mod tests {
         assert_eq!(config.queue_size, 10000);
     }
 
-    #[test]
-    fn test_replication_repairer_new() {
+    #[tokio::test]
+    async fn test_replication_repairer_new() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
         assert_eq!(repairer.queue_size(), 0);
     }
 
-    #[test]
-    fn test_replication_repairer_with_config() {
+    #[tokio::test]
+    async fn test_replication_repairer_with_config() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let config = RepairConfig {
             max_attempts: 5,
             ..Default::default()
@@ -361,9 +395,13 @@ mod tests {
         assert_eq!(repairer.config.max_attempts, 5);
     }
 
-    #[test]
-    fn test_queue_repair() {
+    #[tokio::test]
+    async fn test_queue_repair() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
         let oid = Oid::hash(b"test");
 
@@ -374,9 +412,13 @@ mod tests {
         assert_eq!(task.target_nodes, vec!["node-1".to_string()]);
     }
 
-    #[test]
-    fn test_queue_repair_merge_nodes() {
+    #[tokio::test]
+    async fn test_queue_repair_merge_nodes() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
         let oid = Oid::hash(b"test");
 
@@ -390,9 +432,13 @@ mod tests {
         assert!(task.target_nodes.contains(&"node-2".to_string()));
     }
 
-    #[test]
-    fn test_queue_repair_empty_nodes() {
+    #[tokio::test]
+    async fn test_queue_repair_empty_nodes() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
         let oid = Oid::hash(b"test");
 
@@ -400,9 +446,13 @@ mod tests {
         assert_eq!(repairer.queue_size(), 0);
     }
 
-    #[test]
-    fn test_queue_repair_full_queue() {
+    #[tokio::test]
+    async fn test_queue_repair_full_queue() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let config = RepairConfig {
             queue_size: 2,
             ..Default::default()
@@ -416,9 +466,13 @@ mod tests {
         assert_eq!(repairer.queue_size(), 2);
     }
 
-    #[test]
-    fn test_clear_queue() {
+    #[tokio::test]
+    async fn test_clear_queue() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
 
         repairer.queue_repair(Oid::hash(b"1"), vec!["node-1".to_string()]);
@@ -429,9 +483,13 @@ mod tests {
         assert_eq!(repairer.queue_size(), 0);
     }
 
-    #[test]
-    fn test_pending_oids() {
+    #[tokio::test]
+    async fn test_pending_oids() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
 
         let oid1 = Oid::hash(b"1");
@@ -446,9 +504,13 @@ mod tests {
         assert!(pending.contains(&oid2));
     }
 
-    #[test]
-    fn test_stats_initial() {
+    #[tokio::test]
+    async fn test_stats_initial() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
 
         let stats = repairer.stats();
@@ -482,10 +544,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_repair_blob_found() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
 
         let blob = Blob::new(b"test data".to_vec());
-        store.put(&blob).unwrap();
+        store.put(&blob).await.unwrap();
 
         let repairer = ReplicationRepairer::new(store);
         let task = RepairTask::new(vec!["node-1".to_string()]);
@@ -500,7 +565,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_repair_blob_not_found() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
 
         let oid = Oid::hash(b"nonexistent");
@@ -514,12 +583,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_batch() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
 
         let blob1 = Blob::new(b"data 1".to_vec());
         let blob2 = Blob::new(b"data 2".to_vec());
-        store.put(&blob1).unwrap();
-        store.put(&blob2).unwrap();
+        store.put(&blob1).await.unwrap();
+        store.put(&blob2).await.unwrap();
 
         let repairer = ReplicationRepairer::new(store);
 
@@ -536,7 +608,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_receiver() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let (tx, rx) = mpsc::channel(10);
 
         let mut repairer = ReplicationRepairer::new(store).with_receiver(rx);
@@ -555,9 +631,13 @@ mod tests {
         handle.await.unwrap();
     }
 
-    #[test]
-    fn test_shutdown() {
+    #[tokio::test]
+    async fn test_shutdown() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
+
         let repairer = ReplicationRepairer::new(store);
         repairer.shutdown();
     }

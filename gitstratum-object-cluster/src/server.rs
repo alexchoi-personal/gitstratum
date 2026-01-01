@@ -15,6 +15,7 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, instrument, warn};
 
 use crate::error::ObjectStoreError;
+use crate::store::ObjectStorage;
 use crate::store::ObjectStore;
 
 pub struct ObjectServiceImpl {
@@ -71,7 +72,7 @@ impl ObjectService for ObjectServiceImpl {
 
         debug!(%oid, "get_blob");
 
-        match self.store.get(&oid).map_err(ObjectStoreError::from)? {
+        match self.store.get(&oid).await.map_err(ObjectStoreError::from)? {
             Some(blob) => Ok(Response::new(GetBlobResponse {
                 blob: Some(Self::core_blob_to_proto(&blob, false)),
                 found: true,
@@ -105,7 +106,7 @@ impl ObjectService for ObjectServiceImpl {
                     }
                 };
 
-                match store.get(&oid) {
+                match store.get(&oid).await {
                     Ok(Some(blob)) => {
                         let proto_blob = Self::core_blob_to_proto(&blob, false);
                         if tx.send(Ok(proto_blob)).await.is_err() {
@@ -138,7 +139,7 @@ impl ObjectService for ObjectServiceImpl {
 
         debug!(oid = %core_blob.oid, "put_blob");
 
-        self.store.put(&core_blob).map_err(ObjectStoreError::from)?;
+        self.store.put(&core_blob).await.map_err(ObjectStoreError::from)?;
 
         Ok(Response::new(PutBlobResponse {
             success: true,
@@ -159,7 +160,7 @@ impl ObjectService for ObjectServiceImpl {
         while let Some(result) = stream.next().await {
             match result {
                 Ok(blob) => match Self::proto_blob_to_core(&blob) {
-                    Ok(core_blob) => match self.store.put(&core_blob) {
+                    Ok(core_blob) => match self.store.put(&core_blob).await {
                         Ok(()) => success_count += 1,
                         Err(e) => {
                             error_count += 1;
@@ -217,7 +218,7 @@ impl ObjectService for ObjectServiceImpl {
 
         debug!(%oid, "delete_blob");
 
-        match self.store.delete(&oid) {
+        match self.store.delete(&oid).await {
             Ok(_) => Ok(Response::new(DeleteBlobResponse {
                 success: true,
                 error: String::new(),
@@ -246,16 +247,37 @@ impl ObjectService for ObjectServiceImpl {
         let (tx, rx) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            for result in store.iter_range(from_position, to_position) {
-                match result {
-                    Ok((_, blob)) => {
-                        let proto_blob = Self::core_blob_to_proto(&blob, false);
-                        if tx.send(Ok(proto_blob)).await.is_err() {
-                            break;
+            #[cfg(feature = "bucketstore")]
+            {
+                let mut stream = store.iter_range(from_position, to_position);
+                while let Some(result) = std::pin::Pin::new(&mut stream).next().await {
+                    match result {
+                        Ok((_, blob)) => {
+                            let proto_blob = Self::core_blob_to_proto(&blob, false);
+                            if tx.send(Ok(proto_blob)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
                         }
                     }
-                    Err(e) => {
-                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                }
+            }
+
+            #[cfg(not(feature = "bucketstore"))]
+            {
+                for result in store.iter_range(from_position, to_position) {
+                    match result {
+                        Ok((_, blob)) => {
+                            let proto_blob = Self::core_blob_to_proto(&blob, false);
+                            if tx.send(Ok(proto_blob)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                        }
                     }
                 }
             }
@@ -277,7 +299,7 @@ impl ObjectService for ObjectServiceImpl {
             match result {
                 Ok(blob) => {
                     let core_blob = Self::proto_blob_to_core(&blob)?;
-                    self.store.put(&core_blob).map_err(ObjectStoreError::from)?;
+                    self.store.put(&core_blob).await.map_err(ObjectStoreError::from)?;
                     received_count += 1;
                 }
                 Err(e) => {
@@ -318,6 +340,32 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[cfg(feature = "bucketstore")]
+    async fn create_test_server() -> (ObjectServiceImpl, TempDir) {
+        use gitstratum_storage::BucketStoreConfig;
+        use std::time::Duration;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = BucketStoreConfig {
+            data_dir: temp_dir.path().to_path_buf(),
+            bucket_count: 64,
+            bucket_cache_size: 16,
+            max_data_file_size: 1024 * 1024,
+            sync_writes: true,
+            io_queue_depth: 4,
+            io_queue_count: 1,
+            compaction: gitstratum_storage::config::CompactionConfig {
+                fragmentation_threshold: 0.4,
+                check_interval: Duration::from_secs(300),
+                max_concurrent: 1,
+            },
+        };
+        let store = Arc::new(ObjectStore::new(config).await.unwrap());
+        let server = ObjectServiceImpl::new(store);
+        (server, temp_dir)
+    }
+
+    #[cfg(not(feature = "bucketstore"))]
     async fn create_test_server() -> (ObjectServiceImpl, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let store = Arc::new(ObjectStore::new(temp_dir.path()).unwrap());

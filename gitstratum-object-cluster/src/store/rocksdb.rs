@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use bytes::Bytes;
 use gitstratum_core::{Blob, Oid};
 use rocksdb::{Options, DB};
@@ -7,6 +8,7 @@ use std::sync::Arc;
 use tracing::{debug, instrument, trace};
 
 use super::compression::{CompressionConfig, Compressor};
+use super::traits::ObjectStorage;
 use crate::error::{ObjectStoreError, Result};
 
 #[derive(Debug, Clone, Default)]
@@ -68,7 +70,7 @@ impl RocksDbStore {
     }
 
     #[instrument(skip(self), fields(oid = %oid))]
-    pub fn get(&self, oid: &Oid) -> Result<Option<Blob>> {
+    fn get_sync(&self, oid: &Oid) -> Result<Option<Blob>> {
         trace!("getting blob");
 
         let key = oid.as_bytes();
@@ -82,7 +84,7 @@ impl RocksDbStore {
     }
 
     #[instrument(skip(self, blob), fields(oid = %blob.oid))]
-    pub fn put(&self, blob: &Blob) -> Result<()> {
+    fn put_sync(&self, blob: &Blob) -> Result<()> {
         trace!("putting blob");
 
         let key = blob.oid.as_bytes();
@@ -101,7 +103,7 @@ impl RocksDbStore {
     }
 
     #[instrument(skip(self), fields(oid = %oid))]
-    pub fn delete(&self, oid: &Oid) -> Result<bool> {
+    fn delete_sync(&self, oid: &Oid) -> Result<bool> {
         trace!("deleting blob");
 
         let key = oid.as_bytes();
@@ -117,14 +119,14 @@ impl RocksDbStore {
     }
 
     #[instrument(skip(self), fields(oid = %oid))]
-    pub fn has(&self, oid: &Oid) -> bool {
+    fn has_sync(&self, oid: &Oid) -> bool {
         trace!("checking blob existence");
 
         let key = oid.as_bytes();
         self.db.get(key).map(|v| v.is_some()).unwrap_or(false)
     }
 
-    pub fn stats(&self) -> StorageStats {
+    fn stats_sync(&self) -> StorageStats {
         StorageStats {
             total_blobs: self.blob_count.load(Ordering::Relaxed),
             total_bytes: self.total_bytes.load(Ordering::Relaxed),
@@ -168,10 +170,7 @@ impl RocksDbStore {
     }
 
     fn oid_position(&self, oid: &Oid) -> u64 {
-        let bytes = oid.as_bytes();
-        u64::from_be_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
+        u64::from_le_bytes(oid.as_bytes()[..8].try_into().unwrap())
     }
 
     fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
@@ -181,6 +180,29 @@ impl RocksDbStore {
     fn decompress(&self, oid: &Oid, compressed: &[u8]) -> Result<Blob> {
         let data = self.compressor.decompress(compressed)?;
         Ok(Blob::with_oid(*oid, Bytes::from(data)))
+    }
+}
+
+#[async_trait]
+impl ObjectStorage for RocksDbStore {
+    async fn get(&self, oid: &Oid) -> Result<Option<Blob>> {
+        self.get_sync(oid)
+    }
+
+    async fn put(&self, blob: &Blob) -> Result<()> {
+        self.put_sync(blob)
+    }
+
+    async fn delete(&self, oid: &Oid) -> Result<bool> {
+        self.delete_sync(oid)
+    }
+
+    fn has(&self, oid: &Oid) -> bool {
+        self.has_sync(oid)
+    }
+
+    fn stats(&self) -> StorageStats {
+        self.stats_sync()
     }
 }
 
@@ -200,9 +222,9 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         let blob = Blob::new(b"hello world".to_vec());
-        store.put(&blob).unwrap();
+        store.put_sync(&blob).unwrap();
 
-        let retrieved = store.get(&blob.oid).unwrap().unwrap();
+        let retrieved = store.get_sync(&blob.oid).unwrap().unwrap();
         assert_eq!(retrieved.data.as_ref(), b"hello world");
     }
 
@@ -211,7 +233,7 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         let oid = Oid::hash(b"nonexistent");
-        assert!(store.get(&oid).unwrap().is_none());
+        assert!(store.get_sync(&oid).unwrap().is_none());
     }
 
     #[test]
@@ -219,10 +241,10 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         let blob = Blob::new(b"test data".to_vec());
-        assert!(!store.has(&blob.oid));
+        assert!(!store.has_sync(&blob.oid));
 
-        store.put(&blob).unwrap();
-        assert!(store.has(&blob.oid));
+        store.put_sync(&blob).unwrap();
+        assert!(store.has_sync(&blob.oid));
     }
 
     #[test]
@@ -230,12 +252,12 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         let blob = Blob::new(b"to be deleted".to_vec());
-        store.put(&blob).unwrap();
-        assert!(store.has(&blob.oid));
+        store.put_sync(&blob).unwrap();
+        assert!(store.has_sync(&blob.oid));
 
-        let deleted = store.delete(&blob.oid).unwrap();
+        let deleted = store.delete_sync(&blob.oid).unwrap();
         assert!(deleted);
-        assert!(!store.has(&blob.oid));
+        assert!(!store.has_sync(&blob.oid));
     }
 
     #[test]
@@ -243,7 +265,7 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         let oid = Oid::hash(b"nonexistent");
-        let deleted = store.delete(&oid).unwrap();
+        let deleted = store.delete_sync(&oid).unwrap();
         assert!(!deleted);
     }
 
@@ -251,16 +273,16 @@ mod tests {
     fn test_stats() {
         let (store, _dir) = create_test_store();
 
-        let stats = store.stats();
+        let stats = store.stats_sync();
         assert_eq!(stats.total_blobs, 0);
 
         let blob1 = Blob::new(b"blob 1".to_vec());
         let blob2 = Blob::new(b"blob 2".to_vec());
 
-        store.put(&blob1).unwrap();
-        store.put(&blob2).unwrap();
+        store.put_sync(&blob1).unwrap();
+        store.put_sync(&blob2).unwrap();
 
-        let stats = store.stats();
+        let stats = store.stats_sync();
         assert_eq!(stats.total_blobs, 2);
         assert!(stats.total_bytes > 0);
     }
@@ -273,9 +295,9 @@ mod tests {
         let blob2 = Blob::new(b"blob 2".to_vec());
         let blob3 = Blob::new(b"blob 3".to_vec());
 
-        store.put(&blob1).unwrap();
-        store.put(&blob2).unwrap();
-        store.put(&blob3).unwrap();
+        store.put_sync(&blob1).unwrap();
+        store.put_sync(&blob2).unwrap();
+        store.put_sync(&blob3).unwrap();
 
         let blobs: Vec<_> = store.iter().collect();
         assert_eq!(blobs.len(), 3);
@@ -290,13 +312,13 @@ mod tests {
 
         {
             let store = RocksDbStore::new(temp_dir.path()).unwrap();
-            store.put(&blob).unwrap();
+            store.put_sync(&blob).unwrap();
         }
 
         {
             let store = RocksDbStore::new(temp_dir.path()).unwrap();
-            assert!(store.has(&oid));
-            let retrieved = store.get(&oid).unwrap().unwrap();
+            assert!(store.has_sync(&oid));
+            let retrieved = store.get_sync(&oid).unwrap().unwrap();
             assert_eq!(retrieved.data.as_ref(), b"persistent data");
         }
     }
@@ -308,8 +330,8 @@ mod tests {
         let data: Vec<u8> = (0..1024 * 1024).map(|i| (i % 256) as u8).collect();
         let blob = Blob::new(data.clone());
 
-        store.put(&blob).unwrap();
-        let retrieved = store.get(&blob.oid).unwrap().unwrap();
+        store.put_sync(&blob).unwrap();
+        let retrieved = store.get_sync(&blob.oid).unwrap().unwrap();
         assert_eq!(retrieved.data.as_ref(), data.as_slice());
     }
 
@@ -318,11 +340,11 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         let blob = Blob::new(b"original".to_vec());
-        store.put(&blob).unwrap();
+        store.put_sync(&blob).unwrap();
 
-        let stats_before = store.stats();
-        store.put(&blob).unwrap();
-        let stats_after = store.stats();
+        let stats_before = store.stats_sync();
+        store.put_sync(&blob).unwrap();
+        let stats_after = store.stats_sync();
 
         assert_eq!(stats_before.total_blobs, stats_after.total_blobs);
     }
@@ -335,9 +357,9 @@ mod tests {
         let blob2 = Blob::new(b"blob 2".to_vec());
         let blob3 = Blob::new(b"blob 3".to_vec());
 
-        store.put(&blob1).unwrap();
-        store.put(&blob2).unwrap();
-        store.put(&blob3).unwrap();
+        store.put_sync(&blob1).unwrap();
+        store.put_sync(&blob2).unwrap();
+        store.put_sync(&blob3).unwrap();
 
         let blobs: Vec<_> = store.iter_range(0, u64::MAX).collect();
         assert_eq!(blobs.len(), 3);
@@ -354,8 +376,8 @@ mod tests {
         let blob1 = Blob::new(b"data 1".to_vec());
         let blob2 = Blob::new(b"data 2".to_vec());
 
-        store.put(&blob1).unwrap();
-        store.put(&blob2).unwrap();
+        store.put_sync(&blob1).unwrap();
+        store.put_sync(&blob2).unwrap();
 
         let mid = u64::MAX / 2;
         let blobs_first_half: Vec<_> = store.iter_range(0, mid).collect();
@@ -387,9 +409,9 @@ mod tests {
         let store = RocksDbStore::with_compression(temp_dir.path(), config).unwrap();
 
         let blob = Blob::new(b"test with custom compression".to_vec());
-        store.put(&blob).unwrap();
+        store.put_sync(&blob).unwrap();
 
-        let retrieved = store.get(&blob.oid).unwrap().unwrap();
+        let retrieved = store.get_sync(&blob.oid).unwrap().unwrap();
         assert_eq!(retrieved.data.as_ref(), b"test with custom compression");
     }
 }

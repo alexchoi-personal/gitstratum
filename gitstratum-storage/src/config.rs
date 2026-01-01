@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
-pub struct BitcaskConfig {
+pub struct BucketStoreConfig {
     pub data_dir: PathBuf,
     pub max_data_file_size: u64,
     pub bucket_count: u32,
@@ -13,7 +13,7 @@ pub struct BitcaskConfig {
     pub compaction: CompactionConfig,
 }
 
-impl Default for BitcaskConfig {
+impl Default for BucketStoreConfig {
     fn default() -> Self {
         Self {
             data_dir: PathBuf::from("./data"),

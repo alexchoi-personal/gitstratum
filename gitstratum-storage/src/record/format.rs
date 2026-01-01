@@ -1,7 +1,7 @@
 use super::checksum::compute_crc32;
 use super::header::{RecordHeader, HEADER_SIZE, KEY_SIZE, RECORD_HEADER_MAGIC};
 use crate::bucket::EntryFlags;
-use crate::error::{BitcaskError, Result};
+use crate::error::{BucketStoreError, Result};
 use bytes::Bytes;
 use gitstratum_core::Oid;
 
@@ -18,7 +18,7 @@ pub struct DataRecord {
 impl DataRecord {
     pub fn new(oid: Oid, value: Bytes, timestamp: u64) -> Result<Self> {
         if value.len() > MAX_OBJECT_SIZE {
-            return Err(BitcaskError::ObjectTooLarge { size: value.len() });
+            return Err(BucketStoreError::ObjectTooLarge { size: value.len() });
         }
 
         let flags = if value.len() > 65536 {
@@ -54,14 +54,14 @@ impl DataRecord {
 
     pub fn from_bytes(buf: &[u8]) -> Result<Self> {
         if buf.len() < HEADER_SIZE {
-            return Err(BitcaskError::CorruptedRecord {
+            return Err(BucketStoreError::CorruptedRecord {
                 file_id: 0,
                 offset: 0,
                 reason: "buffer too small for header".to_string(),
             });
         }
 
-        let header = RecordHeader::from_bytes(buf).ok_or_else(|| BitcaskError::InvalidMagic {
+        let header = RecordHeader::from_bytes(buf).ok_or_else(|| BucketStoreError::InvalidMagic {
             expected: RECORD_MAGIC,
             actual: u32::from_le_bytes(buf[0..4].try_into().unwrap_or([0; 4])),
         })?;
@@ -72,7 +72,7 @@ impl DataRecord {
         let value_end = value_start + header.value_len as usize;
 
         if buf.len() < value_end {
-            return Err(BitcaskError::CorruptedRecord {
+            return Err(BucketStoreError::CorruptedRecord {
                 file_id: 0,
                 offset: 0,
                 reason: "buffer too small for value".to_string(),
@@ -87,7 +87,7 @@ impl DataRecord {
 
         let computed_crc = compute_crc32(&header, &key_bytes, &value);
         if computed_crc != header.crc32 {
-            return Err(BitcaskError::CrcMismatch {
+            return Err(BucketStoreError::CrcMismatch {
                 expected: header.crc32,
                 actual: computed_crc,
             });

@@ -32,6 +32,7 @@ impl Default for CompressionConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct Compressor {
     config: CompressionConfig,
 }

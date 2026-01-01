@@ -1,5 +1,5 @@
 use super::entry::{CompactEntry, ENTRY_SIZE};
-use crate::error::{BitcaskError, Result};
+use crate::error::{BucketStoreError, Result};
 
 pub const BUCKET_SIZE: usize = 4096;
 pub const BUCKET_MAGIC: u32 = 0x424B4854; // "BKHT"
@@ -70,7 +70,7 @@ impl DiskBucket {
         }
 
         if { header.magic } != BUCKET_MAGIC {
-            return Err(BitcaskError::InvalidMagic {
+            return Err(BucketStoreError::InvalidMagic {
                 expected: BUCKET_MAGIC,
                 actual: { header.magic },
             });
@@ -121,7 +121,7 @@ impl DiskBucket {
 
     pub fn insert(&mut self, entry: CompactEntry) -> Result<()> {
         if self.header.count as usize >= MAX_ENTRIES {
-            return Err(BitcaskError::BucketOverflow { bucket_id: 0 });
+            return Err(BucketStoreError::BucketOverflow { bucket_id: 0 });
         }
         self.entries[self.header.count as usize] = entry;
         self.header.count += 1;

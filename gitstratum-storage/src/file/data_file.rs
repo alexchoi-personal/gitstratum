@@ -69,6 +69,17 @@ impl DataFile {
         Ok(record.value)
     }
 
+    pub fn read_record_at(&mut self, offset: u64, size: usize) -> Result<(gitstratum_core::Oid, Bytes)> {
+        self.file.seek(SeekFrom::Start(offset))?;
+
+        let aligned_size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
+        let mut buf = vec![0u8; aligned_size];
+        self.file.read_exact(&mut buf)?;
+
+        let record = DataRecord::from_bytes(&buf)?;
+        Ok((record.oid, record.value))
+    }
+
     pub fn sync(&self) -> Result<()> {
         self.file.sync_all()?;
         Ok(())

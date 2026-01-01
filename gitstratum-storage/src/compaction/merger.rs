@@ -4,10 +4,10 @@ use std::sync::Arc;
 use crate::bucket::{CompactEntry, DiskBucket, EntryFlags};
 use crate::error::Result;
 use crate::record::DataRecord;
-use crate::store::BitcaskStore;
+use crate::store::BucketStore;
 
 pub struct Compactor {
-    store: Arc<BitcaskStore>,
+    store: Arc<BucketStore>,
 }
 
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ struct LiveEntry {
 }
 
 impl Compactor {
-    pub fn new(store: Arc<BitcaskStore>) -> Self {
+    pub fn new(store: Arc<BucketStore>) -> Self {
         Self { store }
     }
 
@@ -200,7 +200,7 @@ mod tests {
     use bytes::Bytes;
     use gitstratum_core::Oid;
     use tempfile::TempDir;
-    use crate::config::{BitcaskConfig, CompactionConfig};
+    use crate::config::{BucketStoreConfig, CompactionConfig};
 
     fn create_test_oid(seed: u8) -> Oid {
         let mut bytes = [seed; 32];
@@ -210,8 +210,8 @@ mod tests {
         Oid::from_bytes(bytes)
     }
 
-    fn test_config(dir: &std::path::Path) -> BitcaskConfig {
-        BitcaskConfig {
+    fn test_config(dir: &std::path::Path) -> BucketStoreConfig {
+        BucketStoreConfig {
             data_dir: dir.to_path_buf(),
             max_data_file_size: 1024 * 1024,
             bucket_count: 64,
@@ -286,7 +286,7 @@ mod tests {
     async fn test_compactor_new() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
         let compactor = Compactor::new(store);
         assert!(!compactor.should_compact());
     }
@@ -295,7 +295,7 @@ mod tests {
     async fn test_compactor_should_compact_empty() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
         let compactor = Compactor::new(store);
         assert!(!compactor.should_compact());
         assert_eq!(compactor.fragmentation(), 0.0);
@@ -305,7 +305,7 @@ mod tests {
     async fn test_compact_empty_store() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
         let compactor = Compactor::new(store);
 
         let result = compactor.compact().await.unwrap();
@@ -319,7 +319,7 @@ mod tests {
     async fn test_compact_no_deleted_entries() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
 
         for i in 0..5 {
             let oid = create_test_oid(i);
@@ -337,7 +337,7 @@ mod tests {
     async fn test_compact_with_soft_deleted_entries() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
 
         for i in 0..10 {
             let oid = create_test_oid(i);
@@ -375,7 +375,7 @@ mod tests {
     async fn test_compact_preserves_data_integrity() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
 
         let test_data: Vec<(Oid, Bytes)> = (0..20)
             .map(|i| {
@@ -412,7 +412,7 @@ mod tests {
     async fn test_fragmentation_threshold() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
 
         for i in 0..100 {
             let oid = create_test_oid(i);
@@ -433,7 +433,7 @@ mod tests {
     async fn test_compact_updates_stats() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
 
         for i in 0..10 {
             let oid = create_test_oid(i);
@@ -459,7 +459,7 @@ mod tests {
     async fn test_compact_all_deleted() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
 
         for i in 0..5 {
             let oid = create_test_oid(i);
@@ -482,7 +482,7 @@ mod tests {
     async fn test_multiple_compactions() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path());
-        let store = Arc::new(BitcaskStore::open(config).await.unwrap());
+        let store = Arc::new(BucketStore::open(config).await.unwrap());
 
         for i in 0..10 {
             let oid = create_test_oid(i);

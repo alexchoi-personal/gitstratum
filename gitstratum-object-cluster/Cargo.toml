@@ -23,6 +23,8 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 bytes = { workspace = true }
 flate2 = { workspace = true }
+sha2 = { workspace = true }
+gitstratum-storage = { workspace = true, optional = true }
 
 rocksdb = { workspace = true }
 dashmap = { workspace = true }
@@ -32,6 +34,10 @@ lru = { workspace = true }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
 rand = { workspace = true }
+
+[features]
+default = ["bucketstore"]
+bucketstore = ["dep:gitstratum-storage"]
 
 [lints]
 workspace = true

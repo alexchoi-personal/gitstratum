@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use gitstratum_storage::{BitcaskConfig, BitcaskStore};
+use gitstratum_storage::{BucketStore, BucketStoreConfig};
 use gitstratum_core::Oid;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -12,8 +12,8 @@ fn create_test_oid(seed: u8) -> Oid {
     Oid::from_bytes(bytes)
 }
 
-fn create_test_config(dir: &TempDir) -> BitcaskConfig {
-    BitcaskConfig {
+fn create_test_config(dir: &TempDir) -> BucketStoreConfig {
+    BucketStoreConfig {
         data_dir: dir.path().to_path_buf(),
         bucket_count: 1024,
         bucket_cache_size: 64,
@@ -30,10 +30,10 @@ fn create_test_config(dir: &TempDir) -> BitcaskConfig {
 }
 
 #[tokio::test]
-async fn test_bitcask_store_full_lifecycle() {
+async fn test_bucket_store_full_lifecycle() {
     let dir = TempDir::new().unwrap();
     let config = create_test_config(&dir);
-    let store = BitcaskStore::open(config).await.unwrap();
+    let store = BucketStore::open(config).await.unwrap();
 
     assert!(store.is_empty());
     let stats = store.stats();
@@ -75,10 +75,10 @@ async fn test_bitcask_store_full_lifecycle() {
 }
 
 #[tokio::test]
-async fn test_bitcask_store_multiple_entries() {
+async fn test_bucket_store_multiple_entries() {
     let dir = TempDir::new().unwrap();
     let config = create_test_config(&dir);
-    let store = BitcaskStore::open(config).await.unwrap();
+    let store = BucketStore::open(config).await.unwrap();
 
     for i in 0..100 {
         let oid = create_test_oid(i);
@@ -99,10 +99,10 @@ async fn test_bitcask_store_multiple_entries() {
 }
 
 #[tokio::test]
-async fn test_bitcask_store_large_value_and_sync() {
+async fn test_bucket_store_large_value_and_sync() {
     let dir = TempDir::new().unwrap();
     let config = create_test_config(&dir);
-    let store = BitcaskStore::open(config).await.unwrap();
+    let store = BucketStore::open(config).await.unwrap();
 
     let oid = create_test_oid(1);
     let value = Bytes::from(vec![0xAB; 100_000]);

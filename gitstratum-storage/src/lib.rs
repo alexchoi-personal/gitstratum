@@ -8,9 +8,9 @@ pub mod record;
 pub mod recovery;
 mod store;
 
-pub use config::BitcaskConfig;
-pub use error::{BitcaskError, Result};
-pub use store::BitcaskStore;
+pub use config::BucketStoreConfig;
+pub use error::{BucketStoreError, Result};
+pub use store::{BucketStore, BucketStoreIterator, BucketStorePositionIterator, BucketStoreStats};
 
 pub use bucket::{BucketCache, BucketIndex, CompactEntry, DiskBucket};
 pub use record::{DataRecord, RecordHeader};

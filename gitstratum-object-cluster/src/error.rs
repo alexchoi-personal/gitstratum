@@ -7,6 +7,10 @@ pub enum ObjectStoreError {
     #[error("rocksdb error: {0}")]
     RocksDb(#[from] rocksdb::Error),
 
+    #[cfg(feature = "bucketstore")]
+    #[error("bucketstore error: {0}")]
+    BucketStore(#[from] gitstratum_storage::BucketStoreError),
+
     #[error("blob not found: {0}")]
     BlobNotFound(String),
 

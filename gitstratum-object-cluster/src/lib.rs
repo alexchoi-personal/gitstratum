@@ -19,4 +19,10 @@ pub use error::{ObjectStoreError, Result};
 pub use pack_cache::{HotRepoTracker, PackCache, PackPrecomputer};
 pub use replication::{QuorumWriter, ReplicationRepairer};
 pub use server::ObjectServiceImpl;
-pub use store::{ObjectStore, StorageStats};
+pub use store::{ObjectStorage, ObjectStore, StorageStats};
+
+#[cfg(feature = "bucketstore")]
+pub use store::{BucketObjectIterator, BucketObjectStore, BucketPositionObjectIterator};
+
+#[cfg(feature = "bucketstore")]
+pub use gitstratum_storage::BucketStoreConfig;

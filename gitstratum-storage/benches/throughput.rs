@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
 fn bench_placeholder(c: &mut Criterion) {
-    let mut group = c.benchmark_group("bitcask");
+    let mut group = c.benchmark_group("bucketstore");
     group.throughput(Throughput::Elements(1));
     group.bench_function("placeholder", |b| {
         b.iter(|| {

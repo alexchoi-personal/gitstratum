@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 gitstratum-object-cluster = { path = "../../gitstratum-object-cluster" }
+gitstratum-storage = { path = "../../gitstratum-storage", optional = true }
 gitstratum-core = { path = "../../gitstratum-core" }
 gitstratum-proto = { path = "../../gitstratum-proto" }
 tokio.workspace = true
@@ -19,6 +20,10 @@ clap = { version = "4.4", features = ["derive"] }
 tonic.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
+
+[features]
+default = ["bucketstore"]
+bucketstore = ["gitstratum-object-cluster/bucketstore", "dep:gitstratum-storage"]
 
 [lints]
 workspace = true

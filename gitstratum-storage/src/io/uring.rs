@@ -3,7 +3,7 @@ use std::os::unix::io::RawFd;
 
 use io_uring::{opcode, types, IoUring};
 
-use crate::error::{BitcaskError, Result};
+use crate::error::{BucketStoreError, Result};
 
 pub const DEFAULT_RING_SIZE: u32 = 256;
 
@@ -36,7 +36,7 @@ pub struct UringHandle {
 
 impl UringHandle {
     pub fn new(ring_size: u32) -> Result<Self> {
-        let ring = IoUring::new(ring_size).map_err(|e| BitcaskError::IoUring(e.to_string()))?;
+        let ring = IoUring::new(ring_size).map_err(|e| BucketStoreError::IoUring(e.to_string()))?;
 
         Ok(Self {
             ring,
@@ -60,7 +60,7 @@ impl UringHandle {
             self.ring
                 .submission()
                 .push(&read_e)
-                .map_err(|e| BitcaskError::IoUring(format!("submission queue full: {:?}", e)))?;
+                .map_err(|e| BucketStoreError::IoUring(format!("submission queue full: {:?}", e)))?;
         }
 
         self.inflight.insert(
@@ -90,7 +90,7 @@ impl UringHandle {
             self.ring
                 .submission()
                 .push(&write_e)
-                .map_err(|e| BitcaskError::IoUring(format!("submission queue full: {:?}", e)))?;
+                .map_err(|e| BucketStoreError::IoUring(format!("submission queue full: {:?}", e)))?;
         }
 
         self.inflight.insert(
@@ -117,7 +117,7 @@ impl UringHandle {
             self.ring
                 .submission()
                 .push(&fsync_e)
-                .map_err(|e| BitcaskError::IoUring(format!("submission queue full: {:?}", e)))?;
+                .map_err(|e| BucketStoreError::IoUring(format!("submission queue full: {:?}", e)))?;
         }
 
         self.inflight.insert(
@@ -137,7 +137,7 @@ impl UringHandle {
     pub fn submit_batch(&mut self) -> Result<usize> {
         self.ring
             .submit()
-            .map_err(|e| BitcaskError::IoUring(e.to_string()))
+            .map_err(|e| BucketStoreError::IoUring(e.to_string()))
     }
 
     pub fn wait_completions(&mut self, min_complete: usize) -> Vec<IoCompletion> {
