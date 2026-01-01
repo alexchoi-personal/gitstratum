@@ -1,49 +1,66 @@
-# GitStratum (WIP)
+# GitStratum
 
-A distributed Git storage system built in Rust.
+A distributed Git server optimized for CI/CD workloads.
 
-## What is GitStratum?
+## The Problem
 
-GitStratum is a horizontally scalable Git hosting backend that separates storage concerns into specialized clusters:
+CI/CD systems clone repositories constantly. When a developer pushes to main, dozens of pipeline jobs spin up—each cloning the same repo, at the same commit, with the same shallow depth. Traditional Git servers treat each clone as fresh work: resolve refs, walk the commit graph, gather objects, build a pack file, compress, send.
 
-- **Control Plane** - Raft-based coordination for cluster state, authentication, and rate limiting
-- **Metadata Cluster** - Stores commits, trees, and refs with partition-based routing
-- **Object Cluster** - Blob storage with consistent hashing and tiered compression
-- **Frontend** - Git protocol (HTTP/SSH) serving layer
+GitStratum asks: what if the hundredth clone cost almost nothing?
+
+## How It Works
+
+GitStratum caches assembled pack files. The first clone does the work. Every subsequent clone of the same ref at the same commit streams the cached result. For CI/CD workloads, cache hit rates exceed 95%.
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Clients   │────▶│    Frontend     │────▶│  Control Plane  │
-│  (git cli)  │     │  (Git Protocol) │     │     (Raft)      │
-└─────────────┘     └────────┬────────┘     └─────────────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-       ┌──────────┐   ┌──────────┐   ┌──────────┐
-       │ Metadata │   │ Metadata │   │ Metadata │
-       │  Node 1  │   │  Node 2  │   │  Node N  │
-       └──────────┘   └──────────┘   └──────────┘
-              │              │              │
-       ┌──────────┐   ┌──────────┐   ┌──────────┐
-       │  Object  │   │  Object  │   │  Object  │
-       │  Node 1  │   │  Node 2  │   │  Node N  │
-       └──────────┘   └──────────┘   └──────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                 FRONTEND                                    │
+│                                                                             │
+│   Git protocol (SSH/HTTPS), authentication, rate limiting, pack assembly   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+             ┌───────────────────────┼───────────────────────┐
+             ▼                       ▼                       ▼
+┌───────────────────────┐  ┌───────────────────┐  ┌───────────────────────────┐
+│     CONTROL PLANE     │  │      METADATA     │  │          OBJECT           │
+│                       │  │                   │  │                           │
+│  Cluster membership   │  │  Refs, commits,   │  │  Blob storage (BucketStore│
+│  Hash ring topology   │  │  trees, perms     │  │  Pack cache               │
+│  Raft consensus       │  │  Partitioned by   │  │  Consistent hashing with  │
+│  (background only)    │  │  repository       │  │  vnodes, 3x replication   │
+└───────────────────────┘  └───────────────────┘  └───────────────────────────┘
 ```
+
+**Frontend** handles Git protocol and streams data. Stateless—scales with connection count.
+
+**Control Plane** coordinates cluster membership and hash ring topology via Raft. Not on the request path—Frontend caches the ring locally.
+
+**Metadata** stores refs, commits, trees, and permissions. Partitioned by repository for atomic ref updates.
+
+**Object** stores Git objects (blobs, trees, commits, tags) distributed across nodes via consistent hashing. Each object lives on 3 nodes. Writes use quorum (2 of 3). The pack cache stores pre-assembled pack files for fast clones.
+
+## Key Design Choices
+
+- **Pack caching**: Same clone request = same pack bytes. Cache it once, stream it many times.
+- **Consistent hashing with vnodes**: Objects distributed evenly across nodes. Adding a node shifts ~1/N of data, not 50%.
+- **Quorum replication**: Write to 3 nodes, wait for 2. One slow node doesn't block.
+- **Eventual consistency**: Objects are immutable. Stale routing still works—old replicas remain valid.
+- **Control Plane off the hot path**: Frontend caches topology. Requests never wait on Raft.
 
 ## Crates
 
 | Crate | Description |
 |-------|-------------|
-| `gitstratum-core` | Core types (Oid, Blob, Commit, Tree, etc.) |
-| `gitstratum-control-plane-cluster` | Raft consensus and cluster coordination |
-| `gitstratum-metadata-cluster` | Commit/tree/ref storage |
-| `gitstratum-object-cluster` | Blob storage with compression |
-| `gitstratum-frontend-cluster` | Git protocol implementation |
-| `gitstratum-operator` | Kubernetes operator |
-| `gitstratum-storage` | NVMe-optimized storage engine |
-| `gitstratum-hashring` | Consistent hashing |
+| `gitstratum-core` | Core types: Oid, Blob, Commit, Tree, Ref |
+| `gitstratum-control-plane-cluster` | Raft consensus, membership, hash ring management |
+| `gitstratum-metadata-cluster` | Ref/commit/tree storage, partitioned by repo |
+| `gitstratum-object-cluster` | Object storage, pack cache, replication |
+| `gitstratum-frontend-cluster` | Git protocol (SSH/HTTPS), pack assembly |
+| `gitstratum-storage` | BucketStore: bucket-based key-value storage for objects |
+| `gitstratum-hashring` | Consistent hashing with virtual nodes |
+| `gitstratum-operator` | Kubernetes operator for cluster management |
 
 ## Building
 
@@ -59,11 +76,13 @@ cargo nextest run --workspace
 
 ## Pre-commit Hooks
 
-Set up the pre-commit hook to check formatting and lints:
-
 ```bash
 git config core.hooksPath .githooks
 ```
+
+## Documentation
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 
 ## License
 
