@@ -37,8 +37,8 @@ tempfile = { workspace = true }
 
 [features]
 default = []
-# Uncomment when k8s-operator dependency is enabled:
-# kubernetes = ["dep:k8s-operator"]
+# Feature flag for k8s-operator integration (code guarded but dependency not yet vendored)
+kubernetes = []
 
 [lints]
 workspace = true
