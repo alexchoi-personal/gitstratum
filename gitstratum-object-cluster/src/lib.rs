@@ -1,5 +1,8 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+#[cfg(test)]
+pub(crate) mod testutil;
+
 pub mod cache;
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod client;
@@ -14,18 +17,12 @@ pub mod replication;
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod server;
 pub mod store;
+pub mod util;
 
 pub use client::ObjectClusterClient;
 pub use error::{ObjectStoreError, Result};
 pub use pack_cache::{HotRepoTracker, PackCache, PackPrecomputer};
-pub use repair::{
-    AntiEntropyConfig, AntiEntropyRepairer, AntiEntropyStats, CrashRecoveryConfig,
-    CrashRecoveryHandler, DowntimeTracker, MerkleNode, MerkleTreeBuilder, ObjectMerkleTree,
-    PositionRange, RangeTransfer, RebalanceConfig, RebalanceDirection, RebalanceHandler,
-    RebalanceState, RebalanceStats, RecoveryNeeded, RepairCheckpoint, RepairCoordinator,
-    RepairCoordinatorConfig, RepairItem, RepairPriority, RepairProgress, RepairQueue,
-    RepairRateLimiter, RepairSession, RepairSessionStatus, RepairStats, RepairType,
-};
+pub use repair::prelude::*;
 pub use replication::{QuorumWriter, ReplicationRepairer};
 pub use server::ObjectServiceImpl;
 pub use store::{ObjectStorage, ObjectStore, StorageStats};

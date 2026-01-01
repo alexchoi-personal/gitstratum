@@ -7,6 +7,11 @@ use parking_lot::RwLock;
 use tracing::{debug, info};
 
 use crate::error::{ObjectStoreError, Result};
+use crate::repair::constants::{
+    DEFAULT_MAX_CONCURRENT_SESSIONS, DEFAULT_PAUSE_THRESHOLD_WRITE_RATE,
+    DEFAULT_REPAIR_BANDWIDTH_BYTES_PER_SEC, DEFAULT_SESSION_TIMEOUT,
+};
+use crate::repair::types::{NodeId, SessionId};
 use crate::repair::{RepairRateLimiter, RepairSession, RepairSessionStatus, RepairType};
 use crate::store::ObjectStorage;
 
@@ -22,11 +27,11 @@ pub struct RepairCoordinatorConfig {
 impl Default for RepairCoordinatorConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_sessions: 5,
-            max_bandwidth_bytes_per_sec: 100 * 1024 * 1024,
+            max_concurrent_sessions: DEFAULT_MAX_CONCURRENT_SESSIONS,
+            max_bandwidth_bytes_per_sec: DEFAULT_REPAIR_BANDWIDTH_BYTES_PER_SEC,
             pause_on_high_write_load: true,
-            pause_threshold_write_rate: 10_000,
-            session_timeout: Duration::from_secs(3600),
+            pause_threshold_write_rate: DEFAULT_PAUSE_THRESHOLD_WRITE_RATE,
+            session_timeout: DEFAULT_SESSION_TIMEOUT,
         }
     }
 }
@@ -45,9 +50,9 @@ pub struct RepairStats {
 pub struct RepairCoordinator<S: ObjectStorage> {
     store: Arc<S>,
     config: RepairCoordinatorConfig,
-    local_node_id: String,
+    local_node_id: NodeId,
 
-    sessions: DashMap<String, RepairSession>,
+    sessions: DashMap<SessionId, RepairSession>,
 
     rate_limiter: RwLock<RepairRateLimiter>,
 
@@ -59,13 +64,17 @@ pub struct RepairCoordinator<S: ObjectStorage> {
 }
 
 impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
-    pub fn new(store: Arc<S>, local_node_id: String, config: RepairCoordinatorConfig) -> Self {
+    pub fn new(
+        store: Arc<S>,
+        local_node_id: impl Into<NodeId>,
+        config: RepairCoordinatorConfig,
+    ) -> Self {
         let rate_limiter = RwLock::new(RepairRateLimiter::new(config.max_bandwidth_bytes_per_sec));
 
         Self {
             store,
             config,
-            local_node_id,
+            local_node_id: local_node_id.into(),
             sessions: DashMap::new(),
             rate_limiter,
             stats: RwLock::new(RepairStats::default()),
@@ -79,7 +88,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
         &self.config
     }
 
-    pub fn local_node_id(&self) -> &str {
+    pub fn local_node_id(&self) -> &NodeId {
         &self.local_node_id
     }
 
@@ -87,7 +96,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
         &self.store
     }
 
-    pub fn create_session(&self, session: RepairSession) -> Result<String> {
+    pub fn create_session(&self, session: RepairSession) -> Result<SessionId> {
         let active_count = self.active_session_count();
         if active_count >= self.config.max_concurrent_sessions {
             return Err(ObjectStoreError::Internal(
@@ -95,7 +104,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
             ));
         }
 
-        let session_id = session.id().to_string();
+        let session_id = session.id().clone();
         info!(
             session_id = %session_id,
             session_type = ?session.session_type(),
@@ -114,11 +123,15 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
         Ok(session_id)
     }
 
-    pub fn get_session(&self, session_id: &str) -> Option<RepairSession> {
+    pub fn get_session(&self, session_id: &SessionId) -> Option<RepairSession> {
         self.sessions.get(session_id).map(|r| r.clone())
     }
 
-    pub fn update_session_status(&self, session_id: &str, status: RepairSessionStatus) -> bool {
+    pub fn update_session_status(
+        &self,
+        session_id: &SessionId,
+        status: RepairSessionStatus,
+    ) -> bool {
         let updated = {
             if let Some(mut session) = self.sessions.get_mut(session_id) {
                 debug!(
@@ -148,23 +161,23 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
         updated
     }
 
-    pub fn start_session(&self, session_id: &str) -> bool {
+    pub fn start_session(&self, session_id: &SessionId) -> bool {
         self.update_session_status(session_id, RepairSessionStatus::InProgress)
     }
 
-    pub fn complete_session(&self, session_id: &str) -> bool {
+    pub fn complete_session(&self, session_id: &SessionId) -> bool {
         self.update_session_status(session_id, RepairSessionStatus::Completed)
     }
 
-    pub fn fail_session(&self, session_id: &str) -> bool {
+    pub fn fail_session(&self, session_id: &SessionId) -> bool {
         self.update_session_status(session_id, RepairSessionStatus::Failed)
     }
 
-    pub fn cancel_session(&self, session_id: &str) -> bool {
+    pub fn cancel_session(&self, session_id: &SessionId) -> bool {
         self.update_session_status(session_id, RepairSessionStatus::Cancelled)
     }
 
-    pub fn remove_session(&self, session_id: &str) -> Option<RepairSession> {
+    pub fn remove_session(&self, session_id: &SessionId) -> Option<RepairSession> {
         self.sessions.remove(session_id).map(|(_, s)| s)
     }
 
@@ -208,7 +221,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
 
     pub fn update_progress(
         &self,
-        session_id: &str,
+        session_id: &SessionId,
         compared: u64,
         missing: u64,
         transferred: u64,
@@ -247,15 +260,12 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
     }
 
     pub fn cleanup_timed_out_sessions(&self) -> usize {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = crate::util::time::current_timestamp_millis();
 
         let timeout_ms = self.config.session_timeout.as_millis() as u64;
         let mut removed = 0;
 
-        let to_remove: Vec<String> = self
+        let to_remove: Vec<SessionId> = self
             .sessions
             .iter()
             .filter(|s| {
@@ -265,7 +275,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
                     false
                 }
             })
-            .map(|s| s.id().to_string())
+            .map(|s| s.id().clone())
             .collect();
 
         for session_id in to_remove {
@@ -282,55 +292,8 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
 mod tests {
     use super::*;
     use crate::repair::{PositionRange, RepairCheckpoint};
-    use crate::store::StorageStats;
-    use async_trait::async_trait;
-    use gitstratum_core::{Blob, Oid};
-    use std::collections::HashMap;
-    use std::sync::RwLock as StdRwLock;
-
-    struct MockObjectStorage {
-        objects: StdRwLock<HashMap<Oid, Blob>>,
-    }
-
-    impl MockObjectStorage {
-        fn new() -> Self {
-            Self {
-                objects: StdRwLock::new(HashMap::new()),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl ObjectStorage for MockObjectStorage {
-        async fn get(&self, oid: &Oid) -> Result<Option<Blob>> {
-            Ok(self.objects.read().unwrap().get(oid).cloned())
-        }
-
-        async fn put(&self, blob: &Blob) -> Result<()> {
-            self.objects.write().unwrap().insert(blob.oid, blob.clone());
-            Ok(())
-        }
-
-        async fn delete(&self, oid: &Oid) -> Result<bool> {
-            Ok(self.objects.write().unwrap().remove(oid).is_some())
-        }
-
-        fn has(&self, oid: &Oid) -> bool {
-            self.objects.read().unwrap().contains_key(oid)
-        }
-
-        fn stats(&self) -> StorageStats {
-            let objects = self.objects.read().unwrap();
-            let total_bytes: u64 = objects.values().map(|b| b.data.len() as u64).sum();
-            StorageStats {
-                total_blobs: objects.len() as u64,
-                total_bytes,
-                used_bytes: total_bytes,
-                available_bytes: 0,
-                io_utilization: 0.0,
-            }
-        }
-    }
+    use crate::testutil::MockObjectStorage;
+    use gitstratum_core::Oid;
 
     fn create_test_coordinator() -> RepairCoordinator<MockObjectStorage> {
         let store = Arc::new(MockObjectStorage::new());
@@ -348,6 +311,10 @@ mod tests {
             .ring_version(1)
             .build()
             .unwrap()
+    }
+
+    fn sid(id: &str) -> SessionId {
+        SessionId::new(id)
     }
 
     #[test]
@@ -431,7 +398,7 @@ mod tests {
     #[test]
     fn test_coordinator_new() {
         let coordinator = create_test_coordinator();
-        assert_eq!(coordinator.local_node_id(), "node-1");
+        assert_eq!(coordinator.local_node_id().as_str(), "node-1");
         assert_eq!(coordinator.config().max_concurrent_sessions, 5);
     }
 
@@ -454,7 +421,7 @@ mod tests {
             "test-node-xyz".to_string(),
             RepairCoordinatorConfig::default(),
         );
-        assert_eq!(coordinator.local_node_id(), "test-node-xyz");
+        assert_eq!(coordinator.local_node_id().as_str(), "test-node-xyz");
     }
 
     #[test]
@@ -470,7 +437,7 @@ mod tests {
         let session = create_test_session("session-1");
         let result = coordinator.create_session(session);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "session-1");
+        assert_eq!(result.unwrap().as_str(), "session-1");
     }
 
     #[test]
@@ -521,15 +488,15 @@ mod tests {
         let session = create_test_session("session-1");
         coordinator.create_session(session).unwrap();
 
-        let retrieved = coordinator.get_session("session-1");
+        let retrieved = coordinator.get_session(&sid("session-1"));
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().id(), "session-1");
+        assert_eq!(retrieved.unwrap().id().as_str(), "session-1");
     }
 
     #[test]
     fn test_get_session_not_exists() {
         let coordinator = create_test_coordinator();
-        let retrieved = coordinator.get_session("nonexistent");
+        let retrieved = coordinator.get_session(&sid("nonexistent"));
         assert!(retrieved.is_none());
     }
 
@@ -541,10 +508,10 @@ mod tests {
             .unwrap();
 
         let result =
-            coordinator.update_session_status("session-1", RepairSessionStatus::InProgress);
+            coordinator.update_session_status(&sid("session-1"), RepairSessionStatus::InProgress);
         assert!(result);
 
-        let session = coordinator.get_session("session-1").unwrap();
+        let session = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(session.status(), RepairSessionStatus::InProgress);
     }
 
@@ -552,7 +519,7 @@ mod tests {
     fn test_update_session_status_not_exists() {
         let coordinator = create_test_coordinator();
         let result =
-            coordinator.update_session_status("nonexistent", RepairSessionStatus::InProgress);
+            coordinator.update_session_status(&sid("nonexistent"), RepairSessionStatus::InProgress);
         assert!(!result);
     }
 
@@ -563,10 +530,10 @@ mod tests {
             .create_session(create_test_session("session-1"))
             .unwrap();
 
-        let result = coordinator.start_session("session-1");
+        let result = coordinator.start_session(&sid("session-1"));
         assert!(result);
 
-        let session = coordinator.get_session("session-1").unwrap();
+        let session = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(session.status(), RepairSessionStatus::InProgress);
     }
 
@@ -576,12 +543,12 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-1"))
             .unwrap();
-        coordinator.start_session("session-1");
+        coordinator.start_session(&sid("session-1"));
 
-        let result = coordinator.complete_session("session-1");
+        let result = coordinator.complete_session(&sid("session-1"));
         assert!(result);
 
-        let session = coordinator.get_session("session-1").unwrap();
+        let session = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(session.status(), RepairSessionStatus::Completed);
     }
 
@@ -591,8 +558,8 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-1"))
             .unwrap();
-        coordinator.start_session("session-1");
-        coordinator.complete_session("session-1");
+        coordinator.start_session(&sid("session-1"));
+        coordinator.complete_session(&sid("session-1"));
 
         let stats = coordinator.stats();
         assert_eq!(stats.sessions_completed, 1);
@@ -604,12 +571,12 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-1"))
             .unwrap();
-        coordinator.start_session("session-1");
+        coordinator.start_session(&sid("session-1"));
 
-        let result = coordinator.fail_session("session-1");
+        let result = coordinator.fail_session(&sid("session-1"));
         assert!(result);
 
-        let session = coordinator.get_session("session-1").unwrap();
+        let session = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(session.status(), RepairSessionStatus::Failed);
     }
 
@@ -619,8 +586,8 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-1"))
             .unwrap();
-        coordinator.start_session("session-1");
-        coordinator.fail_session("session-1");
+        coordinator.start_session(&sid("session-1"));
+        coordinator.fail_session(&sid("session-1"));
 
         let stats = coordinator.stats();
         assert_eq!(stats.sessions_failed, 1);
@@ -633,10 +600,10 @@ mod tests {
             .create_session(create_test_session("session-1"))
             .unwrap();
 
-        let result = coordinator.cancel_session("session-1");
+        let result = coordinator.cancel_session(&sid("session-1"));
         assert!(result);
 
-        let session = coordinator.get_session("session-1").unwrap();
+        let session = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(session.status(), RepairSessionStatus::Cancelled);
     }
 
@@ -646,7 +613,7 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-1"))
             .unwrap();
-        coordinator.cancel_session("session-1");
+        coordinator.cancel_session(&sid("session-1"));
 
         let stats = coordinator.stats();
         assert_eq!(stats.sessions_cancelled, 1);
@@ -659,18 +626,18 @@ mod tests {
             .create_session(create_test_session("session-1"))
             .unwrap();
 
-        let removed = coordinator.remove_session("session-1");
+        let removed = coordinator.remove_session(&sid("session-1"));
         assert!(removed.is_some());
-        assert_eq!(removed.unwrap().id(), "session-1");
+        assert_eq!(removed.unwrap().id().as_str(), "session-1");
 
-        let retrieved = coordinator.get_session("session-1");
+        let retrieved = coordinator.get_session(&sid("session-1"));
         assert!(retrieved.is_none());
     }
 
     #[test]
     fn test_remove_session_not_exists() {
         let coordinator = create_test_coordinator();
-        let removed = coordinator.remove_session("nonexistent");
+        let removed = coordinator.remove_session(&sid("nonexistent"));
         assert!(removed.is_none());
     }
 
@@ -693,7 +660,7 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-1"))
             .unwrap();
-        coordinator.start_session("session-1");
+        coordinator.start_session(&sid("session-1"));
 
         assert_eq!(coordinator.active_session_count(), 1);
     }
@@ -707,7 +674,7 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-2"))
             .unwrap();
-        coordinator.complete_session("session-1");
+        coordinator.complete_session(&sid("session-1"));
 
         assert_eq!(coordinator.active_session_count(), 1);
     }
@@ -721,7 +688,7 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-2"))
             .unwrap();
-        coordinator.fail_session("session-1");
+        coordinator.fail_session(&sid("session-1"));
 
         assert_eq!(coordinator.active_session_count(), 1);
     }
@@ -735,7 +702,7 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-2"))
             .unwrap();
-        coordinator.cancel_session("session-1");
+        coordinator.cancel_session(&sid("session-1"));
 
         assert_eq!(coordinator.active_session_count(), 1);
     }
@@ -773,11 +740,11 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-2"))
             .unwrap();
-        coordinator.start_session("session-2");
+        coordinator.start_session(&sid("session-2"));
 
         let pending = coordinator.list_sessions_by_status(RepairSessionStatus::Pending);
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].id(), "session-1");
+        assert_eq!(pending[0].id().as_str(), "session-1");
     }
 
     #[test]
@@ -789,11 +756,11 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-2"))
             .unwrap();
-        coordinator.start_session("session-1");
+        coordinator.start_session(&sid("session-1"));
 
         let in_progress = coordinator.list_sessions_by_status(RepairSessionStatus::InProgress);
         assert_eq!(in_progress.len(), 1);
-        assert_eq!(in_progress[0].id(), "session-1");
+        assert_eq!(in_progress[0].id().as_str(), "session-1");
     }
 
     #[test]
@@ -805,8 +772,8 @@ mod tests {
         coordinator
             .create_session(create_test_session("session-2"))
             .unwrap();
-        coordinator.complete_session("session-1");
-        coordinator.complete_session("session-2");
+        coordinator.complete_session(&sid("session-1"));
+        coordinator.complete_session(&sid("session-2"));
 
         let completed = coordinator.list_sessions_by_status(RepairSessionStatus::Completed);
         assert_eq!(completed.len(), 2);
@@ -829,7 +796,7 @@ mod tests {
 
         let anti_entropy = coordinator.list_sessions_by_type(RepairType::AntiEntropy);
         assert_eq!(anti_entropy.len(), 1);
-        assert_eq!(anti_entropy[0].id(), "session-1");
+        assert_eq!(anti_entropy[0].id().as_str(), "session-1");
     }
 
     #[test]
@@ -849,7 +816,7 @@ mod tests {
 
         let crash_recovery = coordinator.list_sessions_by_type(RepairType::crash_recovery(0, 0));
         assert_eq!(crash_recovery.len(), 1);
-        assert_eq!(crash_recovery[0].id(), "session-2");
+        assert_eq!(crash_recovery[0].id().as_str(), "session-2");
     }
 
     #[test]
@@ -912,9 +879,9 @@ mod tests {
             .create_session(create_test_session("session-1"))
             .unwrap();
 
-        coordinator.update_progress("session-1", 100, 10, 5, 512);
+        coordinator.update_progress(&sid("session-1"), 100, 10, 5, 512);
 
-        let session = coordinator.get_session("session-1").unwrap();
+        let session = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(session.progress().objects_compared, 100);
         assert_eq!(session.progress().objects_missing, 10);
         assert_eq!(session.progress().objects_transferred, 5);
@@ -924,7 +891,7 @@ mod tests {
     #[test]
     fn test_update_progress_nonexistent_session() {
         let coordinator = create_test_coordinator();
-        coordinator.update_progress("nonexistent", 100, 10, 5, 512);
+        coordinator.update_progress(&sid("nonexistent"), 100, 10, 5, 512);
     }
 
     #[test]
@@ -934,10 +901,10 @@ mod tests {
             .create_session(create_test_session("session-1"))
             .unwrap();
 
-        coordinator.update_progress("session-1", 100, 10, 5, 512);
-        coordinator.update_progress("session-1", 50, 5, 3, 256);
+        coordinator.update_progress(&sid("session-1"), 100, 10, 5, 512);
+        coordinator.update_progress(&sid("session-1"), 50, 5, 3, 256);
 
-        let session = coordinator.get_session("session-1").unwrap();
+        let session = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(session.progress().objects_compared, 150);
         assert_eq!(session.progress().objects_missing, 15);
         assert_eq!(session.progress().objects_transferred, 8);
@@ -1023,14 +990,14 @@ mod tests {
         session.set_checkpoint(RepairCheckpoint::new(0, oid, old_timestamp));
 
         coordinator.create_session(session).unwrap();
-        coordinator.start_session("session-1");
+        coordinator.start_session(&sid("session-1"));
 
         std::thread::sleep(Duration::from_millis(10));
 
         let removed = coordinator.cleanup_timed_out_sessions();
         assert_eq!(removed, 1);
 
-        let session = coordinator.get_session("session-1").unwrap();
+        let session = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(session.status(), RepairSessionStatus::Failed);
     }
 
@@ -1061,27 +1028,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            coordinator.get_session("session-1").unwrap().status(),
+            coordinator.get_session(&sid("session-1")).unwrap().status(),
             RepairSessionStatus::Pending
         );
 
-        coordinator.start_session("session-1");
+        coordinator.start_session(&sid("session-1"));
         assert_eq!(
-            coordinator.get_session("session-1").unwrap().status(),
+            coordinator.get_session(&sid("session-1")).unwrap().status(),
             RepairSessionStatus::InProgress
         );
 
-        coordinator.update_progress("session-1", 100, 10, 10, 1024);
+        coordinator.update_progress(&sid("session-1"), 100, 10, 10, 1024);
 
-        coordinator.complete_session("session-1");
+        coordinator.complete_session(&sid("session-1"));
         assert_eq!(
-            coordinator.get_session("session-1").unwrap().status(),
+            coordinator.get_session(&sid("session-1")).unwrap().status(),
             RepairSessionStatus::Completed
         );
 
-        let removed = coordinator.remove_session("session-1");
+        let removed = coordinator.remove_session(&sid("session-1"));
         assert!(removed.is_some());
-        assert!(coordinator.get_session("session-1").is_none());
+        assert!(coordinator.get_session(&sid("session-1")).is_none());
     }
 
     #[test]
@@ -1091,8 +1058,8 @@ mod tests {
             .create_session(create_test_session("session-1"))
             .unwrap();
 
-        coordinator.start_session("session-1");
-        coordinator.fail_session("session-1");
+        coordinator.start_session(&sid("session-1"));
+        coordinator.fail_session(&sid("session-1"));
 
         let stats = coordinator.stats();
         assert_eq!(stats.sessions_failed, 1);
@@ -1114,13 +1081,13 @@ mod tests {
 
         assert_eq!(coordinator.active_session_count(), 3);
 
-        coordinator.complete_session("session-1");
+        coordinator.complete_session(&sid("session-1"));
         assert_eq!(coordinator.active_session_count(), 2);
 
-        coordinator.fail_session("session-2");
+        coordinator.fail_session(&sid("session-2"));
         assert_eq!(coordinator.active_session_count(), 1);
 
-        coordinator.cancel_session("session-3");
+        coordinator.cancel_session(&sid("session-3"));
         assert_eq!(coordinator.active_session_count(), 0);
     }
 
@@ -1138,9 +1105,9 @@ mod tests {
             .create_session(create_test_session("session-3"))
             .unwrap();
 
-        coordinator.complete_session("session-1");
-        coordinator.fail_session("session-2");
-        coordinator.cancel_session("session-3");
+        coordinator.complete_session(&sid("session-1"));
+        coordinator.fail_session(&sid("session-2"));
+        coordinator.cancel_session(&sid("session-3"));
 
         let stats = coordinator.stats();
         assert_eq!(stats.sessions_created, 3);
@@ -1169,7 +1136,7 @@ mod tests {
         let result = coordinator.create_session(create_test_session("session-3"));
         assert!(result.is_err());
 
-        coordinator.complete_session("session-1");
+        coordinator.complete_session(&sid("session-1"));
 
         let result = coordinator.create_session(create_test_session("session-3"));
         assert!(result.is_ok());
@@ -1238,7 +1205,7 @@ mod tests {
             .unwrap();
         coordinator.create_session(session).unwrap();
 
-        let retrieved = coordinator.get_session("session-1").unwrap();
+        let retrieved = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(retrieved.ranges().len(), 2);
     }
 
@@ -1256,7 +1223,7 @@ mod tests {
             .unwrap();
         coordinator.create_session(session).unwrap();
 
-        let retrieved = coordinator.get_session("session-1").unwrap();
+        let retrieved = coordinator.get_session(&sid("session-1")).unwrap();
         assert_eq!(retrieved.peer_nodes().len(), 2);
     }
 }

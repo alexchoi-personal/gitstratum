@@ -6,6 +6,11 @@ use parking_lot::RwLock;
 use tokio_stream::StreamExt;
 
 use crate::error::{ObjectStoreError, Result};
+use crate::repair::constants::{
+    DEFAULT_CHECKPOINT_INTERVAL, DEFAULT_PEER_TIMEOUT, DEFAULT_REBALANCE_BATCH_SIZE,
+    DEFAULT_REPAIR_BANDWIDTH_BYTES_PER_SEC,
+};
+use crate::repair::types::NodeId;
 use crate::repair::{
     MerkleTreeBuilder, ObjectMerkleTree, PositionRange, RebalanceDirection, RepairPriority,
     RepairSession, RepairType,
@@ -24,11 +29,11 @@ pub struct RebalanceConfig {
 impl Default for RebalanceConfig {
     fn default() -> Self {
         Self {
-            max_bandwidth_bytes_per_sec: 100 * 1024 * 1024,
-            batch_size: 1000,
-            checkpoint_interval: 1000,
+            max_bandwidth_bytes_per_sec: DEFAULT_REPAIR_BANDWIDTH_BYTES_PER_SEC,
+            batch_size: DEFAULT_REBALANCE_BATCH_SIZE,
+            checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             verify_crc: true,
-            peer_timeout: Duration::from_secs(30),
+            peer_timeout: DEFAULT_PEER_TIMEOUT,
         }
     }
 }
@@ -70,25 +75,25 @@ pub struct RebalanceStats {
 pub struct RangeTransfer {
     pub range: PositionRange,
     pub direction: RebalanceDirection,
-    pub peer_node: String,
+    pub peer_node: NodeId,
     pub estimated_objects: u64,
 }
 
 impl RangeTransfer {
-    pub fn incoming(range: PositionRange, peer_node: String) -> Self {
+    pub fn incoming(range: PositionRange, peer_node: impl Into<NodeId>) -> Self {
         Self {
             range,
             direction: RebalanceDirection::Incoming,
-            peer_node,
+            peer_node: peer_node.into(),
             estimated_objects: 0,
         }
     }
 
-    pub fn outgoing(range: PositionRange, peer_node: String) -> Self {
+    pub fn outgoing(range: PositionRange, peer_node: impl Into<NodeId>) -> Self {
         Self {
             range,
             direction: RebalanceDirection::Outgoing,
-            peer_node,
+            peer_node: peer_node.into(),
             estimated_objects: 0,
         }
     }
@@ -102,7 +107,7 @@ impl RangeTransfer {
 pub struct RebalanceHandler {
     store: Arc<ObjectStore>,
     config: RebalanceConfig,
-    local_node_id: String,
+    local_node_id: NodeId,
     state: RwLock<RebalanceState>,
     current_ring_version: AtomicU64,
     pending_transfers: RwLock<Vec<RangeTransfer>>,
@@ -111,11 +116,15 @@ pub struct RebalanceHandler {
 }
 
 impl RebalanceHandler {
-    pub fn new(store: Arc<ObjectStore>, local_node_id: String, config: RebalanceConfig) -> Self {
+    pub fn new(
+        store: Arc<ObjectStore>,
+        local_node_id: impl Into<NodeId>,
+        config: RebalanceConfig,
+    ) -> Self {
         Self {
             store,
             config,
-            local_node_id,
+            local_node_id: local_node_id.into(),
             state: RwLock::new(RebalanceState::Idle),
             current_ring_version: AtomicU64::new(0),
             pending_transfers: RwLock::new(Vec::new()),
@@ -128,7 +137,7 @@ impl RebalanceHandler {
         &self.config
     }
 
-    pub fn local_node_id(&self) -> &str {
+    pub fn local_node_id(&self) -> &NodeId {
         &self.local_node_id
     }
 
@@ -209,10 +218,7 @@ impl RebalanceHandler {
             self.local_node_id,
             transfer.direction,
             transfer.range.start,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
+            crate::util::time::current_timestamp()
         );
 
         let repair_type = match transfer.direction {
@@ -476,7 +482,7 @@ mod tests {
         assert_eq!(transfer.range.start, 0);
         assert_eq!(transfer.range.end, 100);
         assert_eq!(transfer.direction, RebalanceDirection::Incoming);
-        assert_eq!(transfer.peer_node, "peer-1");
+        assert_eq!(transfer.peer_node, NodeId::new("peer-1"));
         assert_eq!(transfer.estimated_objects, 0);
     }
 
@@ -487,7 +493,7 @@ mod tests {
         assert_eq!(transfer.range.start, 200);
         assert_eq!(transfer.range.end, 400);
         assert_eq!(transfer.direction, RebalanceDirection::Outgoing);
-        assert_eq!(transfer.peer_node, "peer-2");
+        assert_eq!(transfer.peer_node, NodeId::new("peer-2"));
         assert_eq!(transfer.estimated_objects, 0);
     }
 
@@ -518,7 +524,7 @@ mod tests {
     #[test]
     fn test_handler_new() {
         let (handler, _dir) = create_test_handler();
-        assert_eq!(handler.local_node_id(), "node-1");
+        assert_eq!(handler.local_node_id().as_str(), "node-1");
         assert_eq!(handler.state(), RebalanceState::Idle);
         assert_eq!(handler.ring_version(), 0);
         assert!(!handler.is_paused());
@@ -610,7 +616,7 @@ mod tests {
         handler.queue_transfers(vec![transfer]);
         let pending = handler.pending_transfers();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].peer_node, "peer-1");
+        assert_eq!(pending[0].peer_node, NodeId::new("peer-1"));
     }
 
     #[test]
@@ -623,11 +629,11 @@ mod tests {
         handler.queue_transfers(vec![transfer1, transfer2]);
 
         let first = handler.take_next_transfer().unwrap();
-        assert_eq!(first.peer_node, "peer-1");
+        assert_eq!(first.peer_node, NodeId::new("peer-1"));
         assert_eq!(handler.pending_count(), 1);
 
         let second = handler.take_next_transfer().unwrap();
-        assert_eq!(second.peer_node, "peer-2");
+        assert_eq!(second.peer_node, NodeId::new("peer-2"));
         assert_eq!(handler.pending_count(), 0);
     }
 
@@ -660,7 +666,10 @@ mod tests {
         let range = PositionRange::new(0, 100);
         let transfer = RangeTransfer::incoming(range, "peer-1".to_string());
         let session = handler.create_session(&transfer, 5).unwrap();
-        assert!(session.id().starts_with("rebalance-node-1-Incoming"));
+        assert!(session
+            .id()
+            .as_str()
+            .starts_with("rebalance-node-1-Incoming"));
         assert_eq!(session.ring_version(), 5);
     }
 
@@ -670,7 +679,10 @@ mod tests {
         let range = PositionRange::new(0, 100);
         let transfer = RangeTransfer::outgoing(range, "peer-2".to_string());
         let session = handler.create_session(&transfer, 10).unwrap();
-        assert!(session.id().starts_with("rebalance-node-1-Outgoing"));
+        assert!(session
+            .id()
+            .as_str()
+            .starts_with("rebalance-node-1-Outgoing"));
         assert_eq!(session.ring_version(), 10);
     }
 

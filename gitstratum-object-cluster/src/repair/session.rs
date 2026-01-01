@@ -2,6 +2,8 @@ use std::cmp::Ordering;
 
 use gitstratum_core::Oid;
 
+use super::types::{NodeId, SessionId};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PositionRange {
     pub start: u64,
@@ -188,13 +190,13 @@ impl RepairProgress {
 
 #[derive(Debug, Clone)]
 pub struct RepairSession {
-    id: String,
+    id: SessionId,
     session_type: RepairType,
     status: RepairSessionStatus,
     ring_version: u64,
     ranges: Vec<PositionRange>,
     progress: RepairProgress,
-    peer_nodes: Vec<String>,
+    peer_nodes: Vec<NodeId>,
 }
 
 impl RepairSession {
@@ -202,7 +204,7 @@ impl RepairSession {
         RepairSessionBuilder::default()
     }
 
-    pub fn id(&self) -> &str {
+    pub fn id(&self) -> &SessionId {
         &self.id
     }
 
@@ -230,7 +232,7 @@ impl RepairSession {
         &mut self.progress
     }
 
-    pub fn peer_nodes(&self) -> &[String] {
+    pub fn peer_nodes(&self) -> &[NodeId] {
         &self.peer_nodes
     }
 
@@ -281,13 +283,13 @@ impl RepairSession {
 
 #[derive(Debug, Clone, Default)]
 pub struct RepairSessionBuilder {
-    id: Option<String>,
+    id: Option<SessionId>,
     session_type: Option<RepairType>,
     status: Option<RepairSessionStatus>,
     ring_version: Option<u64>,
     ranges: Vec<PositionRange>,
     progress: Option<RepairProgress>,
-    peer_nodes: Vec<String>,
+    peer_nodes: Vec<NodeId>,
 }
 
 impl RepairSessionBuilder {
@@ -295,7 +297,7 @@ impl RepairSessionBuilder {
         Self::default()
     }
 
-    pub fn id(mut self, id: impl Into<String>) -> Self {
+    pub fn id(mut self, id: impl Into<SessionId>) -> Self {
         self.id = Some(id.into());
         self
     }
@@ -330,12 +332,12 @@ impl RepairSessionBuilder {
         self
     }
 
-    pub fn peer_node(mut self, node: impl Into<String>) -> Self {
+    pub fn peer_node(mut self, node: impl Into<NodeId>) -> Self {
         self.peer_nodes.push(node.into());
         self
     }
 
-    pub fn peer_nodes(mut self, nodes: Vec<String>) -> Self {
+    pub fn peer_nodes(mut self, nodes: Vec<NodeId>) -> Self {
         self.peer_nodes = nodes;
         self
     }
@@ -605,7 +607,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(session.id(), "session-1");
+        assert_eq!(session.id().as_str(), "session-1");
         assert_eq!(session.session_type(), RepairType::AntiEntropy);
         assert_eq!(session.status(), RepairSessionStatus::Pending);
         assert_eq!(session.ring_version(), 1);
@@ -627,7 +629,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(session.id(), "session-2");
+        assert_eq!(session.id().as_str(), "session-2");
         assert_eq!(session.status(), RepairSessionStatus::InProgress);
         assert_eq!(session.ring_version(), 5);
         assert_eq!(session.ranges().len(), 2);
@@ -680,7 +682,8 @@ mod tests {
 
     #[test]
     fn test_repair_session_builder_with_peer_nodes() {
-        let nodes = vec!["node-1".to_string(), "node-2".to_string()];
+        use crate::repair::types::NodeId;
+        let nodes = vec![NodeId::new("node-1"), NodeId::new("node-2")];
         let session = RepairSession::builder()
             .id("session-1")
             .session_type(RepairType::AntiEntropy)
@@ -886,7 +889,7 @@ mod tests {
             .session_type(RepairType::AntiEntropy);
         let cloned = builder.clone();
         let session = cloned.ring_version(1).build().unwrap();
-        assert_eq!(session.id(), "session-1");
+        assert_eq!(session.id().as_str(), "session-1");
     }
 
     #[test]

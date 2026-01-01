@@ -58,10 +58,7 @@ impl DowntimeTracker {
     }
 
     pub fn mark_healthy(&self) -> Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::util::time::current_timestamp();
         self.last_healthy.store(now, Ordering::SeqCst);
         self.save(now)
     }
@@ -72,10 +69,7 @@ impl DowntimeTracker {
             return None;
         }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::util::time::current_timestamp();
 
         if now > last {
             Some((last, now))
