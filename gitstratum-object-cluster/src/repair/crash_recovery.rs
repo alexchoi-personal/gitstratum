@@ -5,6 +5,10 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use crate::error::{ObjectStoreError, Result};
+use crate::repair::constants::{
+    DEFAULT_CHECKPOINT_INTERVAL, DEFAULT_MAX_CONCURRENT_PEERS, DEFAULT_MERKLE_TREE_DEPTH,
+    DEFAULT_PEER_TIMEOUT, DEFAULT_REPAIR_BANDWIDTH_BYTES_PER_SEC,
+};
 use crate::repair::{
     DowntimeTracker, MerkleTreeBuilder, ObjectMerkleTree, PositionRange, RepairPriority,
     RepairSession, RepairType,
@@ -23,11 +27,11 @@ pub struct CrashRecoveryConfig {
 impl Default for CrashRecoveryConfig {
     fn default() -> Self {
         Self {
-            max_bandwidth_bytes_per_sec: 100 * 1024 * 1024,
-            checkpoint_interval: 1000,
-            merkle_tree_depth: 4,
-            peer_timeout: Duration::from_secs(30),
-            max_concurrent_peers: 3,
+            max_bandwidth_bytes_per_sec: DEFAULT_REPAIR_BANDWIDTH_BYTES_PER_SEC,
+            checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
+            merkle_tree_depth: DEFAULT_MERKLE_TREE_DEPTH,
+            peer_timeout: DEFAULT_PEER_TIMEOUT,
+            max_concurrent_peers: DEFAULT_MAX_CONCURRENT_PEERS,
         }
     }
 }
@@ -100,6 +104,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> CrashRecoveryHandler<S> {
         ranges: Vec<PositionRange>,
         peer_nodes: Vec<String>,
     ) -> Result<RepairSession> {
+        use crate::repair::types::NodeId;
         let session_id = format!(
             "crash-recovery-{}-{}",
             self.local_node_id, recovery.downtime_start
@@ -122,7 +127,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> CrashRecoveryHandler<S> {
             ))
             .ring_version(ring_version)
             .ranges(ranges)
-            .peer_nodes(peer_nodes)
+            .peer_nodes(peer_nodes.into_iter().map(NodeId::from).collect())
             .build()
             .map_err(|e| ObjectStoreError::Internal(e.to_string()))
     }
@@ -250,67 +255,9 @@ impl RepairRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::StorageStats;
-    use async_trait::async_trait;
+    use crate::testutil::MockObjectStorage;
     use gitstratum_core::{Blob, Oid};
-    use std::collections::HashMap;
-    use std::sync::RwLock;
     use tempfile::TempDir;
-
-    struct MockObjectStorage {
-        objects: RwLock<HashMap<Oid, Blob>>,
-    }
-
-    impl MockObjectStorage {
-        fn new() -> Self {
-            Self {
-                objects: RwLock::new(HashMap::new()),
-            }
-        }
-
-        fn with_objects(objects: Vec<Blob>) -> Self {
-            let storage = Self::new();
-            {
-                let mut map = storage.objects.write().unwrap();
-                for blob in objects {
-                    map.insert(blob.oid, blob);
-                }
-            }
-            storage
-        }
-    }
-
-    #[async_trait]
-    impl ObjectStorage for MockObjectStorage {
-        async fn get(&self, oid: &Oid) -> Result<Option<Blob>> {
-            Ok(self.objects.read().unwrap().get(oid).cloned())
-        }
-
-        async fn put(&self, blob: &Blob) -> Result<()> {
-            self.objects.write().unwrap().insert(blob.oid, blob.clone());
-            Ok(())
-        }
-
-        async fn delete(&self, oid: &Oid) -> Result<bool> {
-            Ok(self.objects.write().unwrap().remove(oid).is_some())
-        }
-
-        fn has(&self, oid: &Oid) -> bool {
-            self.objects.read().unwrap().contains_key(oid)
-        }
-
-        fn stats(&self) -> StorageStats {
-            let objects = self.objects.read().unwrap();
-            let total_bytes: u64 = objects.values().map(|b| b.data.len() as u64).sum();
-            StorageStats {
-                total_blobs: objects.len() as u64,
-                total_bytes,
-                used_bytes: total_bytes,
-                available_bytes: 0,
-                io_utilization: 0.0,
-            }
-        }
-    }
 
     #[test]
     fn test_crash_recovery_config_default() {

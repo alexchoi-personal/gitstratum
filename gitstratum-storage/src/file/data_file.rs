@@ -12,7 +12,7 @@ use crate::record::{DataRecord, BLOCK_SIZE};
 
 pub struct DataFile {
     fd: RawFd,
-    _file: File,
+    file: File,
     file_id: u16,
     path: PathBuf,
     offset: AtomicU64,
@@ -32,7 +32,7 @@ impl DataFile {
 
         Ok(Self {
             fd,
-            _file: file,
+            file,
             file_id,
             path: path.to_path_buf(),
             offset: AtomicU64::new(0),
@@ -49,7 +49,7 @@ impl DataFile {
 
         Ok(Self {
             fd,
-            _file: file,
+            file,
             file_id,
             path: path.to_path_buf(),
             offset: AtomicU64::new(offset),
@@ -131,18 +131,12 @@ impl DataFile {
         offset: u64,
         size: usize,
     ) -> Result<(gitstratum_core::Oid, Bytes)> {
-        use std::io::{Read, Seek, SeekFrom};
-        use std::os::unix::io::FromRawFd;
+        use std::os::unix::fs::FileExt;
 
         let aligned_size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
-
-        let mut file = unsafe { std::fs::File::from_raw_fd(self.fd) };
-        file.seek(SeekFrom::Start(offset))?;
-
         let mut buffer = vec![0u8; aligned_size];
-        file.read_exact(&mut buffer)?;
 
-        std::mem::forget(file);
+        self.file.read_at(&mut buffer, offset)?;
 
         let record = DataRecord::from_bytes(&buffer)?;
         Ok((record.oid, record.value))

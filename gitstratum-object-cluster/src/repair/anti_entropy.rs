@@ -7,6 +7,10 @@ use gitstratum_core::Oid;
 use parking_lot::{Mutex, RwLock};
 
 use crate::error::Result;
+use crate::repair::constants::{
+    DEFAULT_ANTI_ENTROPY_INTERVAL, DEFAULT_ANTI_ENTROPY_SAMPLE_SIZE, DEFAULT_MERKLE_TREE_DEPTH,
+    DEFAULT_REPAIR_QUEUE_SIZE,
+};
 use crate::repair::{
     MerkleTreeBuilder, ObjectMerkleTree, PositionRange, RepairPriority, RepairSession, RepairType,
 };
@@ -24,10 +28,10 @@ pub struct AntiEntropyConfig {
 impl Default for AntiEntropyConfig {
     fn default() -> Self {
         Self {
-            scan_interval: Duration::from_secs(3600),
-            sample_size: 1000,
-            merkle_tree_depth: 4,
-            max_queue_size: 10000,
+            scan_interval: DEFAULT_ANTI_ENTROPY_INTERVAL,
+            sample_size: DEFAULT_ANTI_ENTROPY_SAMPLE_SIZE,
+            merkle_tree_depth: DEFAULT_MERKLE_TREE_DEPTH,
+            max_queue_size: DEFAULT_REPAIR_QUEUE_SIZE,
             enable_sampling: true,
         }
     }
@@ -58,10 +62,7 @@ impl RepairItem {
             position,
             source_peer,
             priority: RepairPriority::AntiEntropy,
-            queued_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
+            queued_at: crate::util::time::current_timestamp_millis(),
         }
     }
 
@@ -140,7 +141,7 @@ impl RepairQueue {
 
 impl Default for RepairQueue {
     fn default() -> Self {
-        Self::new(10000)
+        Self::new(DEFAULT_REPAIR_QUEUE_SIZE)
     }
 }
 
@@ -203,14 +204,12 @@ impl<S: ObjectStorage + Send + Sync + 'static> AntiEntropyRepairer<S> {
         range: PositionRange,
         peer_nodes: Vec<String>,
     ) -> Result<RepairSession> {
+        use crate::repair::types::NodeId;
         let session_id = format!(
             "anti-entropy-{}-{}-{}",
             self.local_node_id,
             range.start,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
+            crate::util::time::current_timestamp()
         );
 
         RepairSession::builder()
@@ -218,7 +217,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> AntiEntropyRepairer<S> {
             .session_type(RepairType::AntiEntropy)
             .ring_version(ring_version)
             .range(range)
-            .peer_nodes(peer_nodes)
+            .peer_nodes(peer_nodes.into_iter().map(NodeId::from).collect())
             .build()
             .map_err(|e| crate::error::ObjectStoreError::Internal(e.to_string()))
     }
@@ -281,39 +280,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> AntiEntropyRepairer<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use gitstratum_core::Blob;
-
-    struct MockObjectStorage;
-
-    #[async_trait]
-    impl ObjectStorage for MockObjectStorage {
-        async fn get(&self, _oid: &Oid) -> crate::error::Result<Option<Blob>> {
-            Ok(None)
-        }
-
-        async fn put(&self, _blob: &Blob) -> crate::error::Result<()> {
-            Ok(())
-        }
-
-        async fn delete(&self, _oid: &Oid) -> crate::error::Result<bool> {
-            Ok(false)
-        }
-
-        fn has(&self, _oid: &Oid) -> bool {
-            false
-        }
-
-        fn stats(&self) -> crate::store::StorageStats {
-            crate::store::StorageStats {
-                total_blobs: 0,
-                total_bytes: 0,
-                used_bytes: 0,
-                available_bytes: 0,
-                io_utilization: 0.0,
-            }
-        }
-    }
+    use crate::testutil::MockObjectStorage;
 
     #[test]
     fn test_anti_entropy_config_default() {
@@ -567,7 +534,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_new() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -577,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_config() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig {
             scan_interval: Duration::from_secs(7200),
             sample_size: 500,
@@ -593,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_stats() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -604,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_repair_queue() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -614,7 +581,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_start_stop() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -627,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_owned_ranges() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -644,7 +611,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_priority() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -653,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_queue_repair() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -666,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_queue_repairs() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -683,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_queue_repairs_max_size() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig {
             max_queue_size: 2,
             ..Default::default()
@@ -703,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_record_scan_completed() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -718,7 +685,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_record_scan_completed_accumulates() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -734,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_record_object_repaired() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -747,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_create_session() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
 
@@ -765,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_build_tree_for_range() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig {
             merkle_tree_depth: 2,
             ..Default::default()
@@ -780,7 +747,7 @@ mod tests {
 
     #[test]
     fn test_anti_entropy_repairer_store() {
-        let store = Arc::new(MockObjectStorage);
+        let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
         let repairer = AntiEntropyRepairer::new(store.clone(), "node-1".to_string(), config);
 

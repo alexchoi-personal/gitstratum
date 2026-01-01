@@ -1,6 +1,7 @@
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::io::{FromRawFd, RawFd};
+use std::os::fd::{BorrowedFd, RawFd};
+
+use nix::sys::uio::{pread, pwrite};
+use nix::unistd::fsync;
 
 use crate::error::Result;
 
@@ -108,15 +109,12 @@ impl UringHandle {
     }
 
     fn execute_read(&self, req: IoRequest) -> IoCompletion {
-        let mut file = unsafe { File::from_raw_fd(req.fd) };
         let mut buffer = req.buffer.into_vec();
-
-        let result = (|| {
-            file.seek(SeekFrom::Start(req.offset))?;
-            file.read(&mut buffer)
-        })();
-
-        std::mem::forget(file);
+        // SAFETY: The fd is valid for the duration of this synchronous call.
+        // The caller (DataFile/BucketIo) keeps the File handle alive.
+        let fd = unsafe { BorrowedFd::borrow_raw(req.fd) };
+        let result = pread(fd, &mut buffer, req.offset as i64)
+            .map_err(|e| std::io::Error::from_raw_os_error(e as i32));
 
         IoCompletion {
             id: req.id,
@@ -126,15 +124,11 @@ impl UringHandle {
     }
 
     fn execute_write(&self, req: IoRequest) -> IoCompletion {
-        let mut file = unsafe { File::from_raw_fd(req.fd) };
         let buffer = req.buffer;
-
-        let result = (|| {
-            file.seek(SeekFrom::Start(req.offset))?;
-            file.write(&buffer)
-        })();
-
-        std::mem::forget(file);
+        // SAFETY: The fd is valid for the duration of this synchronous call.
+        let fd = unsafe { BorrowedFd::borrow_raw(req.fd) };
+        let result = pwrite(fd, &buffer, req.offset as i64)
+            .map_err(|e| std::io::Error::from_raw_os_error(e as i32));
 
         IoCompletion {
             id: req.id,
@@ -144,9 +138,9 @@ impl UringHandle {
     }
 
     fn execute_fsync(&self, req: IoRequest) -> IoCompletion {
-        let file = unsafe { File::from_raw_fd(req.fd) };
-        let result = file.sync_all().map(|_| 0);
-        std::mem::forget(file);
+        let result = fsync(req.fd)
+            .map(|_| 0)
+            .map_err(|e| std::io::Error::from_raw_os_error(e as i32));
 
         IoCompletion {
             id: req.id,
