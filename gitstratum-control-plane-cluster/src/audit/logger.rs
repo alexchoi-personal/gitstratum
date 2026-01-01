@@ -1,3 +1,4 @@
+use crate::time::current_timestamp_millis;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -54,14 +55,9 @@ impl AuditEntry {
         resource_id: impl Into<String>,
         action: impl Into<String>,
     ) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            timestamp: now,
+            timestamp: current_timestamp_millis(),
             event_type: event_type.into(),
             actor_id: actor_id.into(),
             actor_type: ActorType::default(),

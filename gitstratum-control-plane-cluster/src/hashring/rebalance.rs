@@ -1,3 +1,4 @@
+use crate::time::current_timestamp_secs;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,10 +44,7 @@ pub struct RebalanceStatus {
 
 impl RebalanceStatus {
     pub fn new(id: impl Into<String>) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp_secs();
 
         Self {
             id: id.into(),
@@ -159,11 +157,7 @@ impl Rebalancer {
                 status,
                 RebalanceOperationStatus::Completed | RebalanceOperationStatus::Failed
             ) {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                op.completed_at = Some(now);
+                op.completed_at = Some(current_timestamp_secs());
             }
         }
 

@@ -1,3 +1,4 @@
+use crate::time::current_timestamp_secs;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -12,10 +13,7 @@ pub struct Claims {
 
 impl Claims {
     pub fn new(subject: impl Into<String>, roles: Vec<String>, ttl: Duration) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp_secs();
 
         Self {
             sub: subject.into(),
@@ -27,10 +25,7 @@ impl Claims {
     }
 
     pub fn is_expired(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp_secs();
 
         now >= self.exp
     }

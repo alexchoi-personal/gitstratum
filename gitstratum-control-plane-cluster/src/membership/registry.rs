@@ -1,3 +1,4 @@
+use crate::time::current_timestamp_millis;
 use gitstratum_hashring::{ConsistentHashRing, NodeId, NodeInfo, NodeState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -109,36 +110,22 @@ impl LockInfo {
         holder_id: impl Into<String>,
         timeout: Duration,
     ) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
         Self {
             lock_id: lock_id.into(),
             repo_id: repo_id.into(),
             ref_name: ref_name.into(),
             holder_id: holder_id.into(),
             timeout_ms: timeout.as_millis() as u64,
-            acquired_at_epoch_ms: now,
+            acquired_at_epoch_ms: current_timestamp_millis(),
         }
     }
 
     pub fn is_expired(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        now > self.acquired_at_epoch_ms + self.timeout_ms
+        current_timestamp_millis() > self.acquired_at_epoch_ms + self.timeout_ms
     }
 
     pub fn remaining_ms(&self) -> u64 {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
+        let now = current_timestamp_millis();
         let expires_at = self.acquired_at_epoch_ms + self.timeout_ms;
         if now >= expires_at {
             0
@@ -198,25 +185,23 @@ impl ClusterStateSnapshot {
         }
     }
 
-    pub fn add_node(&mut self, node: ExtendedNodeInfo) {
-        let nodes = match node.node_type {
+    fn nodes_by_type_mut(&mut self, node_type: NodeType) -> &mut HashMap<String, ExtendedNodeInfo> {
+        match node_type {
             NodeType::ControlPlane => &mut self.control_plane_nodes,
             NodeType::Metadata => &mut self.metadata_nodes,
             NodeType::Object => &mut self.object_nodes,
             NodeType::Frontend => &mut self.frontend_nodes,
-        };
-        nodes.insert(node.id.clone(), node);
+        }
+    }
+
+    pub fn add_node(&mut self, node: ExtendedNodeInfo) {
+        let node_type = node.node_type;
+        self.nodes_by_type_mut(node_type).insert(node.id.clone(), node);
         self.version += 1;
     }
 
     pub fn remove_node(&mut self, node_id: &str, node_type: NodeType) -> Option<ExtendedNodeInfo> {
-        let nodes = match node_type {
-            NodeType::ControlPlane => &mut self.control_plane_nodes,
-            NodeType::Metadata => &mut self.metadata_nodes,
-            NodeType::Object => &mut self.object_nodes,
-            NodeType::Frontend => &mut self.frontend_nodes,
-        };
-        let removed = nodes.remove(node_id);
+        let removed = self.nodes_by_type_mut(node_type).remove(node_id);
         if removed.is_some() {
             self.version += 1;
         }
@@ -224,13 +209,7 @@ impl ClusterStateSnapshot {
     }
 
     pub fn set_node_state(&mut self, node_id: &str, node_type: NodeType, state: NodeState) -> bool {
-        let nodes = match node_type {
-            NodeType::ControlPlane => &mut self.control_plane_nodes,
-            NodeType::Metadata => &mut self.metadata_nodes,
-            NodeType::Object => &mut self.object_nodes,
-            NodeType::Frontend => &mut self.frontend_nodes,
-        };
-        if let Some(node) = nodes.get_mut(node_id) {
+        if let Some(node) = self.nodes_by_type_mut(node_type).get_mut(node_id) {
             node.state = state;
             self.version += 1;
             true

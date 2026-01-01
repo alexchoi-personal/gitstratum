@@ -1,3 +1,4 @@
+use crate::time::current_timestamp_millis;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -46,12 +47,7 @@ impl RetentionPolicy {
         }
 
         if let Some(oldest) = self.oldest_entry_timestamp {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
-            let age_ms = now.saturating_sub(oldest);
+            let age_ms = current_timestamp_millis().saturating_sub(oldest);
             if age_ms > self.config.max_age.as_millis() as u64 {
                 return true;
             }
@@ -61,12 +57,7 @@ impl RetentionPolicy {
     }
 
     pub fn should_compress(&self, entry_timestamp: u64) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        let age_ms = now.saturating_sub(entry_timestamp);
+        let age_ms = current_timestamp_millis().saturating_sub(entry_timestamp);
         age_ms > self.config.compress_after.as_millis() as u64
     }
 

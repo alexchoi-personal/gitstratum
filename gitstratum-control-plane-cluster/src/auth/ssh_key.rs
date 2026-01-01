@@ -1,3 +1,4 @@
+use crate::time::current_timestamp_secs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -20,10 +21,7 @@ impl SshKey {
         key_type: impl Into<String>,
         public_key: impl Into<String>,
     ) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp_secs();
 
         let public_key = public_key.into();
         let fingerprint = Self::compute_fingerprint(&public_key);
@@ -42,10 +40,7 @@ impl SshKey {
 
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let now = current_timestamp_secs();
 
             now >= expires_at
         } else {
@@ -63,10 +58,7 @@ impl SshKey {
     }
 
     pub fn record_usage(&mut self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp_secs();
         self.last_used_at = Some(now);
     }
 }

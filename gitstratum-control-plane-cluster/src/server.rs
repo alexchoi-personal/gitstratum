@@ -1,81 +1,21 @@
-use gitstratum_hashring::NodeState as HashRingNodeState;
 use gitstratum_proto::{
     control_plane_service_server::ControlPlaneService, AcquireRefLockRequest,
     AcquireRefLockResponse, AddNodeRequest, AddNodeResponse, GetClusterStateRequest,
     GetClusterStateResponse, GetHashRingRequest, GetHashRingResponse, GetRebalanceStatusRequest,
     GetRebalanceStatusResponse, HashRingEntry, NodeInfo as ProtoNodeInfo,
-    NodeState as ProtoNodeState, NodeType as ProtoNodeType, ReleaseRefLockRequest,
-    ReleaseRefLockResponse, RemoveNodeRequest, RemoveNodeResponse, SetNodeStateRequest,
-    SetNodeStateResponse, TriggerRebalanceRequest, TriggerRebalanceResponse,
+    NodeState as ProtoNodeState, ReleaseRefLockRequest, ReleaseRefLockResponse, RemoveNodeRequest,
+    RemoveNodeResponse, SetNodeStateRequest, SetNodeStateResponse, TriggerRebalanceRequest,
+    TriggerRebalanceResponse,
 };
 use std::time::Duration;
 use tonic::{Request, Response, Status};
 
 use crate::error::ControlPlaneError;
-use crate::membership::{ClusterStateSnapshot, ExtendedNodeInfo, LockInfo, NodeType, RefLockKey};
+use crate::membership::{ClusterStateSnapshot, ExtendedNodeInfo, LockInfo, RefLockKey};
+use crate::proto::proto_node_state_to_hashring;
 use crate::raft::{ControlPlaneRaft, NodeId, Request as RaftRequest, StateMachineStore};
 
-fn proto_node_state_to_hashring(state: ProtoNodeState) -> HashRingNodeState {
-    match state {
-        ProtoNodeState::Active => HashRingNodeState::Active,
-        ProtoNodeState::Joining => HashRingNodeState::Joining,
-        ProtoNodeState::Draining => HashRingNodeState::Draining,
-        ProtoNodeState::Down => HashRingNodeState::Down,
-        ProtoNodeState::Unknown => HashRingNodeState::Down,
-    }
-}
-
-fn hashring_node_state_to_proto(state: HashRingNodeState) -> ProtoNodeState {
-    match state {
-        HashRingNodeState::Active => ProtoNodeState::Active,
-        HashRingNodeState::Joining => ProtoNodeState::Joining,
-        HashRingNodeState::Draining => ProtoNodeState::Draining,
-        HashRingNodeState::Down => ProtoNodeState::Down,
-    }
-}
-
-fn proto_node_type_to_internal(node_type: ProtoNodeType) -> NodeType {
-    match node_type {
-        ProtoNodeType::ControlPlane => NodeType::ControlPlane,
-        ProtoNodeType::Metadata => NodeType::Metadata,
-        ProtoNodeType::Object => NodeType::Object,
-        ProtoNodeType::Frontend => NodeType::Frontend,
-        ProtoNodeType::Unknown => NodeType::Frontend,
-    }
-}
-
-fn internal_node_type_to_proto(node_type: NodeType) -> ProtoNodeType {
-    match node_type {
-        NodeType::ControlPlane => ProtoNodeType::ControlPlane,
-        NodeType::Metadata => ProtoNodeType::Metadata,
-        NodeType::Object => ProtoNodeType::Object,
-        NodeType::Frontend => ProtoNodeType::Frontend,
-    }
-}
-
-fn extended_node_to_proto(node: &ExtendedNodeInfo) -> ProtoNodeInfo {
-    ProtoNodeInfo {
-        id: node.id.clone(),
-        address: node.address.clone(),
-        port: node.port as u32,
-        state: hashring_node_state_to_proto(node.state).into(),
-        r#type: internal_node_type_to_proto(node.node_type).into(),
-    }
-}
-
-fn proto_node_to_extended(node: &ProtoNodeInfo) -> ExtendedNodeInfo {
-    ExtendedNodeInfo {
-        id: node.id.clone(),
-        address: node.address.clone(),
-        port: node.port as u16,
-        state: proto_node_state_to_hashring(
-            ProtoNodeState::try_from(node.state).unwrap_or(ProtoNodeState::Unknown),
-        ),
-        node_type: proto_node_type_to_internal(
-            ProtoNodeType::try_from(node.r#type).unwrap_or(ProtoNodeType::Unknown),
-        ),
-    }
-}
+const DEFAULT_REPLICATION_FACTOR: u32 = 3;
 
 pub struct ControlPlaneServer {
     raft: ControlPlaneRaft,
@@ -142,25 +82,25 @@ impl ControlPlaneService for ControlPlaneServer {
         let control_plane_nodes: Vec<ProtoNodeInfo> = state
             .control_plane_nodes
             .values()
-            .map(extended_node_to_proto)
+            .map(ProtoNodeInfo::from)
             .collect();
 
         let metadata_nodes: Vec<ProtoNodeInfo> = state
             .metadata_nodes
             .values()
-            .map(extended_node_to_proto)
+            .map(ProtoNodeInfo::from)
             .collect();
 
         let object_nodes: Vec<ProtoNodeInfo> = state
             .object_nodes
             .values()
-            .map(extended_node_to_proto)
+            .map(ProtoNodeInfo::from)
             .collect();
 
         let frontend_nodes: Vec<ProtoNodeInfo> = state
             .frontend_nodes
             .values()
-            .map(extended_node_to_proto)
+            .map(ProtoNodeInfo::from)
             .collect();
 
         let metrics = self.raft.metrics().borrow().clone();
@@ -188,7 +128,7 @@ impl ControlPlaneService for ControlPlaneServer {
             .node
             .ok_or_else(|| Status::invalid_argument("node is required"))?;
 
-        let extended_node = proto_node_to_extended(&node);
+        let extended_node = ExtendedNodeInfo::from(&node);
 
         let raft_request = RaftRequest::AddNode {
             node: extended_node,
@@ -366,7 +306,7 @@ impl ControlPlaneService for ControlPlaneServer {
 
         Ok(Response::new(GetHashRingResponse {
             entries,
-            replication_factor: 3,
+            replication_factor: DEFAULT_REPLICATION_FACTOR,
             version: state.version,
         }))
     }
@@ -430,10 +370,11 @@ pub async fn start_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::membership::NodeType;
+    use crate::proto::hashring_node_state_to_proto;
     use gitstratum_hashring::NodeState as HashRingNodeState;
-    use gitstratum_proto::{
-        NodeInfo as ProtoNodeInfo, NodeState as ProtoNodeState, NodeType as ProtoNodeType,
-    };
+    use gitstratum_proto::NodeState as ProtoNodeState;
+    use gitstratum_proto::NodeType as ProtoNodeType;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -478,7 +419,7 @@ mod tests {
             (ProtoNodeType::Unknown, NodeType::Frontend),
         ];
         for (proto, expected) in proto_to_internal_types {
-            assert_eq!(proto_node_type_to_internal(proto), expected);
+            assert_eq!(NodeType::from(proto), expected);
         }
 
         let internal_to_proto_types = [
@@ -488,7 +429,7 @@ mod tests {
             (NodeType::Frontend, ProtoNodeType::Frontend),
         ];
         for (internal, expected) in internal_to_proto_types {
-            assert_eq!(internal_node_type_to_proto(internal), expected);
+            assert_eq!(ProtoNodeType::from(internal), expected);
         }
 
         for node_type in [
@@ -497,8 +438,8 @@ mod tests {
             NodeType::Object,
             NodeType::Frontend,
         ] {
-            let proto = internal_node_type_to_proto(node_type);
-            assert_eq!(proto_node_type_to_internal(proto), node_type);
+            let proto = ProtoNodeType::from(node_type);
+            assert_eq!(NodeType::from(proto), node_type);
         }
 
         assert_eq!(i32::from(ProtoNodeState::Unknown), 0);
@@ -552,12 +493,12 @@ mod tests {
                 state,
                 node_type,
             };
-            let proto = extended_node_to_proto(&node);
+            let proto = ProtoNodeInfo::from(&node);
             assert_eq!(proto.id, node.id);
             assert_eq!(proto.address, node.address);
             assert_eq!(proto.port, node.port as u32);
 
-            let back = proto_node_to_extended(&proto);
+            let back = ExtendedNodeInfo::from(&proto);
             assert_eq!(back.id, node.id);
             assert_eq!(back.address, node.address);
             assert_eq!(back.port, node.port);
@@ -580,7 +521,7 @@ mod tests {
                 state: i32::from(proto_state),
                 r#type: i32::from(ProtoNodeType::Object),
             };
-            assert_eq!(proto_node_to_extended(&proto).state, expected);
+            assert_eq!(ExtendedNodeInfo::from(&proto).state, expected);
         }
 
         let proto_types = [
@@ -598,7 +539,7 @@ mod tests {
                 state: i32::from(ProtoNodeState::Active),
                 r#type: i32::from(proto_type),
             };
-            assert_eq!(proto_node_to_extended(&proto).node_type, expected);
+            assert_eq!(ExtendedNodeInfo::from(&proto).node_type, expected);
         }
 
         for invalid in [999, -1, i32::MAX] {
@@ -610,7 +551,7 @@ mod tests {
                 r#type: i32::from(ProtoNodeType::Object),
             };
             assert_eq!(
-                proto_node_to_extended(&proto).state,
+                ExtendedNodeInfo::from(&proto).state,
                 HashRingNodeState::Down
             );
         }
@@ -623,7 +564,7 @@ mod tests {
                 state: i32::from(ProtoNodeState::Active),
                 r#type: invalid,
             };
-            assert_eq!(proto_node_to_extended(&proto).node_type, NodeType::Frontend);
+            assert_eq!(ExtendedNodeInfo::from(&proto).node_type, NodeType::Frontend);
         }
 
         let node_empty = ExtendedNodeInfo {
@@ -633,7 +574,7 @@ mod tests {
             state: HashRingNodeState::Active,
             node_type: NodeType::Object,
         };
-        let proto_empty = extended_node_to_proto(&node_empty);
+        let proto_empty = ProtoNodeInfo::from(&node_empty);
         assert_eq!(proto_empty.id, "");
         assert_eq!(proto_empty.address, "");
         assert_eq!(proto_empty.port, 0);
@@ -645,7 +586,7 @@ mod tests {
             state: HashRingNodeState::Active,
             node_type: NodeType::Object,
         };
-        assert_eq!(extended_node_to_proto(&node_max).port, 65535);
+        assert_eq!(ProtoNodeInfo::from(&node_max).port, 65535);
 
         let proto_max_port = ProtoNodeInfo {
             id: "node-1".to_string(),
@@ -654,7 +595,7 @@ mod tests {
             state: i32::from(ProtoNodeState::Active),
             r#type: i32::from(ProtoNodeType::Object),
         };
-        assert_eq!(proto_node_to_extended(&proto_max_port).port, u16::MAX);
+        assert_eq!(ExtendedNodeInfo::from(&proto_max_port).port, u16::MAX);
 
         let addresses = [
             "localhost",
@@ -674,7 +615,7 @@ mod tests {
                 state: i32::from(ProtoNodeState::Active),
                 r#type: i32::from(ProtoNodeType::Object),
             };
-            assert_eq!(proto_node_to_extended(&proto).address, addr);
+            assert_eq!(ExtendedNodeInfo::from(&proto).address, addr);
         }
     }
 
@@ -726,8 +667,8 @@ mod tests {
             9001,
             NodeType::Object,
         );
-        let proto = extended_node_to_proto(&node_special);
-        let roundtrip = proto_node_to_extended(&proto);
+        let proto = ProtoNodeInfo::from(&node_special);
+        let roundtrip = ExtendedNodeInfo::from(&proto);
         assert_eq!(roundtrip.id, "node-with-special-chars_123");
         assert_eq!(roundtrip.address, "my-host.example.com");
 

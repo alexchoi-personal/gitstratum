@@ -1,77 +1,17 @@
 use gitstratum_hashring::NodeState as HashRingNodeState;
 use gitstratum_proto::{
     control_plane_service_client::ControlPlaneServiceClient, AcquireRefLockRequest, AddNodeRequest,
-    GetClusterStateRequest, GetHashRingRequest, GetRebalanceStatusRequest,
-    NodeInfo as ProtoNodeInfo, NodeState as ProtoNodeState, NodeType as ProtoNodeType,
-    ReleaseRefLockRequest, RemoveNodeRequest, SetNodeStateRequest, TriggerRebalanceRequest,
+    GetClusterStateRequest, GetHashRingRequest, GetRebalanceStatusRequest, ReleaseRefLockRequest,
+    RemoveNodeRequest, SetNodeStateRequest, TriggerRebalanceRequest,
 };
 use std::time::Duration;
 use tonic::transport::Channel;
 
+use gitstratum_proto::NodeInfo as ProtoNodeInfo;
+
 use crate::error::{ControlPlaneError, Result};
-use crate::membership::{ExtendedNodeInfo, NodeType};
-
-fn hashring_node_state_to_proto(state: HashRingNodeState) -> ProtoNodeState {
-    match state {
-        HashRingNodeState::Active => ProtoNodeState::Active,
-        HashRingNodeState::Joining => ProtoNodeState::Joining,
-        HashRingNodeState::Draining => ProtoNodeState::Draining,
-        HashRingNodeState::Down => ProtoNodeState::Down,
-    }
-}
-
-fn proto_node_state_to_hashring(state: ProtoNodeState) -> HashRingNodeState {
-    match state {
-        ProtoNodeState::Active => HashRingNodeState::Active,
-        ProtoNodeState::Joining => HashRingNodeState::Joining,
-        ProtoNodeState::Draining => HashRingNodeState::Draining,
-        ProtoNodeState::Down => HashRingNodeState::Down,
-        ProtoNodeState::Unknown => HashRingNodeState::Down,
-    }
-}
-
-fn internal_node_type_to_proto(node_type: NodeType) -> ProtoNodeType {
-    match node_type {
-        NodeType::ControlPlane => ProtoNodeType::ControlPlane,
-        NodeType::Metadata => ProtoNodeType::Metadata,
-        NodeType::Object => ProtoNodeType::Object,
-        NodeType::Frontend => ProtoNodeType::Frontend,
-    }
-}
-
-fn proto_node_type_to_internal(node_type: ProtoNodeType) -> NodeType {
-    match node_type {
-        ProtoNodeType::ControlPlane => NodeType::ControlPlane,
-        ProtoNodeType::Metadata => NodeType::Metadata,
-        ProtoNodeType::Object => NodeType::Object,
-        ProtoNodeType::Frontend => NodeType::Frontend,
-        ProtoNodeType::Unknown => NodeType::Frontend,
-    }
-}
-
-fn extended_node_to_proto(node: &ExtendedNodeInfo) -> ProtoNodeInfo {
-    ProtoNodeInfo {
-        id: node.id.clone(),
-        address: node.address.clone(),
-        port: node.port as u32,
-        state: hashring_node_state_to_proto(node.state).into(),
-        r#type: internal_node_type_to_proto(node.node_type).into(),
-    }
-}
-
-fn proto_node_to_extended(node: &ProtoNodeInfo) -> ExtendedNodeInfo {
-    ExtendedNodeInfo {
-        id: node.id.clone(),
-        address: node.address.clone(),
-        port: node.port as u16,
-        state: proto_node_state_to_hashring(
-            ProtoNodeState::try_from(node.state).unwrap_or(ProtoNodeState::Unknown),
-        ),
-        node_type: proto_node_type_to_internal(
-            ProtoNodeType::try_from(node.r#type).unwrap_or(ProtoNodeType::Unknown),
-        ),
-    }
-}
+use crate::membership::ExtendedNodeInfo;
+use crate::proto::hashring_node_state_to_proto;
 
 #[derive(Debug, Clone)]
 pub struct ClusterStateResponse {
@@ -128,22 +68,22 @@ impl ControlPlaneClient {
             control_plane_nodes: response
                 .control_plane_nodes
                 .iter()
-                .map(proto_node_to_extended)
+                .map(ExtendedNodeInfo::from)
                 .collect(),
             metadata_nodes: response
                 .metadata_nodes
                 .iter()
-                .map(proto_node_to_extended)
+                .map(ExtendedNodeInfo::from)
                 .collect(),
             object_nodes: response
                 .object_nodes
                 .iter()
-                .map(proto_node_to_extended)
+                .map(ExtendedNodeInfo::from)
                 .collect(),
             frontend_nodes: response
                 .frontend_nodes
                 .iter()
-                .map(proto_node_to_extended)
+                .map(ExtendedNodeInfo::from)
                 .collect(),
             leader_id: response.leader_id,
             version: response.version,
@@ -151,7 +91,7 @@ impl ControlPlaneClient {
     }
 
     pub async fn add_node(&mut self, node: ExtendedNodeInfo) -> Result<()> {
-        let proto_node = extended_node_to_proto(&node);
+        let proto_node = ProtoNodeInfo::from(&node);
 
         let response = self
             .inner
@@ -352,7 +292,11 @@ impl ControlPlaneClientPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::membership::NodeType;
+    use crate::proto::proto_node_state_to_hashring;
     use gitstratum_hashring::NodeState as HashRingNodeState;
+    use gitstratum_proto::NodeState as ProtoNodeState;
+    use gitstratum_proto::NodeType as ProtoNodeType;
     use std::sync::Arc;
     use std::thread;
 
@@ -388,8 +332,8 @@ mod tests {
             NodeType::Frontend,
         ];
         for node_type in internal_types {
-            let proto = internal_node_type_to_proto(node_type);
-            let back = proto_node_type_to_internal(proto);
+            let proto = ProtoNodeType::from(node_type);
+            let back = NodeType::from(proto);
             assert_eq!(back, node_type);
         }
 
@@ -401,7 +345,7 @@ mod tests {
             (ProtoNodeType::Frontend, NodeType::Frontend),
         ];
         for (proto, expected) in proto_types {
-            assert_eq!(proto_node_type_to_internal(proto), expected);
+            assert_eq!(NodeType::from(proto), expected);
         }
     }
 
@@ -430,8 +374,8 @@ mod tests {
                     node_type,
                 };
 
-                let proto = extended_node_to_proto(&original);
-                let back = proto_node_to_extended(&proto);
+                let proto = ProtoNodeInfo::from(&original);
+                let back = ExtendedNodeInfo::from(&proto);
 
                 assert_eq!(original.id, back.id);
                 assert_eq!(original.address, back.address);
@@ -487,16 +431,16 @@ mod tests {
         ];
 
         for proto in edge_case_protos {
-            let node = proto_node_to_extended(&proto);
+            let node = ExtendedNodeInfo::from(&proto);
             assert!(!node.id.is_empty() || proto.id.is_empty());
         }
 
         let port_tests = [0u16, 1, 8080, 65535];
         for port in port_tests {
             let node = ExtendedNodeInfo::new("node-1", "10.0.0.1", port, NodeType::Object);
-            let proto = extended_node_to_proto(&node);
+            let proto = ProtoNodeInfo::from(&node);
             assert_eq!(proto.port, port as u32);
-            let back = proto_node_to_extended(&proto);
+            let back = ExtendedNodeInfo::from(&proto);
             assert_eq!(back.port, port);
         }
 
@@ -507,7 +451,7 @@ mod tests {
             state: ProtoNodeState::Active.into(),
             r#type: ProtoNodeType::Object.into(),
         };
-        let node = proto_node_to_extended(&proto_large_port);
+        let node = ExtendedNodeInfo::from(&proto_large_port);
         assert_eq!(node.port, 70000u32 as u16);
 
         let string_tests = [
@@ -526,8 +470,8 @@ mod tests {
                 state: HashRingNodeState::Active,
                 node_type: NodeType::Object,
             };
-            let proto = extended_node_to_proto(&node);
-            let back = proto_node_to_extended(&proto);
+            let proto = ProtoNodeInfo::from(&node);
+            let back = ExtendedNodeInfo::from(&proto);
             assert_eq!(back.id, id);
             assert_eq!(back.address, address);
         }

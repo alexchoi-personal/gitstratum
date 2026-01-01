@@ -1,3 +1,4 @@
+use crate::time::current_timestamp_millis;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,10 +12,7 @@ pub struct RateLimitStateEntry {
 
 impl RateLimitStateEntry {
     pub fn new(capacity: u64, refill_rate: f64) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = current_timestamp_millis();
 
         Self {
             tokens: capacity as f64,
@@ -25,10 +23,7 @@ impl RateLimitStateEntry {
     }
 
     pub fn refill(&mut self) -> f64 {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = current_timestamp_millis();
 
         let elapsed_ms = now.saturating_sub(self.last_update_epoch_ms);
         let elapsed_secs = elapsed_ms as f64 / 1000.0;
@@ -136,10 +131,7 @@ impl RateLimitState {
     }
 
     pub fn cleanup_stale_entries(&mut self, max_age_ms: u64) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = current_timestamp_millis();
 
         self.per_client
             .retain(|_, entry| now - entry.last_update_epoch_ms < max_age_ms);

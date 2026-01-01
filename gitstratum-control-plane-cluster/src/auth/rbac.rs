@@ -1,3 +1,4 @@
+use crate::time::current_timestamp_secs;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -85,10 +86,7 @@ pub struct RoleBinding {
 
 impl RoleBinding {
     pub fn new(user_id: impl Into<String>, role_name: impl Into<String>) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_timestamp_secs();
 
         Self {
             user_id: user_id.into(),
@@ -106,10 +104,7 @@ impl RoleBinding {
 
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let now = current_timestamp_secs();
 
             now >= expires_at
         } else {
