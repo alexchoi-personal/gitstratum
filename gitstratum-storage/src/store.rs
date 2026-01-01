@@ -104,7 +104,7 @@ impl BucketStore {
 
         if let Some(bucket) = self.bucket_cache.get(bucket_id) {
             if let Some(entry) = bucket.find_entry(oid) {
-                if entry.flags & EntryFlags::DELETED.bits() != 0 {
+                if entry.is_deleted() {
                     return Ok(None);
                 }
                 return self.read_value(entry).await.map(Some);
@@ -117,7 +117,7 @@ impl BucketStore {
         self.bucket_cache.put(bucket_id, bucket.clone());
 
         if let Some(entry) = bucket.find_entry(oid) {
-            if entry.flags & EntryFlags::DELETED.bits() != 0 {
+            if entry.is_deleted() {
                 return Ok(None);
             }
             return self.read_value(entry).await.map(Some);
@@ -240,12 +240,11 @@ impl BucketStore {
 
         for i in 0..bucket.header.count as usize {
             if bucket.entries[i].matches(oid) {
-                let flags = bucket.entries[i].flags;
-                if flags & EntryFlags::DELETED.bits() != 0 {
+                if bucket.entries[i].is_deleted() {
                     return Ok(false);
                 }
 
-                bucket.entries[i].flags = flags | EntryFlags::DELETED.bits();
+                bucket.entries[i].flags |= EntryFlags::DELETED.bits();
 
                 self.dead_bytes
                     .fetch_add(bucket.entries[i].size() as u64, Ordering::Relaxed);
@@ -271,7 +270,7 @@ impl BucketStore {
 
         if let Some(bucket) = self.bucket_cache.get(bucket_id) {
             if let Some(entry) = bucket.find_entry(oid) {
-                return entry.flags & EntryFlags::DELETED.bits() == 0;
+                return !entry.is_deleted();
             }
             return false;
         }
@@ -279,7 +278,7 @@ impl BucketStore {
         if let Ok(bucket) = self.bucket_file_for_iter.write().read_bucket(bucket_id) {
             self.bucket_cache.put(bucket_id, bucket.clone());
             if let Some(entry) = bucket.find_entry(oid) {
-                return entry.flags & EntryFlags::DELETED.bits() == 0;
+                return !entry.is_deleted();
             }
         }
 
@@ -426,7 +425,7 @@ impl BucketStoreIterator {
                 let count = { bucket.header.count };
                 let entries: Vec<_> = (0..count as usize)
                     .map(|i| bucket.entries[i])
-                    .filter(|e| !e.is_empty() && (e.flags & EntryFlags::DELETED.bits() == 0))
+                    .filter(|e| !e.is_empty() && !e.is_deleted())
                     .collect();
 
                 if !entries.is_empty() {

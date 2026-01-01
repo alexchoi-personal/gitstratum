@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::bucket::{CompactEntry, DiskBucket, EntryFlags};
+use crate::bucket::{CompactEntry, DiskBucket};
 use crate::error::Result;
 use crate::record::DataRecord;
 use crate::store::BucketStore;
@@ -57,12 +57,11 @@ impl Compactor {
 
             for entry_idx in 0..count {
                 let entry = &bucket.entries[entry_idx];
-                let flags = { entry.flags };
                 let file_id = { entry.file_id };
 
                 source_file_ids.insert(file_id);
 
-                if flags & EntryFlags::DELETED.bits() != 0 {
+                if entry.is_deleted() {
                     deleted_entries.push((bucket_id, entry_idx));
                     bytes_to_reclaim += entry.size() as u64;
                 } else {
@@ -73,7 +72,7 @@ impl Compactor {
                         offset: entry.offset(),
                         size: entry.size(),
                         oid_suffix: entry.oid_suffix,
-                        flags,
+                        flags: entry.flags,
                     });
                 }
             }

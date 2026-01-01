@@ -1,11 +1,14 @@
 use gitstratum_core::Oid;
 
 pub const ENTRY_SIZE: usize = 32;
+pub const OID_SIZE: usize = 32;
+pub const OID_PREFIX_SIZE: usize = 16;
+pub const OID_SUFFIX_SIZE: usize = 16;
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct CompactEntry {
-    pub oid_suffix: [u8; 16],
+    pub oid_suffix: [u8; OID_SUFFIX_SIZE],
     pub file_id: u16,
     pub offset: [u8; 6],
     pub size: [u8; 3],
@@ -13,9 +16,13 @@ pub struct CompactEntry {
     pub _reserved: [u8; 4],
 }
 
+// Compile-time assertions to ensure transmute safety
+const _: () = assert!(std::mem::size_of::<CompactEntry>() == ENTRY_SIZE);
+const _: () = assert!(std::mem::align_of::<CompactEntry>() == 1); // packed = no padding
+
 impl CompactEntry {
     pub const EMPTY: Self = Self {
-        oid_suffix: [0u8; 16],
+        oid_suffix: [0u8; OID_SUFFIX_SIZE],
         file_id: 0,
         offset: [0u8; 6],
         size: [0u8; 3],
@@ -24,8 +31,8 @@ impl CompactEntry {
     };
 
     pub fn new(oid: &Oid, file_id: u16, offset: u64, size: u32, flags: u8) -> Self {
-        let mut oid_suffix = [0u8; 16];
-        oid_suffix.copy_from_slice(&oid.as_bytes()[16..32]);
+        let mut oid_suffix = [0u8; OID_SUFFIX_SIZE];
+        oid_suffix.copy_from_slice(&oid.as_bytes()[OID_PREFIX_SIZE..OID_SIZE]);
 
         let mut offset_bytes = [0u8; 6];
         offset_bytes.copy_from_slice(&offset.to_be_bytes()[2..8]);
@@ -44,11 +51,27 @@ impl CompactEntry {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.oid_suffix == [0u8; 16]
+        self.oid_suffix == [0u8; OID_SUFFIX_SIZE]
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.flags & EntryFlags::DELETED.bits() != 0
+    }
+
+    pub fn is_compressed(&self) -> bool {
+        self.flags & EntryFlags::COMPRESSED.bits() != 0
     }
 
     pub fn matches(&self, oid: &Oid) -> bool {
-        self.oid_suffix == oid.as_bytes()[16..32]
+        self.oid_suffix == oid.as_bytes()[OID_PREFIX_SIZE..OID_SIZE]
+    }
+
+    /// Reconstruct full OID from prefix (derived from bucket_id) and stored suffix.
+    pub fn reconstruct_oid(&self, oid_prefix: &[u8; OID_PREFIX_SIZE]) -> Oid {
+        let mut bytes = [0u8; OID_SIZE];
+        bytes[..OID_PREFIX_SIZE].copy_from_slice(oid_prefix);
+        bytes[OID_PREFIX_SIZE..].copy_from_slice(&self.oid_suffix);
+        Oid::from_bytes(bytes)
     }
 
     pub fn offset(&self) -> u64 {
@@ -63,11 +86,27 @@ impl CompactEntry {
         u32::from_be_bytes(buf)
     }
 
+    /// Convert to raw bytes for disk storage.
+    ///
+    /// # Safety (internal)
+    /// Safe because:
+    /// - `#[repr(C, packed)]` guarantees deterministic layout with no padding
+    /// - Compile-time assertions verify size == ENTRY_SIZE and alignment == 1
+    /// - All fields are plain data (no pointers, no Drop)
     pub fn to_bytes(&self) -> [u8; ENTRY_SIZE] {
+        // SAFETY: CompactEntry is repr(C, packed) with compile-time size/alignment checks
         unsafe { std::mem::transmute_copy(self) }
     }
 
+    /// Restore from raw bytes read from disk.
+    ///
+    /// # Safety (internal)
+    /// Safe because:
+    /// - Input is exactly ENTRY_SIZE bytes (enforced by type)
+    /// - `#[repr(C, packed)]` guarantees any bit pattern is valid
+    /// - No invalid states possible (all fields are integers/byte arrays)
     pub fn from_bytes(bytes: &[u8; ENTRY_SIZE]) -> Self {
+        // SAFETY: CompactEntry is repr(C, packed), all bit patterns valid
         unsafe { std::ptr::read(bytes.as_ptr() as *const Self) }
     }
 }
@@ -171,5 +210,53 @@ mod tests {
         assert_eq!(EntryFlags::COMPRESSED.bits(), 1);
         assert_eq!(EntryFlags::DELETED.bits(), 2);
         assert_eq!(EntryFlags::LARGE_OBJECT.bits(), 4);
+    }
+
+    #[test]
+    fn test_is_deleted() {
+        let oid = create_test_oid(0x01);
+        let entry = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::DELETED.bits());
+        assert!(entry.is_deleted());
+
+        let entry2 = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::NONE.bits());
+        assert!(!entry2.is_deleted());
+
+        let entry3 = CompactEntry::new(
+            &oid,
+            1,
+            0,
+            100,
+            EntryFlags::DELETED.bits() | EntryFlags::COMPRESSED.bits(),
+        );
+        assert!(entry3.is_deleted());
+    }
+
+    #[test]
+    fn test_is_compressed() {
+        let oid = create_test_oid(0x01);
+        let entry = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::COMPRESSED.bits());
+        assert!(entry.is_compressed());
+
+        let entry2 = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::NONE.bits());
+        assert!(!entry2.is_compressed());
+    }
+
+    #[test]
+    fn test_reconstruct_oid() {
+        let oid = create_test_oid(0x42);
+        let entry = CompactEntry::new(&oid, 1, 0, 100, 0);
+
+        let prefix: [u8; OID_PREFIX_SIZE] = oid.as_bytes()[..OID_PREFIX_SIZE].try_into().unwrap();
+        let reconstructed = entry.reconstruct_oid(&prefix);
+
+        assert_eq!(reconstructed, oid);
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(OID_SIZE, 32);
+        assert_eq!(OID_PREFIX_SIZE, 16);
+        assert_eq!(OID_SUFFIX_SIZE, 16);
+        assert_eq!(OID_PREFIX_SIZE + OID_SUFFIX_SIZE, OID_SIZE);
     }
 }
