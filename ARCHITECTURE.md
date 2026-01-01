@@ -188,9 +188,147 @@ Object stores Git objects (blobs, trees, commits, tags) and the pack cache.
 
 Objects are distributed across nodes using consistent hashing. Each object's position on a ring is determined by its ID—since Git object IDs are already SHA-256 hashes, they're uniformly distributed across the keyspace. No additional hashing needed. Nodes own ranges of the ring. When you need an object, its ID directly tells you which node has it.
 
-Each physical node gets multiple positions on the ring (virtual nodes). This smooths out the distribution—adding a node takes a little from everyone rather than a lot from one neighbor.
+#### The Hash Ring
 
-Objects replicate to 3 nodes for durability. If one node is down, reads go to replicas. Writes need 2 of 3 to succeed (quorum).
+The ring is a circular number line from 0 to 2^64. Every object and every node gets a position on this ring.
+
+**Object positions** come directly from the OID bytes:
+
+```
+OID: a1b2c3d4e5f6...  (32 bytes, SHA-256 hash)
+Position: first 8 bytes as u64 = 0xa1b2c3d4e5f60000...
+```
+
+Since OIDs are already SHA-256 hashes, they're uniformly distributed. No additional hashing needed.
+
+**Node positions** come from hashing the node ID. But one position per node creates uneven segments:
+
+```
+3 nodes with 1 position each:
+
+    Node A              Node B                    Node C
+       ↓                   ↓                         ↓
+  ─────●───────────────────●─────────────────────────●─────
+       10%                 60%                       30%
+
+Node B owns 60% of keyspace—unfair.
+```
+
+#### Virtual Nodes
+
+The fix: give each physical node multiple positions (virtual nodes). With 16 vnodes per node:
+
+```
+    A₀  B₀  C₀  A₁  B₁  C₁  A₂  B₂  ...  A₁₅ B₁₅ C₁₅
+     ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓        ↓   ↓   ↓
+  ───●───●───●───●───●───●───●───●── ... ─●───●───●───
+
+Each node owns ~33% (many small segments instead of one big one)
+```
+
+Vnode positions are computed by hashing the node ID with an index:
+
+```
+hash("node-a", 0) → position 847293...
+hash("node-a", 1) → position 192847...
+hash("node-a", 2) → position 583920...
+```
+
+To find which node owns an object: find its position, walk clockwise to the next vnode, that vnode's physical node is the owner.
+
+```
+OID position: 500000
+
+     A₃        B₇        C₂
+      ↓         ↓         ↓
+  ────●─────────●─────────●────
+      400000    550000    700000
+             ↑
+          500000 → next vnode is B₇ → owned by Node B
+```
+
+#### Replication
+
+Each object is stored on N distinct physical nodes (default: 3). To find replicas, walk clockwise collecting distinct physical nodes:
+
+```
+OID position: 500000
+Replication factor: 3
+
+     A₃        B₇        A₁₁       C₂        B₃
+      ↓         ↓         ↓         ↓         ↓
+  ────●─────────●─────────●─────────●─────────●────
+      400000    550000    600000    700000    800000
+             ↑
+          500000
+
+Walk clockwise:
+  1. B₇  → Node B ✓ (1st replica - primary)
+  2. A₁₁ → Node A ✓ (2nd replica)
+  3. C₂  → Node C ✓ (3rd replica)
+
+Replicas: [B, A, C]
+```
+
+If we hit the same physical node twice (e.g., another B vnode), we skip it and keep walking.
+
+**Writes** go to all replicas in parallel, wait for quorum (2 of 3) before acknowledging:
+
+```
+Frontend ──┬──► Node B (primary)  ──┐
+           ├──► Node A (replica)  ──┼──► Wait for 2 of 3 ──► ACK
+           └──► Node C (replica)  ──┘
+```
+
+**Reads** can go to any replica. Frontend picks based on load or latency.
+
+#### Batched Parallel Fetches
+
+A large clone might need millions of objects spread across many nodes. Fetching them one-by-one would be slow. Instead, Frontend groups objects by destination node and makes parallel batch requests:
+
+```
+10 million OIDs to fetch, 10 Object nodes
+
+Step 1: Group by owner (using hash ring)
+  Node A: [oid1, oid7, oid12, ...]   ~1M OIDs
+  Node B: [oid2, oid5, oid19, ...]   ~1M OIDs
+  ...
+  Node J: [oid4, oid8, oid23, ...]   ~1M OIDs
+
+Step 2: Parallel batch requests
+  ┌─────────────┐
+  │  Frontend   │
+  └──────┬──────┘
+         │
+   ┌─────┼─────┬─────┬─────┬─────┐
+   ▼     ▼     ▼     ▼     ▼     ▼
+  [A]   [B]   [C]   [D]   ...   [J]    ← 10 parallel gRPC streams
+   │     │     │     │           │
+   └─────┴─────┴─────┴───────────┘
+                  │
+                  ▼
+         Merge results, stream to client
+```
+
+Each gRPC call uses streaming—objects flow back as they're fetched, no waiting for all objects before sending.
+
+**Load balancing across replicas:** Since each object has 3 replicas, Frontend can spread load:
+
+```
+Instead of always hitting primary:
+  Node A (primary): 1M reads
+  Node B (replica): 0 reads
+  Node C (replica): 0 reads
+
+Spread across replicas:
+  Node A: ~333K reads
+  Node B: ~333K reads
+  Node C: ~333K reads
+
+3x read throughput, even load distribution.
+```
+
+This matters for hot repositories where many CI runners clone simultaneously.
 
 ## Component Communication
 

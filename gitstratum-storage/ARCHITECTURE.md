@@ -2,6 +2,15 @@
 
 BucketStore is a key-value storage engine for content-addressed data. It stores Git objects—immutable blobs identified by their SHA-256 hash. The design optimizes for this specific pattern: write once, read many times, never update in place.
 
+**Note:** BucketStore runs on each Object node. Objects are distributed across nodes via consistent hashing (see Object Cluster Architecture). Within each node, BucketStore uses a separate bucket-based lookup. These are two different mappings:
+
+```
+OID → which node?     Uses first 8 bytes as ring position (distributed hash ring)
+OID → which bucket?   Uses first 4 bytes % bucket_count (local storage)
+```
+
+This document covers the second part—how BucketStore organizes data locally on a single node.
+
 ## The Two-File Design
 
 Storage is split into two files with different jobs:

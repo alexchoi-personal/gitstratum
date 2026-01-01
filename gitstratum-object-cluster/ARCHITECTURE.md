@@ -8,14 +8,14 @@ This immutability shapes everything about the storage design.
 
 The storage engine is BucketStore, a custom key-value store designed for this workload.
 
-BucketStore splits storage into two parts: a **bucket file** that maps keys to locations, and **data files** that hold actual values. The bucket file is divided into fixed-size buckets (4KB each). 4KB is chosen to align disk block size. To find a key, you hash it to determine which bucket it's in, read that bucket, scan through its entries, then read the actual data from the data file.
+BucketStore splits storage into two parts: a **bucket file** that maps keys to locations, and **data files** that hold actual values. The bucket file is divided into fixed-size buckets (4KB each). 4KB is chosen to align disk block size. To find a key, use its first 4 bytes to determine which bucket it's in, read that bucket, scan through its entries, then read the actual data from the data file.
 
 ```
 get(key):
-    bucket_id = hash(key) % number_of_buckets
-    bucket = read_bucket(bucket_id)      # 4KB read, often cached
-    entry = find_in_bucket(bucket, key)  # scan ~100 entries
-    value = read_data(entry.location)    # read actual bytes
+    bucket_id = key[0..4] % number_of_buckets  # first 4 bytes, no hashing
+    bucket = read_bucket(bucket_id)             # 4KB read, often cached
+    entry = find_in_bucket(bucket, key)         # scan ~100 entries
+    value = read_data(entry.location)           # read actual bytes
 ```
 
 Data files are append-only—new values are written to the end, never overwriting existing data. This is safe and fast for immutable objects.
@@ -23,7 +23,7 @@ Data files are append-only—new values are written to the end, never overwritin
 This works well for Git objects because:
 
 - **Writes are append-only.** Objects never change. No read-modify-write cycles.
-- **Keys are already hashes.** Git object IDs are uniformly distributed. Hashing them to buckets gives even load across buckets.
+- **Keys are already hashes.** Git object IDs are SHA-256 hashes, uniformly distributed. Using their first bytes directly for bucket assignment gives even load across buckets—no additional hashing needed.
 - **Access has locality.** Cloning a repo accesses objects from that repo. Those objects cluster into a subset of buckets that stay cached.
 
 The tradeoff is that lookups may hit disk twice (bucket + data) if the bucket isn't cached. For workloads with good locality—like CI/CD cloning the same repos repeatedly—the bucket cache is effective and this rarely happens.
@@ -56,7 +56,7 @@ A problem: with few nodes, the ring has uneven segments. One node might own 60% 
 The fix: give each physical node multiple positions on the ring, called **virtual nodes**. With 16 virtual nodes per physical node, the segments become roughly equal even with small clusters.
 
 ```
-    A₁    B₁    A₂    B₂    A₃    B₃    A₄    B₄   ...
+    A₀    B₀    A₁    B₁    A₂    B₂    A₃    B₃   ...
     ↓     ↓     ↓     ↓     ↓     ↓     ↓     ↓
 ────●─────●─────●─────●─────●─────●─────●─────●────
 ```
@@ -82,6 +82,126 @@ Reads can go to any replica. If one is slow or down, try another. The Frontend p
 ### Repair
 
 A background process compares replicas and fixes inconsistencies. If one replica is missing an object that others have, it copies the object over. This handles the case where a node was down during a write and missed some objects.
+
+## Frontend Routing
+
+Frontend doesn't talk to "the Object cluster" as a single entity. It routes requests to specific nodes based on the hash ring.
+
+### Position Calculation
+
+Both Frontend and Object nodes compute positions the same way:
+
+```rust
+fn oid_position(oid: &Oid) -> u64 {
+    // OIDs are SHA-256 hashes—use first 8 bytes directly
+    u64::from_le_bytes(oid.as_bytes()[..8].try_into().unwrap())
+}
+```
+
+This must match exactly. If Frontend thinks OID X belongs to Node A but Node A computes a different position, the object won't be found.
+
+### Batched Parallel Fetches
+
+When Frontend needs many objects (e.g., assembling a pack for a clone), it groups OIDs by destination node:
+
+```
+Input: 10 million OIDs
+
+Step 1: Partition by owner
+  for each oid:
+      position = oid_position(oid)
+      node = ring.find_owner(position)  // walk to next vnode
+      by_node[node].push(oid)
+
+Result:
+  Node A: ~1M OIDs
+  Node B: ~1M OIDs
+  ...
+  Node J: ~1M OIDs
+
+Step 2: Parallel gRPC streams
+  futures = []
+  for (node, oids) in by_node:
+      futures.push(node.get_blobs_streaming(oids))
+
+  results = join_all(futures)  // 10 concurrent streams
+```
+
+This turns 10M individual requests into ~10 parallel streams. Each stream uses gRPC server-side streaming—objects flow back as they're fetched.
+
+### Load Balancing Reads
+
+Each object exists on 3 replicas. Frontend can choose which replica to read from:
+
+```
+OID X has replicas: [Node B (primary), Node A, Node C]
+
+Option 1: Always read from primary
+  - Simple, consistent
+  - Primary becomes hot spot for popular repos
+
+Option 2: Round-robin across replicas
+  - Spreads load evenly
+  - 3x read throughput
+
+Option 3: Least-loaded replica
+  - Track pending requests per node
+  - Route to node with fewest in-flight requests
+  - Best for uneven workloads
+```
+
+For batch fetches, Frontend can distribute OIDs across replicas:
+
+```
+10M OIDs, each has 3 replicas
+
+Naive: send all to primaries
+  Node A: 3M reads (hot)
+  Node B: 4M reads (hotter)
+  Node C: 3M reads (hot)
+
+Smart: balance across replicas
+  Node A: ~3.3M reads
+  Node B: ~3.3M reads
+  Node C: ~3.3M reads
+
+Even distribution, no hot spots.
+```
+
+### Write Path
+
+Writes go to all replicas, wait for quorum:
+
+```
+put_blob(blob):
+    replicas = ring.nodes_for_oid(blob.oid)  // [B, A, C]
+
+    // Write to all in parallel
+    results = parallel_write(replicas, blob)
+
+    // Count successes
+    success_count = results.filter(ok).count()
+
+    // Quorum: majority must succeed
+    if success_count >= 2:
+        return Ok(())
+    else:
+        return Err(QuorumFailed)
+```
+
+The third replica catches up via repair if it missed the write.
+
+### Consistency with Ring Changes
+
+When the ring changes (node added/removed), Frontend and Object nodes must agree on the new topology. This is coordinated via Control Plane:
+
+1. Control Plane updates ring, increments version
+2. All nodes watch for changes, update local cache
+3. Brief inconsistency window during propagation
+4. Reads may hit wrong node, get forwarded or retry
+5. Writes to old primary still reach replicas (quorum handles it)
+
+The system tolerates brief inconsistency because objects are immutable—there's no "wrong version" to read.
 
 ## Compression
 
