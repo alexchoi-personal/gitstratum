@@ -1613,8 +1613,8 @@ mod tests {
 
     #[test]
     fn test_config_with_negative_lease_duration() {
-        let config = LeaderElectionConfig::new("test-lease", "default", "pod-1")
-            .with_lease_duration(-5);
+        let config =
+            LeaderElectionConfig::new("test-lease", "default", "pod-1").with_lease_duration(-5);
 
         assert_eq!(config.lease_duration_seconds, -5);
     }
@@ -1626,20 +1626,25 @@ mod tests {
         assert_eq!(config.lease_name, "");
         assert_eq!(config.namespace, "");
         assert_eq!(config.identity, "");
-        assert_eq!(config.lease_duration_seconds, DEFAULT_LEASE_DURATION_SECONDS);
+        assert_eq!(
+            config.lease_duration_seconds,
+            DEFAULT_LEASE_DURATION_SECONDS
+        );
     }
 
     #[test]
     fn test_config_clone_is_independent() {
-        let config1 = LeaderElectionConfig::new("lease-1", "ns-1", "id-1")
-            .with_lease_duration(30);
+        let config1 = LeaderElectionConfig::new("lease-1", "ns-1", "id-1").with_lease_duration(30);
         let config2 = config1.clone();
 
         assert_eq!(config2.lease_name, "lease-1");
         assert_eq!(config2.namespace, "ns-1");
         assert_eq!(config2.identity, "id-1");
         assert_eq!(config2.lease_duration_seconds, 30);
-        assert_eq!(config1.lease_duration_seconds, config2.lease_duration_seconds);
+        assert_eq!(
+            config1.lease_duration_seconds,
+            config2.lease_duration_seconds
+        );
     }
 
     #[test]
@@ -1667,7 +1672,10 @@ mod tests {
             .with_renew_deadline(Duration::from_secs(20))
             .with_lease_duration(30);
 
-        assert_eq!(config1.lease_duration_seconds, config2.lease_duration_seconds);
+        assert_eq!(
+            config1.lease_duration_seconds,
+            config2.lease_duration_seconds
+        );
         assert_eq!(config1.renew_deadline, config2.renew_deadline);
         assert_eq!(config1.retry_period, config2.retry_period);
     }
@@ -1705,7 +1713,7 @@ mod tests {
         let config = LeaderElectionConfig::new(
             "lease-with-dots.and-dashes",
             "namespace_with_underscores",
-            "identity/with/slashes"
+            "identity/with/slashes",
         );
 
         assert!(config.lease_name.contains('.'));
@@ -1719,7 +1727,7 @@ mod tests {
         let config = LeaderElectionConfig::new(
             long_string.clone(),
             long_string.clone(),
-            long_string.clone()
+            long_string.clone(),
         );
 
         assert_eq!(config.lease_name.len(), 1000);
@@ -2690,8 +2698,14 @@ mod tests {
     fn test_config_defaults_match_constants() {
         let config = LeaderElectionConfig::new("test", "default", "pod");
 
-        assert_eq!(config.lease_duration_seconds, DEFAULT_LEASE_DURATION_SECONDS);
-        assert_eq!(config.renew_deadline.as_secs(), DEFAULT_RENEW_DEADLINE_SECONDS);
+        assert_eq!(
+            config.lease_duration_seconds,
+            DEFAULT_LEASE_DURATION_SECONDS
+        );
+        assert_eq!(
+            config.renew_deadline.as_secs(),
+            DEFAULT_RENEW_DEADLINE_SECONDS
+        );
         assert_eq!(config.retry_period.as_secs(), DEFAULT_RETRY_PERIOD_SECONDS);
     }
 
@@ -2702,7 +2716,11 @@ mod tests {
         }
 
         let config1 = create_config("lease", "ns", "id");
-        let config2 = create_config(String::from("lease"), String::from("ns"), String::from("id"));
+        let config2 = create_config(
+            String::from("lease"),
+            String::from("ns"),
+            String::from("id"),
+        );
 
         assert_eq!(config1.lease_name, config2.lease_name);
         assert_eq!(config1.namespace, config2.namespace);
@@ -2723,11 +2741,9 @@ mod tests {
 
     #[test]
     fn test_config_field_mutation_after_clone() {
-        let original = LeaderElectionConfig::new("original", "ns", "id")
-            .with_lease_duration(10);
+        let original = LeaderElectionConfig::new("original", "ns", "id").with_lease_duration(10);
 
-        let modified = original.clone()
-            .with_lease_duration(20);
+        let modified = original.clone().with_lease_duration(20);
 
         assert_eq!(original.lease_duration_seconds, 10);
         assert_eq!(modified.lease_duration_seconds, 20);
@@ -2837,7 +2853,9 @@ mod tests {
     #[test]
     fn test_holder_identity_check_none_spec() {
         let spec_option: Option<LeaseSpec> = None;
-        let current_holder = spec_option.as_ref().and_then(|s| s.holder_identity.as_ref());
+        let current_holder = spec_option
+            .as_ref()
+            .and_then(|s| s.holder_identity.as_ref());
 
         let config_identity = "pod-1";
         let we_are_holder = current_holder
@@ -2851,7 +2869,9 @@ mod tests {
     fn test_holder_identity_check_none_holder() {
         let spec = LeaseSpec::default();
         let spec_option: Option<LeaseSpec> = Some(spec);
-        let current_holder = spec_option.as_ref().and_then(|s| s.holder_identity.as_ref());
+        let current_holder = spec_option
+            .as_ref()
+            .and_then(|s| s.holder_identity.as_ref());
 
         let config_identity = "pod-1";
         let we_are_holder = current_holder
@@ -2868,7 +2888,9 @@ mod tests {
             ..Default::default()
         };
         let spec_option: Option<LeaseSpec> = Some(spec);
-        let current_holder = spec_option.as_ref().and_then(|s| s.holder_identity.as_ref());
+        let current_holder = spec_option
+            .as_ref()
+            .and_then(|s| s.holder_identity.as_ref());
 
         let config_identity = "pod-1";
         let we_are_holder = current_holder
@@ -2885,7 +2907,9 @@ mod tests {
             ..Default::default()
         };
         let spec_option: Option<LeaseSpec> = Some(spec);
-        let current_holder = spec_option.as_ref().and_then(|s| s.holder_identity.as_ref());
+        let current_holder = spec_option
+            .as_ref()
+            .and_then(|s| s.holder_identity.as_ref());
 
         let config_identity = "pod-1";
         let we_are_holder = current_holder
@@ -2943,7 +2967,8 @@ mod tests {
             let current_lease = lease_clone.read().unwrap().clone();
             let now = chrono::Utc::now();
 
-            let we_are_holder = current_lease.holder
+            let we_are_holder = current_lease
+                .holder
                 .as_ref()
                 .map(|h| h == config_identity)
                 .unwrap_or(false);
@@ -2988,7 +3013,8 @@ mod tests {
             holder: Some("pod-2".to_string()),
         };
 
-        let should_release = lease.holder
+        let should_release = lease
+            .holder
             .as_ref()
             .map(|h| h == config_identity)
             .unwrap_or(false);

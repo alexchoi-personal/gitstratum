@@ -28,7 +28,10 @@ fn test_cluster_snapshot_node_lifecycle_all_types() {
     assert_eq!(snapshot.object_nodes.len(), 1);
     assert_eq!(snapshot.frontend_nodes.len(), 1);
 
-    assert_eq!(snapshot.find_node_type("cp-1"), Some(NodeType::ControlPlane));
+    assert_eq!(
+        snapshot.find_node_type("cp-1"),
+        Some(NodeType::ControlPlane)
+    );
     assert_eq!(snapshot.find_node_type("md-1"), Some(NodeType::Metadata));
     assert_eq!(snapshot.find_node_type("obj-1"), Some(NodeType::Object));
     assert_eq!(snapshot.find_node_type("fe-1"), Some(NodeType::Frontend));
@@ -45,16 +48,32 @@ fn test_cluster_snapshot_node_lifecycle_all_types() {
     assert!(snapshot.set_node_state("fe-1", NodeType::Frontend, NodeState::Draining));
     assert!(!snapshot.set_node_state("nonexistent", NodeType::Object, NodeState::Draining));
 
-    assert_eq!(snapshot.control_plane_nodes.get("cp-1").unwrap().state, NodeState::Draining);
-    assert_eq!(snapshot.metadata_nodes.get("md-1").unwrap().state, NodeState::Draining);
-    assert_eq!(snapshot.object_nodes.get("obj-1").unwrap().state, NodeState::Draining);
-    assert_eq!(snapshot.frontend_nodes.get("fe-1").unwrap().state, NodeState::Draining);
+    assert_eq!(
+        snapshot.control_plane_nodes.get("cp-1").unwrap().state,
+        NodeState::Draining
+    );
+    assert_eq!(
+        snapshot.metadata_nodes.get("md-1").unwrap().state,
+        NodeState::Draining
+    );
+    assert_eq!(
+        snapshot.object_nodes.get("obj-1").unwrap().state,
+        NodeState::Draining
+    );
+    assert_eq!(
+        snapshot.frontend_nodes.get("fe-1").unwrap().state,
+        NodeState::Draining
+    );
 
-    assert!(snapshot.remove_node("cp-1", NodeType::ControlPlane).is_some());
+    assert!(snapshot
+        .remove_node("cp-1", NodeType::ControlPlane)
+        .is_some());
     assert!(snapshot.remove_node("md-1", NodeType::Metadata).is_some());
     assert!(snapshot.remove_node("obj-1", NodeType::Object).is_some());
     assert!(snapshot.remove_node("fe-1", NodeType::Frontend).is_some());
-    assert!(snapshot.remove_node("nonexistent", NodeType::Object).is_none());
+    assert!(snapshot
+        .remove_node("nonexistent", NodeType::Object)
+        .is_none());
 
     assert!(snapshot.control_plane_nodes.is_empty());
     assert!(snapshot.metadata_nodes.is_empty());
@@ -66,13 +85,27 @@ fn test_cluster_snapshot_node_lifecycle_all_types() {
 fn test_cluster_state_membership_and_hashring_integration() {
     let state = ClusterState::new(16, 2);
 
-    state.add_node(create_test_node("obj-1", NodeType::Object)).unwrap();
-    state.add_node(create_test_node("obj-2", NodeType::Object)).unwrap();
-    state.add_node(create_test_node("obj-3", NodeType::Object)).unwrap();
-    state.add_node(create_test_node("md-1", NodeType::Metadata)).unwrap();
-    state.add_node(create_test_node("md-2", NodeType::Metadata)).unwrap();
-    state.add_node(create_test_node("cp-1", NodeType::ControlPlane)).unwrap();
-    state.add_node(create_test_node("fe-1", NodeType::Frontend)).unwrap();
+    state
+        .add_node(create_test_node("obj-1", NodeType::Object))
+        .unwrap();
+    state
+        .add_node(create_test_node("obj-2", NodeType::Object))
+        .unwrap();
+    state
+        .add_node(create_test_node("obj-3", NodeType::Object))
+        .unwrap();
+    state
+        .add_node(create_test_node("md-1", NodeType::Metadata))
+        .unwrap();
+    state
+        .add_node(create_test_node("md-2", NodeType::Metadata))
+        .unwrap();
+    state
+        .add_node(create_test_node("cp-1", NodeType::ControlPlane))
+        .unwrap();
+    state
+        .add_node(create_test_node("fe-1", NodeType::Frontend))
+        .unwrap();
 
     let snapshot = state.snapshot();
     assert_eq!(snapshot.object_nodes.len(), 3);
@@ -93,7 +126,9 @@ fn test_cluster_state_membership_and_hashring_integration() {
     assert!(state.set_node_state("md-1", NodeState::Draining).unwrap());
     assert!(state.set_node_state("cp-1", NodeState::Draining).unwrap());
     assert!(state.set_node_state("fe-1", NodeState::Draining).unwrap());
-    assert!(!state.set_node_state("nonexistent", NodeState::Draining).unwrap());
+    assert!(!state
+        .set_node_state("nonexistent", NodeState::Draining)
+        .unwrap());
 
     assert_eq!(state.get_node("obj-1").unwrap().state, NodeState::Draining);
     assert_eq!(state.get_node("md-1").unwrap().state, NodeState::Draining);
@@ -122,7 +157,13 @@ fn test_distributed_lock_lifecycle_with_conflicts() {
     let state = ClusterState::new(16, 3);
 
     let key = RefLockKey::new("repo-1", "refs/heads/main");
-    let lock1 = LockInfo::new("lock-1", "repo-1", "refs/heads/main", "holder-1", Duration::from_secs(30));
+    let lock1 = LockInfo::new(
+        "lock-1",
+        "repo-1",
+        "refs/heads/main",
+        "holder-1",
+        Duration::from_secs(30),
+    );
 
     assert!(state.acquire_lock(key.clone(), lock1, Duration::from_secs(30)));
 
@@ -130,7 +171,13 @@ fn test_distributed_lock_lifecycle_with_conflicts() {
     assert!(existing.is_some());
     assert_eq!(existing.unwrap().holder_id, "holder-1");
 
-    let lock2 = LockInfo::new("lock-2", "repo-1", "refs/heads/main", "holder-2", Duration::from_secs(30));
+    let lock2 = LockInfo::new(
+        "lock-2",
+        "repo-1",
+        "refs/heads/main",
+        "holder-2",
+        Duration::from_secs(30),
+    );
     assert!(!state.acquire_lock(key.clone(), lock2, Duration::from_secs(30)));
 
     assert!(state.release_lock("lock-1"));
@@ -139,7 +186,13 @@ fn test_distributed_lock_lifecycle_with_conflicts() {
 
     assert!(state.get_lock(&key).is_none());
 
-    let lock3 = LockInfo::new("lock-3", "repo-1", "refs/heads/main", "holder-3", Duration::from_secs(30));
+    let lock3 = LockInfo::new(
+        "lock-3",
+        "repo-1",
+        "refs/heads/main",
+        "holder-3",
+        Duration::from_secs(30),
+    );
     assert!(state.acquire_lock(key.clone(), lock3, Duration::from_secs(30)));
     assert_eq!(state.get_lock(&key).unwrap().lock_id, "lock-3");
 }
@@ -149,16 +202,34 @@ fn test_lock_expiration_and_cleanup() {
     let state = ClusterState::new(16, 3);
 
     let key1 = RefLockKey::new("repo-1", "refs/heads/main");
-    let short_lock = LockInfo::new("lock-1", "repo-1", "refs/heads/main", "holder-1", Duration::from_millis(1));
+    let short_lock = LockInfo::new(
+        "lock-1",
+        "repo-1",
+        "refs/heads/main",
+        "holder-1",
+        Duration::from_millis(1),
+    );
     assert!(state.acquire_lock(key1.clone(), short_lock, Duration::from_millis(1)));
 
     let key2 = RefLockKey::new("repo-2", "refs/heads/develop");
-    let long_lock = LockInfo::new("lock-2", "repo-2", "refs/heads/develop", "holder-2", Duration::from_secs(300));
+    let long_lock = LockInfo::new(
+        "lock-2",
+        "repo-2",
+        "refs/heads/develop",
+        "holder-2",
+        Duration::from_secs(300),
+    );
     assert!(state.acquire_lock(key2.clone(), long_lock, Duration::from_secs(300)));
 
     std::thread::sleep(Duration::from_millis(10));
 
-    let new_lock = LockInfo::new("lock-3", "repo-1", "refs/heads/main", "holder-3", Duration::from_secs(30));
+    let new_lock = LockInfo::new(
+        "lock-3",
+        "repo-1",
+        "refs/heads/main",
+        "holder-3",
+        Duration::from_secs(30),
+    );
     assert!(state.acquire_lock(key1.clone(), new_lock, Duration::from_secs(30)));
     assert_eq!(state.get_lock(&key1).unwrap().holder_id, "holder-3");
 
@@ -174,7 +245,13 @@ fn test_cleanup_expired_locks_various_scenarios() {
     assert!(state.snapshot().ref_locks.is_empty());
 
     let key = RefLockKey::new("repo-1", "refs/heads/main");
-    let orphan_lock = LockInfo::new("lock-orphan", "repo-1", "refs/heads/main", "holder-1", Duration::from_secs(30));
+    let orphan_lock = LockInfo::new(
+        "lock-orphan",
+        "repo-1",
+        "refs/heads/main",
+        "holder-1",
+        Duration::from_secs(30),
+    );
 
     let mut snapshot = ClusterStateSnapshot::new();
     snapshot.ref_locks.insert(key.clone(), orphan_lock);
@@ -183,12 +260,24 @@ fn test_cleanup_expired_locks_various_scenarios() {
     state.cleanup_expired_locks();
     assert!(state.get_lock(&key).is_none());
 
-    let new_orphan = LockInfo::new("lock-orphan-2", "repo-1", "refs/heads/main", "holder-2", Duration::from_secs(30));
+    let new_orphan = LockInfo::new(
+        "lock-orphan-2",
+        "repo-1",
+        "refs/heads/main",
+        "holder-2",
+        Duration::from_secs(30),
+    );
     let mut snapshot2 = ClusterStateSnapshot::new();
     snapshot2.ref_locks.insert(key.clone(), new_orphan);
     state.apply_snapshot(snapshot2).unwrap();
 
-    let replacing_lock = LockInfo::new("lock-replace", "repo-1", "refs/heads/main", "holder-3", Duration::from_secs(30));
+    let replacing_lock = LockInfo::new(
+        "lock-replace",
+        "repo-1",
+        "refs/heads/main",
+        "holder-3",
+        Duration::from_secs(30),
+    );
     assert!(state.acquire_lock(key.clone(), replacing_lock, Duration::from_secs(30)));
     assert_eq!(state.get_lock(&key).unwrap().lock_id, "lock-replace");
 }

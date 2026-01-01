@@ -183,7 +183,12 @@ mod tests {
         RefLockKey::new("repo1", "refs/heads/main")
     }
 
-    fn create_expired_lock(lock_id: &str, holder_id: &str, repo_id: &str, ref_name: &str) -> LockInfo {
+    fn create_expired_lock(
+        lock_id: &str,
+        holder_id: &str,
+        repo_id: &str,
+        ref_name: &str,
+    ) -> LockInfo {
         LockInfo {
             lock_id: lock_id.to_string(),
             repo_id: repo_id.to_string(),
@@ -202,10 +207,22 @@ mod tests {
 
         let request_variants: Vec<Request> = vec![
             Request::AddNode { node: node.clone() },
-            Request::RemoveNode { node_id: "node1".to_string(), node_type: NodeType::Object },
-            Request::SetNodeState { node_id: "node1".to_string(), node_type: NodeType::Object, state: NodeState::Draining },
-            Request::AcquireLock { key: key.clone(), lock: lock.clone() },
-            Request::ReleaseLock { lock_id: "lock1".to_string() },
+            Request::RemoveNode {
+                node_id: "node1".to_string(),
+                node_type: NodeType::Object,
+            },
+            Request::SetNodeState {
+                node_id: "node1".to_string(),
+                node_type: NodeType::Object,
+                state: NodeState::Draining,
+            },
+            Request::AcquireLock {
+                key: key.clone(),
+                lock: lock.clone(),
+            },
+            Request::ReleaseLock {
+                lock_id: "lock1".to_string(),
+            },
             Request::CleanupExpiredLocks,
         ];
 
@@ -228,8 +245,12 @@ mod tests {
             Response::NodeRemoved { found: false },
             Response::NodeStateSet { found: true },
             Response::NodeStateSet { found: false },
-            Response::LockAcquired { lock_id: "lock1".to_string() },
-            Response::LockNotAcquired { reason: "lock held by holder1".to_string() },
+            Response::LockAcquired {
+                lock_id: "lock1".to_string(),
+            },
+            Response::LockNotAcquired {
+                reason: "lock held by holder1".to_string(),
+            },
             Response::LockReleased { found: true },
             Response::LockReleased { found: false },
             Response::LocksCleanedUp { count: 0 },
@@ -251,8 +272,16 @@ mod tests {
         let node1 = create_test_node("node1", NodeType::Object);
         let node2 = create_test_node("node1", NodeType::Object);
         let node3 = create_test_node("node2", NodeType::Object);
-        assert_eq!(Request::AddNode { node: node1 }, Request::AddNode { node: node2 });
-        assert_ne!(Request::AddNode { node: create_test_node("node1", NodeType::Object) }, Request::AddNode { node: node3 });
+        assert_eq!(
+            Request::AddNode { node: node1 },
+            Request::AddNode { node: node2 }
+        );
+        assert_ne!(
+            Request::AddNode {
+                node: create_test_node("node1", NodeType::Object)
+            },
+            Request::AddNode { node: node3 }
+        );
     }
 
     #[test]
@@ -319,11 +348,17 @@ mod tests {
         assert!(data.state.metadata_nodes.is_empty());
         assert!(data.state.object_nodes.is_empty());
         assert!(data.state.frontend_nodes.is_empty());
-        assert!(data.last_membership.membership().get_joint_config().is_empty());
+        assert!(data
+            .last_membership
+            .membership()
+            .get_joint_config()
+            .is_empty());
 
         let mut data_with_applied = StateMachineData::default();
         data_with_applied.last_applied = Some(LogId::new(CommittedLeaderId::new(1, 1), 100));
-        data_with_applied.state.add_node(create_test_node("test", NodeType::Object));
+        data_with_applied
+            .state
+            .add_node(create_test_node("test", NodeType::Object));
         assert_eq!(data_with_applied.last_applied.unwrap().index, 100);
         assert_eq!(data_with_applied.state.object_nodes.len(), 1);
     }
@@ -356,7 +391,12 @@ mod tests {
         assert!(state.frontend_nodes.contains_key("fe1"));
 
         let duplicate_node = create_test_node("obj1", NodeType::Object);
-        let response = apply_request(&mut state, &Request::AddNode { node: duplicate_node });
+        let response = apply_request(
+            &mut state,
+            &Request::AddNode {
+                node: duplicate_node,
+            },
+        );
         assert!(matches!(response, Response::NodeAdded));
         assert_eq!(state.object_nodes.len(), 1);
 
@@ -388,17 +428,35 @@ mod tests {
             assert!(matches!(response, Response::NodeStateSet { found: true }));
         }
 
-        assert_eq!(state.control_plane_nodes.get("cp1").unwrap().state, NodeState::Draining);
-        assert_eq!(state.metadata_nodes.get("md1").unwrap().state, NodeState::Draining);
-        assert_eq!(state.object_nodes.get("obj1").unwrap().state, NodeState::Draining);
-        assert_eq!(state.frontend_nodes.get("fe1").unwrap().state, NodeState::Draining);
+        assert_eq!(
+            state.control_plane_nodes.get("cp1").unwrap().state,
+            NodeState::Draining
+        );
+        assert_eq!(
+            state.metadata_nodes.get("md1").unwrap().state,
+            NodeState::Draining
+        );
+        assert_eq!(
+            state.object_nodes.get("obj1").unwrap().state,
+            NodeState::Draining
+        );
+        assert_eq!(
+            state.frontend_nodes.get("fe1").unwrap().state,
+            NodeState::Draining
+        );
 
-        let not_found_response = apply_request(&mut state, &Request::SetNodeState {
-            node_id: "nonexistent".to_string(),
-            node_type: NodeType::Object,
-            state: NodeState::Draining,
-        });
-        assert!(matches!(not_found_response, Response::NodeStateSet { found: false }));
+        let not_found_response = apply_request(
+            &mut state,
+            &Request::SetNodeState {
+                node_id: "nonexistent".to_string(),
+                node_type: NodeType::Object,
+                state: NodeState::Draining,
+            },
+        );
+        assert!(matches!(
+            not_found_response,
+            Response::NodeStateSet { found: false }
+        ));
 
         for (id, node_type) in &node_configs {
             let request = Request::RemoveNode {
@@ -414,11 +472,17 @@ mod tests {
         assert!(state.object_nodes.is_empty());
         assert!(state.frontend_nodes.is_empty());
 
-        let not_found_response = apply_request(&mut state, &Request::RemoveNode {
-            node_id: "nonexistent".to_string(),
-            node_type: NodeType::Object,
-        });
-        assert!(matches!(not_found_response, Response::NodeRemoved { found: false }));
+        let not_found_response = apply_request(
+            &mut state,
+            &Request::RemoveNode {
+                node_id: "nonexistent".to_string(),
+                node_type: NodeType::Object,
+            },
+        );
+        assert!(matches!(
+            not_found_response,
+            Response::NodeRemoved { found: false }
+        ));
     }
 
     #[test]
@@ -428,7 +492,10 @@ mod tests {
         assert_eq!(state.version, 0);
 
         let lock1 = create_test_lock("lock1", "holder1", Duration::from_secs(30));
-        let request = Request::AcquireLock { key: key.clone(), lock: lock1 };
+        let request = Request::AcquireLock {
+            key: key.clone(),
+            lock: lock1,
+        };
         let response = apply_request(&mut state, &request);
 
         match response {
@@ -439,7 +506,10 @@ mod tests {
         assert_eq!(state.version, 1);
 
         let lock2 = create_test_lock("lock2", "holder2", Duration::from_secs(30));
-        let request = Request::AcquireLock { key: key.clone(), lock: lock2 };
+        let request = Request::AcquireLock {
+            key: key.clone(),
+            lock: lock2,
+        };
         let response = apply_request(&mut state, &request);
 
         match response {
@@ -449,7 +519,9 @@ mod tests {
         assert_eq!(state.ref_locks.get(&key).unwrap().lock_id, "lock1");
         assert_eq!(state.version, 1);
 
-        let request = Request::ReleaseLock { lock_id: "lock1".to_string() };
+        let request = Request::ReleaseLock {
+            lock_id: "lock1".to_string(),
+        };
         let response = apply_request(&mut state, &request);
 
         match response {
@@ -459,7 +531,12 @@ mod tests {
         assert!(!state.ref_locks.contains_key(&key));
         assert_eq!(state.version, 2);
 
-        let not_found_response = apply_request(&mut state, &Request::ReleaseLock { lock_id: "nonexistent".to_string() });
+        let not_found_response = apply_request(
+            &mut state,
+            &Request::ReleaseLock {
+                lock_id: "nonexistent".to_string(),
+            },
+        );
         match not_found_response {
             Response::LockReleased { found } => assert!(!found),
             _ => panic!("Expected LockReleased response"),
@@ -467,22 +544,35 @@ mod tests {
         assert_eq!(state.version, 2);
 
         for i in 0..3 {
-            let lock = create_test_lock(&format!("lock{}", i), &format!("holder{}", i), Duration::from_secs(30));
-            let acquire = Request::AcquireLock { key: key.clone(), lock };
+            let lock = create_test_lock(
+                &format!("lock{}", i),
+                &format!("holder{}", i),
+                Duration::from_secs(30),
+            );
+            let acquire = Request::AcquireLock {
+                key: key.clone(),
+                lock,
+            };
             let resp = apply_request(&mut state, &acquire);
             assert!(matches!(resp, Response::LockAcquired { .. }));
 
-            let release = Request::ReleaseLock { lock_id: format!("lock{}", i) };
+            let release = Request::ReleaseLock {
+                lock_id: format!("lock{}", i),
+            };
             let resp = apply_request(&mut state, &release);
             assert!(matches!(resp, Response::LockReleased { found: true }));
         }
 
-        let expired_lock = create_expired_lock("expired_lock", "old_holder", "repo1", "refs/heads/main");
+        let expired_lock =
+            create_expired_lock("expired_lock", "old_holder", "repo1", "refs/heads/main");
         state.ref_locks.insert(key.clone(), expired_lock);
         let version_before = state.version;
 
         let new_lock = create_test_lock("new_lock", "new_holder", Duration::from_secs(30));
-        let request = Request::AcquireLock { key: key.clone(), lock: new_lock };
+        let request = Request::AcquireLock {
+            key: key.clone(),
+            lock: new_lock,
+        };
         let response = apply_request(&mut state, &request);
 
         match response {
@@ -506,11 +596,20 @@ mod tests {
             timeout_ms: 1_000_000_000,
             acquired_at_epoch_ms: now,
         };
-        let request = Request::AcquireLock { key: key.clone(), lock: long_timeout_lock };
+        let request = Request::AcquireLock {
+            key: key.clone(),
+            lock: long_timeout_lock,
+        };
         apply_request(&mut state, &request);
 
         let competing_lock = create_test_lock("competing", "competitor", Duration::from_secs(30));
-        let response = apply_request(&mut state, &Request::AcquireLock { key: key.clone(), lock: competing_lock });
+        let response = apply_request(
+            &mut state,
+            &Request::AcquireLock {
+                key: key.clone(),
+                lock: competing_lock,
+            },
+        );
         match response {
             Response::LockNotAcquired { reason } => assert!(reason.contains("long_holder")),
             _ => panic!("Expected LockNotAcquired response"),
@@ -530,10 +629,13 @@ mod tests {
         assert_eq!(state.version, initial_version);
 
         let active_key = RefLockKey::new("active_repo", "refs/heads/main");
-        let active_lock = create_test_lock("active_lock", "active_holder", Duration::from_secs(3600));
+        let active_lock =
+            create_test_lock("active_lock", "active_holder", Duration::from_secs(3600));
         let mut active_lock_keyed = active_lock;
         active_lock_keyed.repo_id = "active_repo".to_string();
-        state.ref_locks.insert(active_key.clone(), active_lock_keyed);
+        state
+            .ref_locks
+            .insert(active_key.clone(), active_lock_keyed);
 
         let response = apply_request(&mut state, &Request::CleanupExpiredLocks);
         match response {
@@ -543,7 +645,12 @@ mod tests {
         assert_eq!(state.ref_locks.len(), 1);
 
         let expired_key = RefLockKey::new("expired_repo", "refs/heads/main");
-        let expired_lock = create_expired_lock("expired_lock", "expired_holder", "expired_repo", "refs/heads/main");
+        let expired_lock = create_expired_lock(
+            "expired_lock",
+            "expired_holder",
+            "expired_repo",
+            "refs/heads/main",
+        );
         state.ref_locks.insert(expired_key.clone(), expired_lock);
         let version_before = state.version;
 
@@ -560,7 +667,12 @@ mod tests {
         state.ref_locks.clear();
         for i in 0..5 {
             let key = RefLockKey::new(&format!("repo{}", i), "refs/heads/main");
-            let lock = create_expired_lock(&format!("lock{}", i), &format!("holder{}", i), &format!("repo{}", i), "refs/heads/main");
+            let lock = create_expired_lock(
+                &format!("lock{}", i),
+                &format!("holder{}", i),
+                &format!("repo{}", i),
+                "refs/heads/main",
+            );
             state.ref_locks.insert(key, lock);
         }
 
@@ -573,7 +685,11 @@ mod tests {
 
         for i in 0..3 {
             let key = RefLockKey::new(&format!("repo{}", i), &format!("refs/heads/branch{}", i));
-            let lock = create_test_lock(&format!("lock{}", i), &format!("holder{}", i), Duration::from_secs(30));
+            let lock = create_test_lock(
+                &format!("lock{}", i),
+                &format!("holder{}", i),
+                Duration::from_secs(30),
+            );
             let mut lock_with_key = lock;
             lock_with_key.repo_id = format!("repo{}", i);
             lock_with_key.ref_name = format!("refs/heads/branch{}", i);
@@ -581,7 +697,9 @@ mod tests {
         }
         assert_eq!(state.ref_locks.len(), 3);
 
-        let release_req = Request::ReleaseLock { lock_id: "lock1".to_string() };
+        let release_req = Request::ReleaseLock {
+            lock_id: "lock1".to_string(),
+        };
         let response = apply_request(&mut state, &release_req);
         assert!(matches!(response, Response::LockReleased { found: true }));
         assert_eq!(state.ref_locks.len(), 2);
@@ -601,26 +719,42 @@ mod tests {
         apply_request(&mut state, &Request::AcquireLock { key, lock });
         assert_eq!(state.version, 2);
 
-        apply_request(&mut state, &Request::ReleaseLock { lock_id: "lock1".to_string() });
+        apply_request(
+            &mut state,
+            &Request::ReleaseLock {
+                lock_id: "lock1".to_string(),
+            },
+        );
         assert_eq!(state.version, 3);
 
-        apply_request(&mut state, &Request::ReleaseLock { lock_id: "nonexistent".to_string() });
+        apply_request(
+            &mut state,
+            &Request::ReleaseLock {
+                lock_id: "nonexistent".to_string(),
+            },
+        );
         assert_eq!(state.version, 3);
 
         apply_request(&mut state, &Request::CleanupExpiredLocks);
         assert_eq!(state.version, 3);
 
-        apply_request(&mut state, &Request::SetNodeState {
-            node_id: "node1".to_string(),
-            node_type: NodeType::Object,
-            state: NodeState::Draining,
-        });
+        apply_request(
+            &mut state,
+            &Request::SetNodeState {
+                node_id: "node1".to_string(),
+                node_type: NodeType::Object,
+                state: NodeState::Draining,
+            },
+        );
         assert_eq!(state.version, 4);
 
-        apply_request(&mut state, &Request::RemoveNode {
-            node_id: "node1".to_string(),
-            node_type: NodeType::Object,
-        });
+        apply_request(
+            &mut state,
+            &Request::RemoveNode {
+                node_id: "node1".to_string(),
+                node_type: NodeType::Object,
+            },
+        );
         assert_eq!(state.version, 5);
     }
 
@@ -634,27 +768,45 @@ mod tests {
         assert!(snapshot_empty.meta.last_log_id.is_none());
 
         let mut data_with_state = StateMachineData::default();
-        data_with_state.state.add_node(create_test_node("obj1", NodeType::Object));
+        data_with_state
+            .state
+            .add_node(create_test_node("obj1", NodeType::Object));
         data_with_state.last_applied = Some(LogId::new(CommittedLeaderId::new(1, 1), 5));
 
-        let mut builder_with_state = StateMachineSnapshotBuilder { data: data_with_state };
+        let mut builder_with_state = StateMachineSnapshotBuilder {
+            data: data_with_state,
+        };
         let snapshot_with_state = builder_with_state.build_snapshot().await.unwrap();
 
         assert!(snapshot_with_state.meta.snapshot_id.starts_with("5-"));
-        assert_eq!(snapshot_with_state.meta.last_log_id, Some(LogId::new(CommittedLeaderId::new(1, 1), 5)));
+        assert_eq!(
+            snapshot_with_state.meta.last_log_id,
+            Some(LogId::new(CommittedLeaderId::new(1, 1), 5))
+        );
 
         let mut data_full = StateMachineData::default();
-        data_full.state.add_node(create_test_node("obj1", NodeType::Object));
-        data_full.state.add_node(create_test_node("md1", NodeType::Metadata));
-        data_full.state.add_node(create_test_node("cp1", NodeType::ControlPlane));
-        data_full.state.add_node(create_test_node("fe1", NodeType::Frontend));
+        data_full
+            .state
+            .add_node(create_test_node("obj1", NodeType::Object));
+        data_full
+            .state
+            .add_node(create_test_node("md1", NodeType::Metadata));
+        data_full
+            .state
+            .add_node(create_test_node("cp1", NodeType::ControlPlane));
+        data_full
+            .state
+            .add_node(create_test_node("fe1", NodeType::Frontend));
         data_full.last_applied = Some(LogId::new(CommittedLeaderId::new(2, 3), 10));
 
         let mut builder_full = StateMachineSnapshotBuilder { data: data_full };
         let snapshot_full = builder_full.build_snapshot().await.unwrap();
 
         assert!(snapshot_full.meta.snapshot_id.starts_with("10-"));
-        assert_eq!(snapshot_full.meta.last_log_id, Some(LogId::new(CommittedLeaderId::new(2, 3), 10)));
+        assert_eq!(
+            snapshot_full.meta.last_log_id,
+            Some(LogId::new(CommittedLeaderId::new(2, 3), 10))
+        );
 
         let inner_data = snapshot_full.snapshot.into_inner();
         let deserialized: ClusterStateSnapshot = serde_json::from_slice(&inner_data).unwrap();

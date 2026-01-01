@@ -2788,7 +2788,11 @@ mod tests {
             .unwrap();
         assert_eq!(degraded_condition.status, "True");
         assert!(degraded_condition.message.is_some());
-        assert!(degraded_condition.message.as_ref().unwrap().contains("replicas"));
+        assert!(degraded_condition
+            .message
+            .as_ref()
+            .unwrap()
+            .contains("replicas"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use bytes::Bytes;
-use gitstratum_storage::{BucketStore, BucketStoreConfig};
 use gitstratum_core::Oid;
+use gitstratum_storage::{BucketStore, BucketStoreConfig};
 use std::time::Duration;
 use tempfile::TempDir;
 

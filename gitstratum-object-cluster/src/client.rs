@@ -372,7 +372,10 @@ mod tests {
         let client = ObjectClusterClient::new(ring.clone());
         ring.add_node(NodeInfo::new("external-node", "127.0.0.1", 8888))
             .unwrap();
-        assert!(client.nodes().iter().any(|n| n.id.as_str() == "external-node"));
+        assert!(client
+            .nodes()
+            .iter()
+            .any(|n| n.id.as_str() == "external-node"));
     }
 
     #[test]
@@ -441,7 +444,10 @@ mod tests {
             assert_eq!(proto.data, data);
             assert!(!proto.compressed);
             assert!(proto.oid.is_some());
-            assert_eq!(proto.oid.as_ref().unwrap().bytes, blob.oid.as_bytes().to_vec());
+            assert_eq!(
+                proto.oid.as_ref().unwrap().bytes,
+                blob.oid.as_bytes().to_vec()
+            );
 
             let back = ObjectClusterClient::proto_blob_to_core(&proto).unwrap();
             assert_eq!(back.oid, blob.oid);
@@ -458,7 +464,10 @@ mod tests {
         let blob2 = CoreBlob::new(b"data2".to_vec());
         let proto1 = ObjectClusterClient::core_blob_to_proto(&blob1);
         let proto2 = ObjectClusterClient::core_blob_to_proto(&blob2);
-        assert_ne!(proto1.oid.as_ref().unwrap().bytes, proto2.oid.as_ref().unwrap().bytes);
+        assert_ne!(
+            proto1.oid.as_ref().unwrap().bytes,
+            proto2.oid.as_ref().unwrap().bytes
+        );
         assert_ne!(proto1.data, proto2.data);
 
         let identical1 = CoreBlob::new(b"identical data".to_vec());
@@ -603,14 +612,8 @@ mod tests {
     #[test]
     fn test_error_types_and_storage_stats() {
         let error_checks = [
-            (
-                ObjectStoreError::NoAvailableNodes,
-                "no available nodes",
-            ),
-            (
-                ObjectStoreError::AllReplicasFailed,
-                "all replicas failed",
-            ),
+            (ObjectStoreError::NoAvailableNodes, "no available nodes"),
+            (ObjectStoreError::AllReplicasFailed, "all replicas failed"),
             (
                 ObjectStoreError::InvalidOid("test error".to_string()),
                 "test error",

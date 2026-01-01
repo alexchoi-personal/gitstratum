@@ -272,9 +272,12 @@ mod tests {
         );
         assert_eq!(notifier.subscriber_count(), 2);
 
-        notifier.subscribe(String::from("sub3"), Box::new(move |_| {
-            counter3_clone.fetch_add(1, Ordering::SeqCst);
-        }));
+        notifier.subscribe(
+            String::from("sub3"),
+            Box::new(move |_| {
+                counter3_clone.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
         assert_eq!(notifier.subscriber_count(), 3);
 
         notifier.notify_node_added("node1", RingType::Object);
@@ -383,7 +386,10 @@ mod tests {
         assert_eq!(events[0], "added:obj-node-1:Object");
         assert_eq!(events[1], "added:meta-node-1:Metadata");
         assert_eq!(events[2], "state_changed:obj-node-1:Object:Joining->Active");
-        assert_eq!(events[3], "state_changed:meta-node-1:Metadata:Active->Draining");
+        assert_eq!(
+            events[3],
+            "state_changed:meta-node-1:Metadata:Active->Draining"
+        );
         assert_eq!(events[4], "topology:Object:v1");
         assert_eq!(events[5], "topology:Metadata:v2");
         assert_eq!(events[6], "rebalance_start:rb-001");

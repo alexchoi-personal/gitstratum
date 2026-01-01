@@ -119,7 +119,11 @@ async fn test_repository_grpc_lifecycle() {
     let delete_request = Request::new(DeleteRepoRequest {
         repo_id: "test-repo".to_string(),
     });
-    let response = service.delete_repo(delete_request).await.unwrap().into_inner();
+    let response = service
+        .delete_repo(delete_request)
+        .await
+        .unwrap()
+        .into_inner();
     assert!(response.success);
 
     let request = Request::new(CreateRepoRequest {
@@ -153,7 +157,11 @@ async fn test_ref_grpc_operations() {
         new_target: Some(oid1.clone()),
         force: false,
     });
-    let response = service.update_ref(update_request).await.unwrap().into_inner();
+    let response = service
+        .update_ref(update_request)
+        .await
+        .unwrap()
+        .into_inner();
     assert!(response.success);
 
     let get_request = Request::new(GetRefRequest {

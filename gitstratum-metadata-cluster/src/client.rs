@@ -501,7 +501,12 @@ mod tests {
                 1704067200,
                 "-1200",
             ),
-            ("\u{4e2d}\u{6587}\u{540d}\u{5b57}", "unicode@test.com", 1704067200, "+0800"),
+            (
+                "\u{4e2d}\u{6587}\u{540d}\u{5b57}",
+                "unicode@test.com",
+                1704067200,
+                "+0800",
+            ),
             (&long_name, "test@test.com", 1704067200, "+0000"),
             ("", "", 0, ""),
             ("Test", "test@test.com", 0, "+0000"),
@@ -633,8 +638,12 @@ mod tests {
         assert_eq!(commit.committer.timezone, "+0000");
 
         let proto_author_only = ProtoCommit {
-            oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
-            tree: Some(ProtoOid { bytes: vec![0x22; 32] }),
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
+            tree: Some(ProtoOid {
+                bytes: vec![0x22; 32],
+            }),
             parents: vec![],
             author: Some(ProtoSignature {
                 name: "Author Only".to_string(),
@@ -650,8 +659,12 @@ mod tests {
         assert_eq!(commit.committer.name, "");
 
         let proto_committer_only = ProtoCommit {
-            oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
-            tree: Some(ProtoOid { bytes: vec![0x22; 32] }),
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
+            tree: Some(ProtoOid {
+                bytes: vec![0x22; 32],
+            }),
             parents: vec![],
             author: None,
             committer: Some(ProtoSignature {
@@ -670,9 +683,15 @@ mod tests {
     #[test]
     fn test_commit_conversion_error_cases() {
         let invalid_oid_cases = vec![
-            (Some(ProtoOid { bytes: vec![0; 10] }), None, "invalid commit oid"),
             (
-                Some(ProtoOid { bytes: vec![0x11; 32] }),
+                Some(ProtoOid { bytes: vec![0; 10] }),
+                None,
+                "invalid commit oid",
+            ),
+            (
+                Some(ProtoOid {
+                    bytes: vec![0x11; 32],
+                }),
                 Some(ProtoOid { bytes: vec![0; 5] }),
                 "invalid tree oid",
             ),
@@ -695,8 +714,12 @@ mod tests {
         }
 
         let proto = ProtoCommit {
-            oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
-            tree: Some(ProtoOid { bytes: vec![0x22; 32] }),
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
+            tree: Some(ProtoOid {
+                bytes: vec![0x22; 32],
+            }),
             parents: vec![ProtoOid { bytes: vec![0; 16] }],
             author: None,
             committer: None,
@@ -705,12 +728,22 @@ mod tests {
         assert!(MetadataClient::proto_to_commit(&proto).is_err());
 
         let proto = ProtoCommit {
-            oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
-            tree: Some(ProtoOid { bytes: vec![0x22; 32] }),
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
+            tree: Some(ProtoOid {
+                bytes: vec![0x22; 32],
+            }),
             parents: vec![
-                ProtoOid { bytes: vec![0x33; 32] },
-                ProtoOid { bytes: vec![0x44; 10] },
-                ProtoOid { bytes: vec![0x55; 32] },
+                ProtoOid {
+                    bytes: vec![0x33; 32],
+                },
+                ProtoOid {
+                    bytes: vec![0x44; 10],
+                },
+                ProtoOid {
+                    bytes: vec![0x55; 32],
+                },
             ],
             author: None,
             committer: None,
@@ -738,11 +771,15 @@ mod tests {
 
         for (expected_mode, mode_str) in &modes {
             let proto = ProtoTree {
-                oid: Some(ProtoOid { bytes: vec![0x00; 32] }),
+                oid: Some(ProtoOid {
+                    bytes: vec![0x00; 32],
+                }),
                 entries: vec![ProtoTreeEntry {
                     mode: mode_str.to_string(),
                     name: "entry".to_string(),
-                    oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
+                    oid: Some(ProtoOid {
+                        bytes: vec![0x11; 32],
+                    }),
                 }],
             };
 
@@ -859,11 +896,15 @@ mod tests {
         let invalid_modes = vec!["999999", "", "invalid", "badmode"];
         for mode in invalid_modes {
             let proto = ProtoTree {
-                oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
+                oid: Some(ProtoOid {
+                    bytes: vec![0x11; 32],
+                }),
                 entries: vec![ProtoTreeEntry {
                     mode: mode.to_string(),
                     name: "file.txt".to_string(),
-                    oid: Some(ProtoOid { bytes: vec![0x22; 32] }),
+                    oid: Some(ProtoOid {
+                        bytes: vec![0x22; 32],
+                    }),
                 }],
             };
             let result = MetadataClient::proto_to_tree(&proto);
@@ -871,7 +912,9 @@ mod tests {
         }
 
         let proto = ProtoTree {
-            oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
             entries: vec![ProtoTreeEntry {
                 mode: "100644".to_string(),
                 name: "file.txt".to_string(),
@@ -883,7 +926,9 @@ mod tests {
         let invalid_tree_oids = vec![10, 31, 33];
         for len in invalid_tree_oids {
             let proto = ProtoTree {
-                oid: Some(ProtoOid { bytes: vec![0; len] }),
+                oid: Some(ProtoOid {
+                    bytes: vec![0; len],
+                }),
                 entries: vec![],
             };
             assert!(
@@ -894,34 +939,46 @@ mod tests {
         }
 
         let proto = ProtoTree {
-            oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
             entries: vec![
                 ProtoTreeEntry {
                     mode: "100644".to_string(),
                     name: "valid.txt".to_string(),
-                    oid: Some(ProtoOid { bytes: vec![0x22; 32] }),
+                    oid: Some(ProtoOid {
+                        bytes: vec![0x22; 32],
+                    }),
                 },
                 ProtoTreeEntry {
                     mode: "invalid".to_string(),
                     name: "invalid.txt".to_string(),
-                    oid: Some(ProtoOid { bytes: vec![0x33; 32] }),
+                    oid: Some(ProtoOid {
+                        bytes: vec![0x33; 32],
+                    }),
                 },
             ],
         };
         assert!(MetadataClient::proto_to_tree(&proto).is_err());
 
         let proto = ProtoTree {
-            oid: Some(ProtoOid { bytes: vec![0x11; 32] }),
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
             entries: vec![
                 ProtoTreeEntry {
                     mode: "100644".to_string(),
                     name: "valid.txt".to_string(),
-                    oid: Some(ProtoOid { bytes: vec![0x22; 32] }),
+                    oid: Some(ProtoOid {
+                        bytes: vec![0x22; 32],
+                    }),
                 },
                 ProtoTreeEntry {
                     mode: "100644".to_string(),
                     name: "invalid_oid.txt".to_string(),
-                    oid: Some(ProtoOid { bytes: vec![0x33; 5] }),
+                    oid: Some(ProtoOid {
+                        bytes: vec![0x33; 5],
+                    }),
                 },
             ],
         };
@@ -930,10 +987,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_connection_and_lifecycle() {
-        let invalid_addresses = vec![
-            "not-a-valid-uri",
-            "grpc://localhost:50051",
-        ];
+        let invalid_addresses = vec!["not-a-valid-uri", "grpc://localhost:50051"];
         for addr in invalid_addresses {
             let result = MetadataClient::connect(addr).await;
             assert!(result.is_err(), "Address '{}' should fail", addr);

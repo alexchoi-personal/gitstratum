@@ -6,7 +6,7 @@ pub mod tiered;
 pub mod traits;
 
 #[cfg(feature = "bucketstore")]
-pub use bucket::{BucketObjectStore, BucketObjectIterator, BucketPositionObjectIterator};
+pub use bucket::{BucketObjectIterator, BucketObjectStore, BucketPositionObjectIterator};
 pub use compression::{CompressionConfig, CompressionType, Compressor};
 pub use rocksdb::{RocksDbStore, StorageStats};
 pub use tiered::{StorageTier, TieredStorage, TieredStorageConfig};

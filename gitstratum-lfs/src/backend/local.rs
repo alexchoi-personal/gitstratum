@@ -16,7 +16,10 @@ pub struct LocalBackend {
 
 impl LocalBackend {
     pub fn new(base_path: PathBuf, base_url: String) -> Self {
-        Self { base_path, base_url }
+        Self {
+            base_path,
+            base_url,
+        }
     }
 
     fn object_path(&self, oid: &Oid) -> PathBuf {
@@ -132,7 +135,9 @@ mod tests {
             .upload_url(&oid, 1024, Duration::from_secs(3600))
             .await
             .unwrap();
-        assert!(upload_url.href.starts_with("http://localhost:8080/objects/"));
+        assert!(upload_url
+            .href
+            .starts_with("http://localhost:8080/objects/"));
 
         let path = backend.object_path(&oid);
         fs::create_dir_all(path.parent().unwrap()).await.unwrap();
@@ -145,7 +150,9 @@ mod tests {
             .download_url(&oid, Duration::from_secs(3600))
             .await
             .unwrap();
-        assert!(download_url.href.starts_with("http://localhost:8080/objects/"));
+        assert!(download_url
+            .href
+            .starts_with("http://localhost:8080/objects/"));
 
         backend.delete(&oid).await.unwrap();
         assert!(!backend.exists(&oid).await.unwrap());

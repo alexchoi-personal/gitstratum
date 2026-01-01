@@ -100,7 +100,10 @@ async fn test_cluster_membership_lifecycle() {
     ));
 
     let state = store.get_state();
-    assert_eq!(state.object_nodes.get("obj-1").unwrap().state, NodeState::Draining);
+    assert_eq!(
+        state.object_nodes.get("obj-1").unwrap().state,
+        NodeState::Draining
+    );
 
     let removals = vec![
         create_log_entry(
@@ -138,32 +141,90 @@ async fn test_distributed_lock_lifecycle() {
     let mut store = ControlPlaneStore::new();
 
     let key = RefLockKey::new("repo-1", "refs/heads/main");
-    let lock = LockInfo::new("lock-1", "repo-1", "refs/heads/main", "holder-1", Duration::from_secs(30));
-    let entry = create_log_entry(1, RaftRequest::AcquireLock { key: key.clone(), lock });
+    let lock = LockInfo::new(
+        "lock-1",
+        "repo-1",
+        "refs/heads/main",
+        "holder-1",
+        Duration::from_secs(30),
+    );
+    let entry = create_log_entry(
+        1,
+        RaftRequest::AcquireLock {
+            key: key.clone(),
+            lock,
+        },
+    );
     let responses = store.apply_to_state_machine(&[entry]).await.unwrap();
     match &responses[0] {
         RaftResponse::LockAcquired { lock_id } => assert_eq!(lock_id, "lock-1"),
         _ => panic!("expected LockAcquired response"),
     }
 
-    let conflicting_lock = LockInfo::new("lock-2", "repo-1", "refs/heads/main", "holder-2", Duration::from_secs(30));
-    let entry2 = create_log_entry(2, RaftRequest::AcquireLock { key: key.clone(), lock: conflicting_lock });
+    let conflicting_lock = LockInfo::new(
+        "lock-2",
+        "repo-1",
+        "refs/heads/main",
+        "holder-2",
+        Duration::from_secs(30),
+    );
+    let entry2 = create_log_entry(
+        2,
+        RaftRequest::AcquireLock {
+            key: key.clone(),
+            lock: conflicting_lock,
+        },
+    );
     let responses = store.apply_to_state_machine(&[entry2]).await.unwrap();
     match &responses[0] {
         RaftResponse::LockNotAcquired { reason } => assert!(reason.contains("holder-1")),
         _ => panic!("expected LockNotAcquired response"),
     }
 
-    let release_entry = create_log_entry(3, RaftRequest::ReleaseLock { lock_id: "lock-1".to_string() });
-    let responses = store.apply_to_state_machine(&[release_entry]).await.unwrap();
-    assert!(matches!(responses[0], RaftResponse::LockReleased { found: true }));
+    let release_entry = create_log_entry(
+        3,
+        RaftRequest::ReleaseLock {
+            lock_id: "lock-1".to_string(),
+        },
+    );
+    let responses = store
+        .apply_to_state_machine(&[release_entry])
+        .await
+        .unwrap();
+    assert!(matches!(
+        responses[0],
+        RaftResponse::LockReleased { found: true }
+    ));
 
-    let release_again = create_log_entry(4, RaftRequest::ReleaseLock { lock_id: "lock-1".to_string() });
-    let responses = store.apply_to_state_machine(&[release_again]).await.unwrap();
-    assert!(matches!(responses[0], RaftResponse::LockReleased { found: false }));
+    let release_again = create_log_entry(
+        4,
+        RaftRequest::ReleaseLock {
+            lock_id: "lock-1".to_string(),
+        },
+    );
+    let responses = store
+        .apply_to_state_machine(&[release_again])
+        .await
+        .unwrap();
+    assert!(matches!(
+        responses[0],
+        RaftResponse::LockReleased { found: false }
+    ));
 
-    let new_lock = LockInfo::new("lock-3", "repo-1", "refs/heads/main", "holder-3", Duration::from_secs(30));
-    let entry3 = create_log_entry(5, RaftRequest::AcquireLock { key, lock: new_lock });
+    let new_lock = LockInfo::new(
+        "lock-3",
+        "repo-1",
+        "refs/heads/main",
+        "holder-3",
+        Duration::from_secs(30),
+    );
+    let entry3 = create_log_entry(
+        5,
+        RaftRequest::AcquireLock {
+            key,
+            lock: new_lock,
+        },
+    );
     let responses = store.apply_to_state_machine(&[entry3]).await.unwrap();
     assert!(matches!(responses[0], RaftResponse::LockAcquired { .. }));
 }
@@ -193,21 +254,48 @@ async fn test_expired_lock_handling() {
     };
 
     let entries = vec![
-        create_log_entry(1, RaftRequest::AcquireLock { key: key1.clone(), lock: expired_lock }),
-        create_log_entry(2, RaftRequest::AcquireLock { key: key2, lock: expired_lock2 }),
+        create_log_entry(
+            1,
+            RaftRequest::AcquireLock {
+                key: key1.clone(),
+                lock: expired_lock,
+            },
+        ),
+        create_log_entry(
+            2,
+            RaftRequest::AcquireLock {
+                key: key2,
+                lock: expired_lock2,
+            },
+        ),
     ];
     store.apply_to_state_machine(&entries).await.unwrap();
     std::thread::sleep(Duration::from_millis(10));
 
     let cleanup_entry = create_log_entry(3, RaftRequest::CleanupExpiredLocks);
-    let responses = store.apply_to_state_machine(&[cleanup_entry]).await.unwrap();
+    let responses = store
+        .apply_to_state_machine(&[cleanup_entry])
+        .await
+        .unwrap();
     match &responses[0] {
         RaftResponse::LocksCleanedUp { count } => assert_eq!(*count, 2),
         _ => panic!("expected LocksCleanedUp response"),
     }
 
-    let new_lock = LockInfo::new("lock-3", "repo-1", "refs/heads/main", "holder-3", Duration::from_secs(30));
-    let entry = create_log_entry(4, RaftRequest::AcquireLock { key: key1, lock: new_lock });
+    let new_lock = LockInfo::new(
+        "lock-3",
+        "repo-1",
+        "refs/heads/main",
+        "holder-3",
+        Duration::from_secs(30),
+    );
+    let entry = create_log_entry(
+        4,
+        RaftRequest::AcquireLock {
+            key: key1,
+            lock: new_lock,
+        },
+    );
     let responses = store.apply_to_state_machine(&[entry]).await.unwrap();
     assert!(matches!(responses[0], RaftResponse::LockAcquired { .. }));
 }
@@ -228,9 +316,24 @@ async fn test_log_storage_and_persistence() {
         store.save_committed(Some(log_id)).await.unwrap();
 
         let entries = vec![
-            create_log_entry(1, RaftRequest::AddNode { node: create_test_node("node-1", NodeType::Object) }),
-            create_log_entry(2, RaftRequest::AddNode { node: create_test_node("node-2", NodeType::Metadata) }),
-            create_log_entry(3, RaftRequest::AddNode { node: create_test_node("node-3", NodeType::Frontend) }),
+            create_log_entry(
+                1,
+                RaftRequest::AddNode {
+                    node: create_test_node("node-1", NodeType::Object),
+                },
+            ),
+            create_log_entry(
+                2,
+                RaftRequest::AddNode {
+                    node: create_test_node("node-2", NodeType::Metadata),
+                },
+            ),
+            create_log_entry(
+                3,
+                RaftRequest::AddNode {
+                    node: create_test_node("node-3", NodeType::Frontend),
+                },
+            ),
         ];
         store.append_to_log(entries).await.unwrap();
 
@@ -262,9 +365,24 @@ async fn test_log_operations_with_purging() {
     let mut store = ControlPlaneStore::with_db(&db_path).unwrap();
 
     let entries = vec![
-        create_log_entry(1, RaftRequest::AddNode { node: create_test_node("node-1", NodeType::Object) }),
-        create_log_entry(2, RaftRequest::AddNode { node: create_test_node("node-2", NodeType::Object) }),
-        create_log_entry(3, RaftRequest::AddNode { node: create_test_node("node-3", NodeType::Object) }),
+        create_log_entry(
+            1,
+            RaftRequest::AddNode {
+                node: create_test_node("node-1", NodeType::Object),
+            },
+        ),
+        create_log_entry(
+            2,
+            RaftRequest::AddNode {
+                node: create_test_node("node-2", NodeType::Object),
+            },
+        ),
+        create_log_entry(
+            3,
+            RaftRequest::AddNode {
+                node: create_test_node("node-3", NodeType::Object),
+            },
+        ),
     ];
     store.append_to_log(entries).await.unwrap();
 
@@ -292,9 +410,24 @@ async fn test_conflict_log_deletion() {
     let mut store = ControlPlaneStore::with_db(&db_path).unwrap();
 
     let entries = vec![
-        create_log_entry(1, RaftRequest::AddNode { node: create_test_node("node-1", NodeType::Object) }),
-        create_log_entry(2, RaftRequest::AddNode { node: create_test_node("node-2", NodeType::Object) }),
-        create_log_entry(3, RaftRequest::AddNode { node: create_test_node("node-3", NodeType::Object) }),
+        create_log_entry(
+            1,
+            RaftRequest::AddNode {
+                node: create_test_node("node-1", NodeType::Object),
+            },
+        ),
+        create_log_entry(
+            2,
+            RaftRequest::AddNode {
+                node: create_test_node("node-2", NodeType::Object),
+            },
+        ),
+        create_log_entry(
+            3,
+            RaftRequest::AddNode {
+                node: create_test_node("node-3", NodeType::Object),
+            },
+        ),
     ];
     store.append_to_log(entries).await.unwrap();
 
@@ -313,8 +446,18 @@ async fn test_snapshot_lifecycle() {
     assert!(store.get_current_snapshot().await.unwrap().is_none());
 
     let entries = vec![
-        create_log_entry(1, RaftRequest::AddNode { node: create_test_node("obj-1", NodeType::Object) }),
-        create_log_entry(2, RaftRequest::AddNode { node: create_test_node("md-1", NodeType::Metadata) }),
+        create_log_entry(
+            1,
+            RaftRequest::AddNode {
+                node: create_test_node("obj-1", NodeType::Object),
+            },
+        ),
+        create_log_entry(
+            2,
+            RaftRequest::AddNode {
+                node: create_test_node("md-1", NodeType::Metadata),
+            },
+        ),
     ];
     store.apply_to_state_machine(&entries).await.unwrap();
 
@@ -412,8 +555,18 @@ async fn test_log_reader_and_stores() {
     let mut store = ControlPlaneStore::new();
 
     let entries = vec![
-        create_log_entry(1, RaftRequest::AddNode { node: create_test_node("node-1", NodeType::Object) }),
-        create_log_entry(2, RaftRequest::AddNode { node: create_test_node("node-2", NodeType::Object) }),
+        create_log_entry(
+            1,
+            RaftRequest::AddNode {
+                node: create_test_node("node-1", NodeType::Object),
+            },
+        ),
+        create_log_entry(
+            2,
+            RaftRequest::AddNode {
+                node: create_test_node("node-2", NodeType::Object),
+            },
+        ),
     ];
     store.append_to_log(entries).await.unwrap();
 

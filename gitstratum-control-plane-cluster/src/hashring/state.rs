@@ -312,7 +312,9 @@ mod tests {
 
         let joining_metadata = create_test_node_with_state("meta_trans", NodeState::Joining);
         let meta_id = NodeId::new("meta_trans");
-        state_transitions.add_metadata_node(joining_metadata).unwrap();
+        state_transitions
+            .add_metadata_node(joining_metadata)
+            .unwrap();
         assert_eq!(state_transitions.version(), 5);
 
         assert!(state_transitions
@@ -386,9 +388,7 @@ mod tests {
         assert_eq!(object_topology.node_count(), 5);
         assert_eq!(object_topology.replication_factor, 3);
         for i in 0..5 {
-            assert!(object_topology
-                .nodes
-                .contains(&format!("object_node{}", i)));
+            assert!(object_topology.nodes.contains(&format!("object_node{}", i)));
         }
         for i in 0..5 {
             assert!(!object_topology

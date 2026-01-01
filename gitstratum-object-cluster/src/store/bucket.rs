@@ -171,7 +171,9 @@ mod tests {
     #[tokio::test]
     async fn test_put_get() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let blob = Blob::new(b"hello world".to_vec());
         store.put(&blob).await.unwrap();
@@ -183,7 +185,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_nonexistent() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let oid = Oid::hash(b"nonexistent");
         assert!(store.get(&oid).await.unwrap().is_none());
@@ -192,7 +196,9 @@ mod tests {
     #[tokio::test]
     async fn test_has() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let blob = Blob::new(b"test data".to_vec());
         assert!(!store.has(&blob.oid));
@@ -204,7 +210,9 @@ mod tests {
     #[tokio::test]
     async fn test_delete() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let blob = Blob::new(b"to be deleted".to_vec());
         store.put(&blob).await.unwrap();
@@ -218,7 +226,9 @@ mod tests {
     #[tokio::test]
     async fn test_delete_nonexistent() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let oid = Oid::hash(b"nonexistent");
         let deleted = store.delete(&oid).await.unwrap();
@@ -228,7 +238,9 @@ mod tests {
     #[tokio::test]
     async fn test_stats() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let stats = store.stats();
         assert_eq!(stats.total_blobs, 0);
@@ -247,7 +259,9 @@ mod tests {
     #[tokio::test]
     async fn test_iter() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let blob1 = Blob::new(b"blob 1".to_vec());
         let blob2 = Blob::new(b"blob 2".to_vec());
@@ -264,7 +278,9 @@ mod tests {
     #[tokio::test]
     async fn test_iter_by_position() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let blob1 = Blob::new(b"blob 1".to_vec());
         let blob2 = Blob::new(b"blob 2".to_vec());
@@ -272,7 +288,10 @@ mod tests {
         store.put(&blob1).await.unwrap();
         store.put(&blob2).await.unwrap();
 
-        let blobs: Vec<_> = store.iter_by_position(0, u64::MAX).collect::<Vec<_>>().await;
+        let blobs: Vec<_> = store
+            .iter_by_position(0, u64::MAX)
+            .collect::<Vec<_>>()
+            .await;
         assert_eq!(blobs.len(), 2);
 
         for result in blobs {
@@ -283,7 +302,9 @@ mod tests {
     #[tokio::test]
     async fn test_large_blob() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let data: Vec<u8> = (0..1024 * 1024).map(|i| (i % 256) as u8).collect();
         let blob = Blob::new(data.clone());
@@ -316,7 +337,9 @@ mod tests {
     #[tokio::test]
     async fn test_overwrite() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let blob = Blob::new(b"original".to_vec());
         store.put(&blob).await.unwrap();
@@ -331,7 +354,9 @@ mod tests {
     #[tokio::test]
     async fn test_storage_stats_values() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let stats = store.stats();
         assert_eq!(stats.total_blobs, 0);
@@ -344,7 +369,9 @@ mod tests {
     #[tokio::test]
     async fn test_iter_empty_store() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let blobs: Vec<_> = store.iter().collect::<Vec<_>>().await;
         assert!(blobs.is_empty());
@@ -353,16 +380,23 @@ mod tests {
     #[tokio::test]
     async fn test_iter_by_position_empty_store() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
-        let blobs: Vec<_> = store.iter_by_position(0, u64::MAX).collect::<Vec<_>>().await;
+        let blobs: Vec<_> = store
+            .iter_by_position(0, u64::MAX)
+            .collect::<Vec<_>>()
+            .await;
         assert!(blobs.is_empty());
     }
 
     #[tokio::test]
     async fn test_multiple_puts_same_oid() {
         let tmp = TempDir::new().unwrap();
-        let store = BucketObjectStore::new(test_config(tmp.path())).await.unwrap();
+        let store = BucketObjectStore::new(test_config(tmp.path()))
+            .await
+            .unwrap();
 
         let blob = Blob::new(b"data".to_vec());
 

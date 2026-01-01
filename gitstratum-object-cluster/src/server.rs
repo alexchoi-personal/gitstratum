@@ -139,7 +139,10 @@ impl ObjectService for ObjectServiceImpl {
 
         debug!(oid = %core_blob.oid, "put_blob");
 
-        self.store.put(&core_blob).await.map_err(ObjectStoreError::from)?;
+        self.store
+            .put(&core_blob)
+            .await
+            .map_err(ObjectStoreError::from)?;
 
         Ok(Response::new(PutBlobResponse {
             success: true,
@@ -299,7 +302,10 @@ impl ObjectService for ObjectServiceImpl {
             match result {
                 Ok(blob) => {
                     let core_blob = Self::proto_blob_to_core(&blob)?;
-                    self.store.put(&core_blob).await.map_err(ObjectStoreError::from)?;
+                    self.store
+                        .put(&core_blob)
+                        .await
+                        .map_err(ObjectStoreError::from)?;
                     received_count += 1;
                 }
                 Err(e) => {

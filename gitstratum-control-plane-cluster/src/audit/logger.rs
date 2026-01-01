@@ -270,10 +270,7 @@ mod tests {
             .with_request_id("req-abc");
         assert_eq!(full_entry.actor_type, ActorType::User);
         assert_eq!(full_entry.outcome, AuditOutcome::Success);
-        assert_eq!(
-            full_entry.metadata.get("key"),
-            Some(&"value".to_string())
-        );
+        assert_eq!(full_entry.metadata.get("key"), Some(&"value".to_string()));
         assert_eq!(full_entry.client_ip, Some("10.0.0.1".to_string()));
         assert_eq!(full_entry.request_id, Some("req-abc".to_string()));
 
@@ -338,7 +335,13 @@ mod tests {
         assert_eq!(overflow_logger.total_entries(), 5);
 
         let mut action_logger = AuditLogger::default();
-        action_logger.log_action("user1", "repository", "repo123", "clone", AuditOutcome::Success);
+        action_logger.log_action(
+            "user1",
+            "repository",
+            "repo123",
+            "clone",
+            AuditOutcome::Success,
+        );
         assert_eq!(action_logger.pending_count(), 1);
         assert_eq!(action_logger.total_entries(), 1);
 
@@ -485,7 +488,10 @@ mod tests {
         let cloned_config = config.clone();
         assert_eq!(cloned_config.buffer_size, config.buffer_size);
         assert_eq!(cloned_config.flush_interval, config.flush_interval);
-        assert_eq!(cloned_config.max_entries_per_flush, config.max_entries_per_flush);
+        assert_eq!(
+            cloned_config.max_entries_per_flush,
+            config.max_entries_per_flush
+        );
         assert_eq!(cloned_config.enabled, config.enabled);
 
         let entry = AuditEntry::new("event", "actor", "resource", "id", "action")

@@ -703,7 +703,10 @@ mod tests {
         assert_eq!(stats.dead_bytes, 0);
         assert_eq!(stats.fragmentation(), 0.0);
 
-        store.put(create_test_oid(0x01), Bytes::from("a")).await.unwrap();
+        store
+            .put(create_test_oid(0x01), Bytes::from("a"))
+            .await
+            .unwrap();
         let stats = store.stats();
         assert_eq!(stats.entries, 1);
         assert!(stats.total_bytes > 0);
@@ -743,7 +746,10 @@ mod tests {
 
         assert!(store.is_empty());
 
-        store.put(create_test_oid(0x01), Bytes::from("x")).await.unwrap();
+        store
+            .put(create_test_oid(0x01), Bytes::from("x"))
+            .await
+            .unwrap();
         assert!(!store.is_empty());
     }
 
@@ -768,7 +774,10 @@ mod tests {
         let count = { bucket.header.count };
         assert_eq!(count, 0);
 
-        store.put(create_test_oid(0x00), Bytes::from("test")).await.unwrap();
+        store
+            .put(create_test_oid(0x00), Bytes::from("test"))
+            .await
+            .unwrap();
 
         let bucket = store.read_bucket(0).unwrap();
         store.write_bucket(0, &bucket).unwrap();
@@ -780,7 +789,10 @@ mod tests {
         let config = test_config(tmp.path());
         let store = BucketStore::open(config).await.unwrap();
 
-        store.put(create_test_oid(0x01), Bytes::from("a")).await.unwrap();
+        store
+            .put(create_test_oid(0x01), Bytes::from("a"))
+            .await
+            .unwrap();
         store.mark_deleted(&create_test_oid(0x01)).await.unwrap();
 
         assert!(store.stats().dead_bytes > 0);
@@ -795,7 +807,10 @@ mod tests {
         let config = test_config(tmp.path());
         let store = BucketStore::open(config).await.unwrap();
 
-        store.put(create_test_oid(0x01), Bytes::from("data")).await.unwrap();
+        store
+            .put(create_test_oid(0x01), Bytes::from("data"))
+            .await
+            .unwrap();
         let before = store.stats().total_bytes;
 
         store.subtract_total_bytes(10);
@@ -810,7 +825,10 @@ mod tests {
         let config = test_config(tmp.path());
         let store = BucketStore::open(config).await.unwrap();
 
-        store.put(create_test_oid(0x01), Bytes::from("sync me")).await.unwrap();
+        store
+            .put(create_test_oid(0x01), Bytes::from("sync me"))
+            .await
+            .unwrap();
         store.sync().await.unwrap();
     }
 
@@ -878,7 +896,10 @@ mod tests {
         store.put(oid1, Bytes::from("one")).await.unwrap();
         store.put(oid2, Bytes::from("two")).await.unwrap();
 
-        let items: Vec<_> = store.iter_by_position(0, u64::MAX).collect::<Vec<_>>().await;
+        let items: Vec<_> = store
+            .iter_by_position(0, u64::MAX)
+            .collect::<Vec<_>>()
+            .await;
         assert_eq!(items.len(), 2);
     }
 }

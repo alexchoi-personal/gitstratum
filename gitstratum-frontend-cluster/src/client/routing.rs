@@ -383,7 +383,12 @@ mod tests {
 
         let blob = Blob::new(b"exists test".to_vec());
         let node = ring.primary_node_for_oid(&blob.oid).unwrap();
-        clients.get(&node.id).unwrap().put_blob(&blob).await.unwrap();
+        clients
+            .get(&node.id)
+            .unwrap()
+            .put_blob(&blob)
+            .await
+            .unwrap();
 
         assert!(routing.exists(&blob.oid).await.unwrap());
 
@@ -486,7 +491,9 @@ mod tests {
         let clients = create_test_clients();
         let routing = RoutingObjectClient::new(ring.clone(), clients);
 
-        let oids: Vec<Oid> = (0..10).map(|i| Oid::hash(format!("oid-{}", i).as_bytes())).collect();
+        let oids: Vec<Oid> = (0..10)
+            .map(|i| Oid::hash(format!("oid-{}", i).as_bytes()))
+            .collect();
 
         let by_node = routing.partition_by_node(oids.clone()).unwrap();
 

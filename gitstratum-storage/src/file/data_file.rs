@@ -69,7 +69,11 @@ impl DataFile {
         Ok(record.value)
     }
 
-    pub fn read_record_at(&mut self, offset: u64, size: usize) -> Result<(gitstratum_core::Oid, Bytes)> {
+    pub fn read_record_at(
+        &mut self,
+        offset: u64,
+        size: usize,
+    ) -> Result<(gitstratum_core::Oid, Bytes)> {
         self.file.seek(SeekFrom::Start(offset))?;
 
         let aligned_size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);

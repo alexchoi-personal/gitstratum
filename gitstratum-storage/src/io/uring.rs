@@ -57,10 +57,9 @@ impl UringHandle {
             .user_data(id);
 
         unsafe {
-            self.ring
-                .submission()
-                .push(&read_e)
-                .map_err(|e| BucketStoreError::IoUring(format!("submission queue full: {:?}", e)))?;
+            self.ring.submission().push(&read_e).map_err(|e| {
+                BucketStoreError::IoUring(format!("submission queue full: {:?}", e))
+            })?;
         }
 
         self.inflight.insert(
@@ -87,10 +86,9 @@ impl UringHandle {
             .user_data(id);
 
         unsafe {
-            self.ring
-                .submission()
-                .push(&write_e)
-                .map_err(|e| BucketStoreError::IoUring(format!("submission queue full: {:?}", e)))?;
+            self.ring.submission().push(&write_e).map_err(|e| {
+                BucketStoreError::IoUring(format!("submission queue full: {:?}", e))
+            })?;
         }
 
         self.inflight.insert(
@@ -114,10 +112,9 @@ impl UringHandle {
         let fsync_e = opcode::Fsync::new(types::Fd(fd)).build().user_data(id);
 
         unsafe {
-            self.ring
-                .submission()
-                .push(&fsync_e)
-                .map_err(|e| BucketStoreError::IoUring(format!("submission queue full: {:?}", e)))?;
+            self.ring.submission().push(&fsync_e).map_err(|e| {
+                BucketStoreError::IoUring(format!("submission queue full: {:?}", e))
+            })?;
         }
 
         self.inflight.insert(

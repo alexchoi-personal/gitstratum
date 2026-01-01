@@ -190,7 +190,10 @@ async fn test_client_list_repos_with_cursor() {
     assert_eq!(repos.len(), 3);
     assert!(next_cursor.is_some());
 
-    let (more_repos, _) = client.list_repos("", 3, &next_cursor.unwrap()).await.unwrap();
+    let (more_repos, _) = client
+        .list_repos("", 3, &next_cursor.unwrap())
+        .await
+        .unwrap();
     assert_eq!(more_repos.len(), 2);
 
     drop(shutdown_tx);
@@ -653,10 +656,7 @@ async fn test_client_walk_commits_empty() {
     let repo_id = RepoId::new("test-repo").unwrap();
     client.create_repo(&repo_id).await.unwrap();
 
-    let commits = client
-        .walk_commits(&repo_id, &[], &[], None)
-        .await
-        .unwrap();
+    let commits = client.walk_commits(&repo_id, &[], &[], None).await.unwrap();
     assert!(commits.is_empty());
 
     drop(shutdown_tx);

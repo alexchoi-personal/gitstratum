@@ -309,7 +309,10 @@ mod tests {
             .unwrap();
 
         let status = rebalancer.current_status().unwrap();
-        assert_eq!(status.operations[0].status, RebalanceOperationStatus::InProgress);
+        assert_eq!(
+            status.operations[0].status,
+            RebalanceOperationStatus::InProgress
+        );
         assert_eq!(status.operations[0].bytes_moved, 2500);
         assert!(status.operations[0].completed_at.is_none());
         assert_eq!(status.bytes_moved, 2500);
@@ -383,10 +386,22 @@ mod tests {
 
         let cancelled = &rebalancer.history()[0];
         assert!(!cancelled.in_progress);
-        assert_eq!(cancelled.operations[0].status, RebalanceOperationStatus::Cancelled);
-        assert_eq!(cancelled.operations[1].status, RebalanceOperationStatus::Cancelled);
-        assert_eq!(cancelled.operations[2].status, RebalanceOperationStatus::Completed);
-        assert_eq!(cancelled.operations[3].status, RebalanceOperationStatus::Failed);
+        assert_eq!(
+            cancelled.operations[0].status,
+            RebalanceOperationStatus::Cancelled
+        );
+        assert_eq!(
+            cancelled.operations[1].status,
+            RebalanceOperationStatus::Cancelled
+        );
+        assert_eq!(
+            cancelled.operations[2].status,
+            RebalanceOperationStatus::Completed
+        );
+        assert_eq!(
+            cancelled.operations[3].status,
+            RebalanceOperationStatus::Failed
+        );
     }
 
     #[test]
@@ -451,7 +466,10 @@ mod tests {
         let boxed: Box<dyn std::error::Error> = Box::new(RebalanceError::NotStarted);
         assert_eq!(boxed.to_string(), "no rebalance in progress");
 
-        assert_ne!(RebalanceError::AlreadyInProgress, RebalanceError::NotStarted);
+        assert_ne!(
+            RebalanceError::AlreadyInProgress,
+            RebalanceError::NotStarted
+        );
     }
 
     #[test]
@@ -507,7 +525,10 @@ mod tests {
             let _ = format!("{:?}", status);
         }
 
-        assert_eq!(RebalanceOperationStatus::default(), RebalanceOperationStatus::Pending);
+        assert_eq!(
+            RebalanceOperationStatus::default(),
+            RebalanceOperationStatus::Pending
+        );
 
         let mut status = RebalanceStatus::new("test-status");
         status.in_progress = true;

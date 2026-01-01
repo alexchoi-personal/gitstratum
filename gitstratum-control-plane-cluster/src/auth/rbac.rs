@@ -347,8 +347,7 @@ mod tests {
         assert!(debug_str.contains("Role"));
         assert!(debug_str.contains("admin"));
 
-        let original =
-            Role::new("test", vec![Permission::RepoRead]).with_description("Test role");
+        let original = Role::new("test", vec![Permission::RepoRead]).with_description("Test role");
         let cloned = original.clone();
         assert_eq!(original.name, cloned.name);
         assert_eq!(original.permissions, cloned.permissions);
@@ -375,8 +374,7 @@ mod tests {
         assert!(binding.created_at > 0);
         assert!(binding.expires_at.is_none());
 
-        let binding_from_strings =
-            RoleBinding::new(String::from("user-2"), String::from("writer"));
+        let binding_from_strings = RoleBinding::new(String::from("user-2"), String::from("writer"));
         assert_eq!(binding_from_strings.user_id, "user-2");
         assert_eq!(binding_from_strings.role_name, "writer");
 
@@ -440,8 +438,7 @@ mod tests {
         assert_eq!(original.created_at, cloned.created_at);
         assert_eq!(original.expires_at, cloned.expires_at);
 
-        let mut serializable =
-            RoleBinding::new("user-1", "admin").with_resource_pattern("repo:*");
+        let mut serializable = RoleBinding::new("user-1", "admin").with_resource_pattern("repo:*");
         serializable.expires_at = Some(9999999999);
         let serialized = serde_json::to_string(&serializable).unwrap();
         let deserialized: RoleBinding = serde_json::from_str(&serialized).unwrap();

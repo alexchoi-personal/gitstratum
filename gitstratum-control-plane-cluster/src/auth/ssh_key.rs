@@ -359,18 +359,39 @@ mod tests {
             "SSH key revoked"
         );
 
-        assert_eq!(format!("{:?}", SshKeyValidationError::KeyNotFound), "KeyNotFound");
-        assert_eq!(format!("{:?}", SshKeyValidationError::KeyExpired), "KeyExpired");
-        assert_eq!(format!("{:?}", SshKeyValidationError::KeyRevoked), "KeyRevoked");
+        assert_eq!(
+            format!("{:?}", SshKeyValidationError::KeyNotFound),
+            "KeyNotFound"
+        );
+        assert_eq!(
+            format!("{:?}", SshKeyValidationError::KeyExpired),
+            "KeyExpired"
+        );
+        assert_eq!(
+            format!("{:?}", SshKeyValidationError::KeyRevoked),
+            "KeyRevoked"
+        );
 
         let error = SshKeyValidationError::KeyExpired;
         let cloned_error = error.clone();
         assert_eq!(error, cloned_error);
 
-        assert_eq!(SshKeyValidationError::KeyNotFound, SshKeyValidationError::KeyNotFound);
-        assert_ne!(SshKeyValidationError::KeyNotFound, SshKeyValidationError::KeyExpired);
-        assert_ne!(SshKeyValidationError::KeyExpired, SshKeyValidationError::KeyRevoked);
-        assert_ne!(SshKeyValidationError::KeyNotFound, SshKeyValidationError::KeyRevoked);
+        assert_eq!(
+            SshKeyValidationError::KeyNotFound,
+            SshKeyValidationError::KeyNotFound
+        );
+        assert_ne!(
+            SshKeyValidationError::KeyNotFound,
+            SshKeyValidationError::KeyExpired
+        );
+        assert_ne!(
+            SshKeyValidationError::KeyExpired,
+            SshKeyValidationError::KeyRevoked
+        );
+        assert_ne!(
+            SshKeyValidationError::KeyNotFound,
+            SshKeyValidationError::KeyRevoked
+        );
 
         let boxed_error: Box<dyn std::error::Error> = Box::new(SshKeyValidationError::KeyNotFound);
         assert_eq!(boxed_error.to_string(), "SSH key not found");

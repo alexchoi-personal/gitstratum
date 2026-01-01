@@ -752,10 +752,7 @@ mod tests {
         assert!(snapshot.get_node("fe1").is_some());
         assert!(snapshot.get_node("nonexistent").is_none());
 
-        assert_eq!(
-            snapshot.find_node_type("cp1"),
-            Some(NodeType::ControlPlane)
-        );
+        assert_eq!(snapshot.find_node_type("cp1"), Some(NodeType::ControlPlane));
         assert_eq!(snapshot.find_node_type("md1"), Some(NodeType::Metadata));
         assert_eq!(snapshot.find_node_type("obj1"), Some(NodeType::Object));
         assert_eq!(snapshot.find_node_type("fe1"), Some(NodeType::Frontend));

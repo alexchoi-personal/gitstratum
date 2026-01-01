@@ -694,19 +694,39 @@ mod tests {
 
         let parent_commit_oid = Oid::hash(b"parent");
         let author = Signature::new("Author Name", "author@example.com", 1704067200, "+0530");
-        let committer = Signature::new("Committer Name", "committer@example.com", 1704067300, "-0800");
-        let commit = Commit::new(tree_oid, vec![parent_commit_oid], author, committer, "Test commit message\nWith multiple lines");
+        let committer = Signature::new(
+            "Committer Name",
+            "committer@example.com",
+            1704067300,
+            "-0800",
+        );
+        let commit = Commit::new(
+            tree_oid,
+            vec![parent_commit_oid],
+            author,
+            committer,
+            "Test commit message\nWith multiple lines",
+        );
 
         let author2 = Signature::new("Test", "test@example.com", 1234567890, "+0000");
-        let commit2 = Commit::new(tree.oid, vec![], author2.clone(), author2.clone(), "Initial commit");
+        let commit2 = Commit::new(
+            tree.oid,
+            vec![],
+            author2.clone(),
+            author2.clone(),
+            "Initial commit",
+        );
 
         let tag_oid = Oid::hash(b"tag");
-        let tag_entry = PackEntry::new(tag_oid, ObjectType::Tag, Bytes::from_static(b"tag content"));
+        let tag_entry =
+            PackEntry::new(tag_oid, ObjectType::Tag, Bytes::from_static(b"tag content"));
 
         let mut writer = PackWriter::new();
         writer.add_object(&Object::Blob(blob1.clone())).unwrap();
         writer.add_object(&Object::Blob(blob2.clone())).unwrap();
-        writer.add_object(&Object::Blob(large_blob.clone())).unwrap();
+        writer
+            .add_object(&Object::Blob(large_blob.clone()))
+            .unwrap();
         writer.add_object(&Object::Tree(tree.clone())).unwrap();
         writer.add_object(&Object::Tree(tree2.clone())).unwrap();
         writer.add_object(&Object::Commit(commit.clone())).unwrap();
@@ -716,8 +736,14 @@ mod tests {
 
         let pack_data = writer.build().unwrap();
         assert_eq!(&pack_data[0..4], PACK_SIGNATURE);
-        assert_eq!(u32::from_be_bytes([pack_data[4], pack_data[5], pack_data[6], pack_data[7]]), PACK_VERSION);
-        assert_eq!(u32::from_be_bytes([pack_data[8], pack_data[9], pack_data[10], pack_data[11]]), 8);
+        assert_eq!(
+            u32::from_be_bytes([pack_data[4], pack_data[5], pack_data[6], pack_data[7]]),
+            PACK_VERSION
+        );
+        assert_eq!(
+            u32::from_be_bytes([pack_data[8], pack_data[9], pack_data[10], pack_data[11]]),
+            8
+        );
 
         let mut reader = PackReader::new(pack_data.clone()).unwrap();
         assert_eq!(reader.object_count(), 8);
@@ -735,7 +761,10 @@ mod tests {
 
         let entry = reader.read_next().unwrap().unwrap();
         assert_eq!(entry.oid, blob2_oid);
-        assert_eq!(entry.data.as_ref(), b"test content for roundtrip verification");
+        assert_eq!(
+            entry.data.as_ref(),
+            b"test content for roundtrip verification"
+        );
 
         let entry = reader.read_next().unwrap().unwrap();
         assert_eq!(entry.oid, large_blob_oid);
@@ -795,7 +824,10 @@ mod tests {
         let entry = reader.read_next().unwrap().unwrap();
         assert_eq!(entry.object_type, ObjectType::Tag);
         let result = entry.into_object();
-        assert!(matches!(result, Err(FrontendError::InvalidObjectType { .. })));
+        assert!(matches!(
+            result,
+            Err(FrontendError::InvalidObjectType { .. })
+        ));
 
         assert_eq!(reader.objects_remaining(), 0);
         assert!(reader.read_next().unwrap().is_none());
@@ -806,13 +838,20 @@ mod tests {
         let empty_writer = PackWriter::new();
         let empty_data = empty_writer.build().unwrap();
         assert_eq!(&empty_data[0..4], PACK_SIGNATURE);
-        assert_eq!(u32::from_be_bytes([empty_data[8], empty_data[9], empty_data[10], empty_data[11]]), 0);
+        assert_eq!(
+            u32::from_be_bytes([empty_data[8], empty_data[9], empty_data[10], empty_data[11]]),
+            0
+        );
 
         let default_writer = PackWriter::default();
         assert_eq!(default_writer.entry_count(), 0);
 
         let raw_oid = Oid::hash(b"raw content");
-        let raw_entry = PackEntry::new(raw_oid, ObjectType::Blob, Bytes::from_static(b"raw content"));
+        let raw_entry = PackEntry::new(
+            raw_oid,
+            ObjectType::Blob,
+            Bytes::from_static(b"raw content"),
+        );
         let mut raw_writer = PackWriter::new();
         raw_writer.add_entry(raw_entry);
         assert_eq!(raw_writer.entry_count(), 1);
@@ -825,7 +864,11 @@ mod tests {
         let tree = Tree::new(vec![TreeEntry::file("f", Oid::hash(b"x"))]);
         let author = Signature::new("A", "a@e.com", 0, "+0000");
         let commit = Commit::new(Oid::hash(b"t"), vec![], author.clone(), author, "msg");
-        let tag_entry = PackEntry::new(Oid::hash(b"tag"), ObjectType::Tag, Bytes::from_static(b"tag"));
+        let tag_entry = PackEntry::new(
+            Oid::hash(b"tag"),
+            ObjectType::Tag,
+            Bytes::from_static(b"tag"),
+        );
 
         let mut writer = PackWriter::new();
         writer.add_object(&Object::Blob(blob.clone())).unwrap();
@@ -837,10 +880,19 @@ mod tests {
         writer.build_streaming(&mut streamed).unwrap();
 
         assert_eq!(&streamed[0..4], PACK_SIGNATURE);
-        assert_eq!(u32::from_be_bytes([streamed[4], streamed[5], streamed[6], streamed[7]]), PACK_VERSION);
-        assert_eq!(u32::from_be_bytes([streamed[8], streamed[9], streamed[10], streamed[11]]), 4);
+        assert_eq!(
+            u32::from_be_bytes([streamed[4], streamed[5], streamed[6], streamed[7]]),
+            PACK_VERSION
+        );
+        assert_eq!(
+            u32::from_be_bytes([streamed[8], streamed[9], streamed[10], streamed[11]]),
+            4
+        );
 
-        let entries = PackReader::new(Bytes::from(streamed)).unwrap().read_all().unwrap();
+        let entries = PackReader::new(Bytes::from(streamed))
+            .unwrap()
+            .read_all()
+            .unwrap();
         assert_eq!(entries.len(), 4);
         assert_eq!(entries[0].object_type, ObjectType::Blob);
         assert_eq!(entries[1].object_type, ObjectType::Tree);
@@ -860,10 +912,14 @@ mod tests {
         assert_eq!(entry.oid, blob2_oid);
 
         let mut headerless_streamed_writer = PackWriter::without_header();
-        headerless_streamed_writer.add_object(&Object::Blob(blob)).unwrap();
+        headerless_streamed_writer
+            .add_object(&Object::Blob(blob))
+            .unwrap();
 
         let mut headerless_output = Vec::new();
-        headerless_streamed_writer.build_streaming(&mut headerless_output).unwrap();
+        headerless_streamed_writer
+            .build_streaming(&mut headerless_output)
+            .unwrap();
         assert_ne!(&headerless_output[0..4], PACK_SIGNATURE);
 
         let mut raw_reader2 = PackReader::from_raw(Bytes::from(headerless_output), 1);
@@ -876,7 +932,9 @@ mod tests {
         let result = PackReader::new(Bytes::from_static(b"PACK\x00\x00"));
         assert!(result.is_err());
 
-        let result = PackReader::new(Bytes::from_static(b"NOTPACK\x00\x00\x00\x02\x00\x00\x00\x00"));
+        let result = PackReader::new(Bytes::from_static(
+            b"NOTPACK\x00\x00\x00\x02\x00\x00\x00\x00",
+        ));
         assert!(result.is_err());
 
         let mut data = BytesMut::new();
@@ -919,7 +977,9 @@ mod tests {
         data.put_slice(&compressed);
         let mut reader = PackReader::new(data.freeze()).unwrap();
         let result = reader.read_next();
-        assert!(matches!(result, Err(FrontendError::InvalidPackFormat(msg)) if msg.contains("decompressed size mismatch")));
+        assert!(
+            matches!(result, Err(FrontendError::InvalidPackFormat(msg)) if msg.contains("decompressed size mismatch"))
+        );
 
         let mut data = BytesMut::new();
         data.put_slice(PACK_SIGNATURE);
@@ -931,7 +991,9 @@ mod tests {
         data.put_slice(&compressed);
         let mut reader = PackReader::new(data.freeze()).unwrap();
         let result = reader.read_next();
-        assert!(matches!(result, Err(FrontendError::InvalidPackFormat(msg)) if msg.contains("offset delta not yet supported")));
+        assert!(
+            matches!(result, Err(FrontendError::InvalidPackFormat(msg)) if msg.contains("offset delta not yet supported"))
+        );
 
         let mut data = BytesMut::new();
         data.put_slice(PACK_SIGNATURE);
@@ -986,7 +1048,10 @@ mod tests {
         data.put_slice(oid.as_bytes());
         data.put_slice(&delta_compressed);
         let mut reader = PackReader::new(data.freeze()).unwrap();
-        assert!(matches!(reader.read_next(), Err(FrontendError::ObjectNotFound(_))));
+        assert!(matches!(
+            reader.read_next(),
+            Err(FrontendError::ObjectNotFound(_))
+        ));
     }
 
     #[test]
@@ -1004,7 +1069,10 @@ mod tests {
         let result = parse_tree_entries(&truncated_oid);
         assert!(result.is_err());
 
-        let invalid_mode = [0xFF, 0xFE, b' ', b'n', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let invalid_mode = [
+            0xFF, 0xFE, b' ', b'n', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
         let result = parse_tree_entries(&invalid_mode);
         assert!(result.is_err());
 
@@ -1023,11 +1091,17 @@ mod tests {
         assert!(result.is_err());
 
         let tree_hex = Oid::hash(b"tree").to_string();
-        let data = format!("tree {}\ncommitter Test <test@test.com> 1234567890 +0000\n\nMessage", tree_hex);
+        let data = format!(
+            "tree {}\ncommitter Test <test@test.com> 1234567890 +0000\n\nMessage",
+            tree_hex
+        );
         let result = parse_commit(Oid::hash(b"test"), data.as_bytes());
         assert!(result.is_err());
 
-        let data = format!("tree {}\nauthor Test <test@test.com> 1234567890 +0000\n\nMessage", tree_hex);
+        let data = format!(
+            "tree {}\nauthor Test <test@test.com> 1234567890 +0000\n\nMessage",
+            tree_hex
+        );
         let result = parse_commit(Oid::hash(b"test"), data.as_bytes());
         assert!(result.is_err());
 

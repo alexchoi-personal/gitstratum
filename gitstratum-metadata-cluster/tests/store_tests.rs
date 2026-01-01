@@ -79,20 +79,34 @@ fn test_ref_operations_and_cas_semantics() {
 
     assert!(store.get_ref(&repo_id, &main_ref).unwrap().is_none());
 
-    store.update_ref(&repo_id, &main_ref, None, &oid1, false).unwrap();
+    store
+        .update_ref(&repo_id, &main_ref, None, &oid1, false)
+        .unwrap();
     assert_eq!(store.get_ref(&repo_id, &main_ref).unwrap(), Some(oid1));
 
-    store.update_ref(&repo_id, &main_ref, Some(&oid1), &oid2, false).unwrap();
+    store
+        .update_ref(&repo_id, &main_ref, Some(&oid1), &oid2, false)
+        .unwrap();
     assert_eq!(store.get_ref(&repo_id, &main_ref).unwrap(), Some(oid2));
 
-    assert!(store.update_ref(&repo_id, &main_ref, Some(&wrong_oid), &oid1, false).is_err());
+    assert!(store
+        .update_ref(&repo_id, &main_ref, Some(&wrong_oid), &oid1, false)
+        .is_err());
 
-    store.update_ref(&repo_id, &main_ref, Some(&wrong_oid), &oid1, true).unwrap();
+    store
+        .update_ref(&repo_id, &main_ref, Some(&wrong_oid), &oid1, true)
+        .unwrap();
     assert_eq!(store.get_ref(&repo_id, &main_ref).unwrap(), Some(oid1));
 
-    store.update_ref(&repo_id, &feature_ref, None, &oid1, false).unwrap();
-    store.update_ref(&repo_id, &tag_ref, None, &oid1, false).unwrap();
-    store.update_ref(&repo_id, &remote_ref, None, &oid1, false).unwrap();
+    store
+        .update_ref(&repo_id, &feature_ref, None, &oid1, false)
+        .unwrap();
+    store
+        .update_ref(&repo_id, &tag_ref, None, &oid1, false)
+        .unwrap();
+    store
+        .update_ref(&repo_id, &remote_ref, None, &oid1, false)
+        .unwrap();
 
     let all_refs = store.list_refs(&repo_id, "").unwrap();
     assert_eq!(all_refs.len(), 4);
@@ -120,8 +134,14 @@ fn test_commit_and_tree_storage_with_caching() {
     store.create_repo(&repo_id).unwrap();
 
     let nonexistent_oid = Oid::hash(b"nonexistent");
-    assert!(store.get_commit(&repo_id, &nonexistent_oid).unwrap().is_none());
-    assert!(store.get_tree(&repo_id, &nonexistent_oid).unwrap().is_none());
+    assert!(store
+        .get_commit(&repo_id, &nonexistent_oid)
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_tree(&repo_id, &nonexistent_oid)
+        .unwrap()
+        .is_none());
 
     let tree1 = create_test_tree(vec![
         ("file1.txt", Oid::hash(b"file1")),
@@ -172,7 +192,9 @@ fn test_repository_deletion_cascades_all_data() {
     for i in 0..5 {
         let ref_name = RefName::branch(&format!("branch{}", i)).unwrap();
         let oid = Oid::hash(format!("commit{}", i).as_bytes());
-        store.update_ref(&repo_id, &ref_name, None, &oid, true).unwrap();
+        store
+            .update_ref(&repo_id, &ref_name, None, &oid, true)
+            .unwrap();
 
         let tree_oid = Oid::hash(format!("tree{}", i).as_bytes());
         let commit = create_test_commit(tree_oid, vec![], &format!("Commit {}", i));
@@ -202,8 +224,12 @@ fn test_multi_repository_isolation() {
     let oid1 = Oid::hash(b"commit1");
     let oid2 = Oid::hash(b"commit2");
 
-    store.update_ref(&repo1, &ref_name, None, &oid1, false).unwrap();
-    store.update_ref(&repo2, &ref_name, None, &oid2, false).unwrap();
+    store
+        .update_ref(&repo1, &ref_name, None, &oid1, false)
+        .unwrap();
+    store
+        .update_ref(&repo2, &ref_name, None, &oid2, false)
+        .unwrap();
 
     let tree = Oid::hash(b"tree");
     let commit1 = create_test_commit(tree, vec![], "Repo1 commit");

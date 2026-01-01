@@ -61,10 +61,11 @@ impl DataRecord {
             });
         }
 
-        let header = RecordHeader::from_bytes(buf).ok_or_else(|| BucketStoreError::InvalidMagic {
-            expected: RECORD_MAGIC,
-            actual: u32::from_le_bytes(buf[0..4].try_into().unwrap_or([0; 4])),
-        })?;
+        let header =
+            RecordHeader::from_bytes(buf).ok_or_else(|| BucketStoreError::InvalidMagic {
+                expected: RECORD_MAGIC,
+                actual: u32::from_le_bytes(buf[0..4].try_into().unwrap_or([0; 4])),
+            })?;
 
         let key_start = HEADER_SIZE;
         let key_end = key_start + KEY_SIZE;

@@ -609,7 +609,10 @@ mod tests {
                 state: invalid,
                 r#type: i32::from(ProtoNodeType::Object),
             };
-            assert_eq!(proto_node_to_extended(&proto).state, HashRingNodeState::Down);
+            assert_eq!(
+                proto_node_to_extended(&proto).state,
+                HashRingNodeState::Down
+            );
         }
 
         for invalid in [999, -1, i32::MAX] {
@@ -654,8 +657,14 @@ mod tests {
         assert_eq!(proto_node_to_extended(&proto_max_port).port, u16::MAX);
 
         let addresses = [
-            "localhost", "127.0.0.1", "0.0.0.0", "255.255.255.255",
-            "::1", "fe80::1", "example.com", "node-1.cluster.local",
+            "localhost",
+            "127.0.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "::1",
+            "fe80::1",
+            "example.com",
+            "node-1.cluster.local",
         ];
         for addr in addresses {
             let proto = ProtoNodeInfo {
@@ -782,24 +791,51 @@ mod tests {
         }
         assert!(!snapshot.set_node_state("nonexistent", NodeType::Object, HashRingNodeState::Down));
 
-        assert_eq!(snapshot.control_plane_nodes.get("cp-1").unwrap().state, HashRingNodeState::Draining);
-        assert_eq!(snapshot.metadata_nodes.get("md-1").unwrap().state, HashRingNodeState::Down);
-        assert_eq!(snapshot.object_nodes.get("obj-1").unwrap().state, HashRingNodeState::Active);
-        assert_eq!(snapshot.frontend_nodes.get("fe-1").unwrap().state, HashRingNodeState::Joining);
+        assert_eq!(
+            snapshot.control_plane_nodes.get("cp-1").unwrap().state,
+            HashRingNodeState::Draining
+        );
+        assert_eq!(
+            snapshot.metadata_nodes.get("md-1").unwrap().state,
+            HashRingNodeState::Down
+        );
+        assert_eq!(
+            snapshot.object_nodes.get("obj-1").unwrap().state,
+            HashRingNodeState::Active
+        );
+        assert_eq!(
+            snapshot.frontend_nodes.get("fe-1").unwrap().state,
+            HashRingNodeState::Joining
+        );
 
         for (id, ntype, _) in state_transitions {
             assert!(snapshot.remove_node(id, ntype).is_some());
         }
-        assert!(snapshot.remove_node("nonexistent", NodeType::Object).is_none());
+        assert!(snapshot
+            .remove_node("nonexistent", NodeType::Object)
+            .is_none());
         assert!(snapshot.control_plane_nodes.is_empty());
         assert!(snapshot.metadata_nodes.is_empty());
         assert!(snapshot.object_nodes.is_empty());
         assert!(snapshot.frontend_nodes.is_empty());
 
-        snapshot.add_node(ExtendedNodeInfo::new("node-1", "10.0.0.1", 9001, NodeType::Object));
+        snapshot.add_node(ExtendedNodeInfo::new(
+            "node-1",
+            "10.0.0.1",
+            9001,
+            NodeType::Object,
+        ));
         snapshot.remove_node("node-1", NodeType::Object);
-        snapshot.add_node(ExtendedNodeInfo::new("node-1", "10.0.0.2", 9002, NodeType::Object));
-        assert_eq!(snapshot.object_nodes.get("node-1").unwrap().address, "10.0.0.2");
+        snapshot.add_node(ExtendedNodeInfo::new(
+            "node-1",
+            "10.0.0.2",
+            9002,
+            NodeType::Object,
+        ));
+        assert_eq!(
+            snapshot.object_nodes.get("node-1").unwrap().address,
+            "10.0.0.2"
+        );
 
         let mut snapshot2 = ClusterStateSnapshot::new();
         for i in 0..4 {
@@ -807,13 +843,23 @@ mod tests {
                 &format!("node-{}", i),
                 "10.0.0.1",
                 9000 + i,
-                [NodeType::ControlPlane, NodeType::Metadata, NodeType::Object, NodeType::Frontend][i as usize],
+                [
+                    NodeType::ControlPlane,
+                    NodeType::Metadata,
+                    NodeType::Object,
+                    NodeType::Frontend,
+                ][i as usize],
             ));
         }
         assert_eq!(snapshot2.all_nodes().len(), 4);
 
         let mut snapshot3 = ClusterStateSnapshot::new();
-        snapshot3.add_node(ExtendedNodeInfo::new("node-1", "10.0.0.1", 9001, NodeType::Object));
+        snapshot3.add_node(ExtendedNodeInfo::new(
+            "node-1",
+            "10.0.0.1",
+            9001,
+            NodeType::Object,
+        ));
         snapshot3.leader_id = Some("leader".to_string());
         let cloned = snapshot3.clone();
         assert_eq!(cloned.object_nodes.len(), 1);
@@ -829,9 +875,19 @@ mod tests {
 
         let mut snapshot4 = ClusterStateSnapshot::new();
         assert_eq!(snapshot4.version, 0);
-        snapshot4.add_node(ExtendedNodeInfo::new("node-1", "10.0.0.1", 9001, NodeType::Object));
+        snapshot4.add_node(ExtendedNodeInfo::new(
+            "node-1",
+            "10.0.0.1",
+            9001,
+            NodeType::Object,
+        ));
         assert_eq!(snapshot4.version, 1);
-        snapshot4.add_node(ExtendedNodeInfo::new("node-2", "10.0.0.2", 9002, NodeType::Object));
+        snapshot4.add_node(ExtendedNodeInfo::new(
+            "node-2",
+            "10.0.0.2",
+            9002,
+            NodeType::Object,
+        ));
         assert_eq!(snapshot4.version, 2);
     }
 
@@ -941,10 +997,22 @@ mod tests {
 
         let mut snapshot = ClusterStateSnapshot::new();
         let key1 = RefLockKey::new("repo-1", "refs/heads/main");
-        let lock1 = LockInfo::new("lock-1", "repo-1", "refs/heads/main", "holder-1", Duration::from_secs(30));
+        let lock1 = LockInfo::new(
+            "lock-1",
+            "repo-1",
+            "refs/heads/main",
+            "holder-1",
+            Duration::from_secs(30),
+        );
         snapshot.ref_locks.insert(key1.clone(), lock1);
         let key2 = RefLockKey::new("repo-2", "refs/heads/dev");
-        let lock2 = LockInfo::new("lock-2", "repo-2", "refs/heads/dev", "holder-2", Duration::from_secs(60));
+        let lock2 = LockInfo::new(
+            "lock-2",
+            "repo-2",
+            "refs/heads/dev",
+            "holder-2",
+            Duration::from_secs(60),
+        );
         snapshot.ref_locks.insert(key2.clone(), lock2);
         assert_eq!(snapshot.ref_locks.len(), 2);
         assert!(snapshot.ref_locks.contains_key(&key1));
@@ -974,41 +1042,68 @@ mod tests {
 
         let resp_removed_true = crate::raft::Response::NodeRemoved { found: true };
         let resp_removed_false = crate::raft::Response::NodeRemoved { found: false };
-        match resp_removed_true { crate::raft::Response::NodeRemoved { found } => assert!(found), _ => panic!() }
-        match resp_removed_false { crate::raft::Response::NodeRemoved { found } => assert!(!found), _ => panic!() }
-
-        let resp_state_set = crate::raft::Response::NodeStateSet { found: true };
-        match resp_state_set { crate::raft::Response::NodeStateSet { found } => assert!(found), _ => panic!() }
-
-        let resp_lock_acquired = crate::raft::Response::LockAcquired { lock_id: "lock-123".to_string() };
-        match resp_lock_acquired.clone() {
-            crate::raft::Response::LockAcquired { lock_id } => assert_eq!(lock_id, "lock-123"),
-            _ => panic!()
+        match resp_removed_true {
+            crate::raft::Response::NodeRemoved { found } => assert!(found),
+            _ => panic!(),
+        }
+        match resp_removed_false {
+            crate::raft::Response::NodeRemoved { found } => assert!(!found),
+            _ => panic!(),
         }
 
-        let resp_lock_not_acquired = crate::raft::Response::LockNotAcquired { reason: "held by another".to_string() };
+        let resp_state_set = crate::raft::Response::NodeStateSet { found: true };
+        match resp_state_set {
+            crate::raft::Response::NodeStateSet { found } => assert!(found),
+            _ => panic!(),
+        }
+
+        let resp_lock_acquired = crate::raft::Response::LockAcquired {
+            lock_id: "lock-123".to_string(),
+        };
+        match resp_lock_acquired.clone() {
+            crate::raft::Response::LockAcquired { lock_id } => assert_eq!(lock_id, "lock-123"),
+            _ => panic!(),
+        }
+
+        let resp_lock_not_acquired = crate::raft::Response::LockNotAcquired {
+            reason: "held by another".to_string(),
+        };
         match resp_lock_not_acquired {
-            crate::raft::Response::LockNotAcquired { reason } => assert_eq!(reason, "held by another"),
-            _ => panic!()
+            crate::raft::Response::LockNotAcquired { reason } => {
+                assert_eq!(reason, "held by another")
+            }
+            _ => panic!(),
         }
 
         let resp_lock_released = crate::raft::Response::LockReleased { found: true };
-        match resp_lock_released { crate::raft::Response::LockReleased { found } => assert!(found), _ => panic!() }
+        match resp_lock_released {
+            crate::raft::Response::LockReleased { found } => assert!(found),
+            _ => panic!(),
+        }
 
         let resp_cleanup = crate::raft::Response::LocksCleanedUp { count: 5 };
-        match resp_cleanup { crate::raft::Response::LocksCleanedUp { count } => assert_eq!(count, 5), _ => panic!() }
+        match resp_cleanup {
+            crate::raft::Response::LocksCleanedUp { count } => assert_eq!(count, 5),
+            _ => panic!(),
+        }
 
         let node = ExtendedNodeInfo::new("node-1", "10.0.0.1", 9001, NodeType::Object);
         let req_add = RaftRequest::AddNode { node: node.clone() };
-        match req_add.clone() { RaftRequest::AddNode { node: n } => assert_eq!(n.id, "node-1"), _ => panic!() }
+        match req_add.clone() {
+            RaftRequest::AddNode { node: n } => assert_eq!(n.id, "node-1"),
+            _ => panic!(),
+        }
 
-        let req_remove = RaftRequest::RemoveNode { node_id: "node-1".to_string(), node_type: NodeType::Object };
+        let req_remove = RaftRequest::RemoveNode {
+            node_id: "node-1".to_string(),
+            node_type: NodeType::Object,
+        };
         match req_remove {
             RaftRequest::RemoveNode { node_id, node_type } => {
                 assert_eq!(node_id, "node-1");
                 assert_eq!(node_type, NodeType::Object);
             }
-            _ => panic!()
+            _ => panic!(),
         }
 
         let req_set_state = RaftRequest::SetNodeState {
@@ -1017,31 +1112,58 @@ mod tests {
             state: HashRingNodeState::Draining,
         };
         match req_set_state {
-            RaftRequest::SetNodeState { node_id, node_type, state } => {
+            RaftRequest::SetNodeState {
+                node_id,
+                node_type,
+                state,
+            } => {
                 assert_eq!(node_id, "node-1");
                 assert_eq!(node_type, NodeType::Object);
                 assert_eq!(state, HashRingNodeState::Draining);
             }
-            _ => panic!()
+            _ => panic!(),
         }
 
         let key = RefLockKey::new("repo-1", "refs/heads/main");
-        let lock = LockInfo::new("lock-1", "repo-1", "refs/heads/main", "holder-1", Duration::from_secs(30));
-        let req_acquire = RaftRequest::AcquireLock { key: key.clone(), lock: lock.clone() };
+        let lock = LockInfo::new(
+            "lock-1",
+            "repo-1",
+            "refs/heads/main",
+            "holder-1",
+            Duration::from_secs(30),
+        );
+        let req_acquire = RaftRequest::AcquireLock {
+            key: key.clone(),
+            lock: lock.clone(),
+        };
         match req_acquire {
             RaftRequest::AcquireLock { key: k, lock: l } => {
                 assert_eq!(k.repo_id, "repo-1");
                 assert_eq!(l.lock_id, "lock-1");
             }
-            _ => panic!()
+            _ => panic!(),
         }
 
-        let req_release = RaftRequest::ReleaseLock { lock_id: "lock-1".to_string() };
-        match req_release { RaftRequest::ReleaseLock { lock_id } => assert_eq!(lock_id, "lock-1"), _ => panic!() }
+        let req_release = RaftRequest::ReleaseLock {
+            lock_id: "lock-1".to_string(),
+        };
+        match req_release {
+            RaftRequest::ReleaseLock { lock_id } => assert_eq!(lock_id, "lock-1"),
+            _ => panic!(),
+        }
 
         let key2 = RefLockKey::new("repo-1", "refs/heads/main");
-        let lock2 = LockInfo::new("lock-1", "repo-1", "refs/heads/main", "holder-1", Duration::from_secs(30));
-        let req_ser = RaftRequest::AcquireLock { key: key2, lock: lock2 };
+        let lock2 = LockInfo::new(
+            "lock-1",
+            "repo-1",
+            "refs/heads/main",
+            "holder-1",
+            Duration::from_secs(30),
+        );
+        let req_ser = RaftRequest::AcquireLock {
+            key: key2,
+            lock: lock2,
+        };
         let serialized = serde_json::to_string(&req_ser).unwrap();
         let deserialized: RaftRequest = serde_json::from_str(&serialized).unwrap();
         match deserialized {
@@ -1049,15 +1171,17 @@ mod tests {
                 assert_eq!(k.repo_id, "repo-1");
                 assert_eq!(l.lock_id, "lock-1");
             }
-            _ => panic!()
+            _ => panic!(),
         }
 
-        let resp_ser = crate::raft::Response::LockNotAcquired { reason: "already held".to_string() };
+        let resp_ser = crate::raft::Response::LockNotAcquired {
+            reason: "already held".to_string(),
+        };
         let ser_resp = serde_json::to_string(&resp_ser).unwrap();
         let de_resp: crate::raft::Response = serde_json::from_str(&ser_resp).unwrap();
         match de_resp {
             crate::raft::Response::LockNotAcquired { reason } => assert_eq!(reason, "already held"),
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
@@ -1071,7 +1195,9 @@ mod tests {
             ("obj-1", "10.0.0.3", 9003, NodeType::Object),
             ("fe-1", "10.0.0.4", 9004, NodeType::Frontend),
         ] {
-            let req = RaftRequest::AddNode { node: ExtendedNodeInfo::new(id, addr, port, ntype) };
+            let req = RaftRequest::AddNode {
+                node: ExtendedNodeInfo::new(id, addr, port, ntype),
+            };
             let resp = crate::raft::apply_request(&mut state, &req);
             assert_eq!(resp, crate::raft::Response::NodeAdded);
         }
@@ -1086,9 +1212,16 @@ mod tests {
             ("obj-1", NodeType::Object, HashRingNodeState::Active),
             ("fe-1", NodeType::Frontend, HashRingNodeState::Joining),
         ] {
-            let req = RaftRequest::SetNodeState { node_id: id.to_string(), node_type: ntype, state: new_state };
+            let req = RaftRequest::SetNodeState {
+                node_id: id.to_string(),
+                node_type: ntype,
+                state: new_state,
+            };
             let resp = crate::raft::apply_request(&mut state, &req);
-            assert!(matches!(resp, crate::raft::Response::NodeStateSet { found: true }));
+            assert!(matches!(
+                resp,
+                crate::raft::Response::NodeStateSet { found: true }
+            ));
         }
         let req_not_found = RaftRequest::SetNodeState {
             node_id: "nonexistent".to_string(),
@@ -1096,7 +1229,10 @@ mod tests {
             state: HashRingNodeState::Down,
         };
         let resp = crate::raft::apply_request(&mut state, &req_not_found);
-        assert!(matches!(resp, crate::raft::Response::NodeStateSet { found: false }));
+        assert!(matches!(
+            resp,
+            crate::raft::Response::NodeStateSet { found: false }
+        ));
 
         for (id, ntype) in [
             ("cp-1", NodeType::ControlPlane),
@@ -1104,51 +1240,105 @@ mod tests {
             ("obj-1", NodeType::Object),
             ("fe-1", NodeType::Frontend),
         ] {
-            let req = RaftRequest::RemoveNode { node_id: id.to_string(), node_type: ntype };
+            let req = RaftRequest::RemoveNode {
+                node_id: id.to_string(),
+                node_type: ntype,
+            };
             let resp = crate::raft::apply_request(&mut state, &req);
-            assert!(matches!(resp, crate::raft::Response::NodeRemoved { found: true }));
+            assert!(matches!(
+                resp,
+                crate::raft::Response::NodeRemoved { found: true }
+            ));
         }
         let req_remove_not_found = RaftRequest::RemoveNode {
             node_id: "nonexistent".to_string(),
             node_type: NodeType::Object,
         };
         let resp = crate::raft::apply_request(&mut state, &req_remove_not_found);
-        assert!(matches!(resp, crate::raft::Response::NodeRemoved { found: false }));
+        assert!(matches!(
+            resp,
+            crate::raft::Response::NodeRemoved { found: false }
+        ));
 
         let key = RefLockKey::new("repo-1", "refs/heads/main");
-        let lock = LockInfo::new("lock-1", "repo-1", "refs/heads/main", "holder-1", Duration::from_secs(30));
-        let req_acquire = RaftRequest::AcquireLock { key: key.clone(), lock };
+        let lock = LockInfo::new(
+            "lock-1",
+            "repo-1",
+            "refs/heads/main",
+            "holder-1",
+            Duration::from_secs(30),
+        );
+        let req_acquire = RaftRequest::AcquireLock {
+            key: key.clone(),
+            lock,
+        };
         let resp = crate::raft::apply_request(&mut state, &req_acquire);
         match resp {
             crate::raft::Response::LockAcquired { lock_id } => assert_eq!(lock_id, "lock-1"),
-            _ => panic!("Expected LockAcquired")
+            _ => panic!("Expected LockAcquired"),
         }
 
-        let lock2 = LockInfo::new("lock-2", "repo-1", "refs/heads/main", "holder-2", Duration::from_secs(30));
-        let req_acquire2 = RaftRequest::AcquireLock { key: key.clone(), lock: lock2 };
+        let lock2 = LockInfo::new(
+            "lock-2",
+            "repo-1",
+            "refs/heads/main",
+            "holder-2",
+            Duration::from_secs(30),
+        );
+        let req_acquire2 = RaftRequest::AcquireLock {
+            key: key.clone(),
+            lock: lock2,
+        };
         let resp = crate::raft::apply_request(&mut state, &req_acquire2);
         match resp {
-            crate::raft::Response::LockNotAcquired { reason } => assert!(reason.contains("holder-1")),
-            _ => panic!("Expected LockNotAcquired")
+            crate::raft::Response::LockNotAcquired { reason } => {
+                assert!(reason.contains("holder-1"))
+            }
+            _ => panic!("Expected LockNotAcquired"),
         }
 
-        let req_release = RaftRequest::ReleaseLock { lock_id: "lock-1".to_string() };
+        let req_release = RaftRequest::ReleaseLock {
+            lock_id: "lock-1".to_string(),
+        };
         let resp = crate::raft::apply_request(&mut state, &req_release);
-        assert!(matches!(resp, crate::raft::Response::LockReleased { found: true }));
+        assert!(matches!(
+            resp,
+            crate::raft::Response::LockReleased { found: true }
+        ));
 
-        let req_release_not_found = RaftRequest::ReleaseLock { lock_id: "nonexistent".to_string() };
+        let req_release_not_found = RaftRequest::ReleaseLock {
+            lock_id: "nonexistent".to_string(),
+        };
         let resp = crate::raft::apply_request(&mut state, &req_release_not_found);
-        assert!(matches!(resp, crate::raft::Response::LockReleased { found: false }));
+        assert!(matches!(
+            resp,
+            crate::raft::Response::LockReleased { found: false }
+        ));
 
-        let mut expired_lock = LockInfo::new("lock-exp", "repo-1", "refs/heads/main", "holder-1", Duration::from_millis(1));
+        let mut expired_lock = LockInfo::new(
+            "lock-exp",
+            "repo-1",
+            "refs/heads/main",
+            "holder-1",
+            Duration::from_millis(1),
+        );
         expired_lock.acquired_at_epoch_ms = 0;
         state.ref_locks.insert(key.clone(), expired_lock);
-        let new_lock = LockInfo::new("lock-new", "repo-1", "refs/heads/main", "holder-2", Duration::from_secs(30));
-        let req_acquire_over_expired = RaftRequest::AcquireLock { key: key.clone(), lock: new_lock };
+        let new_lock = LockInfo::new(
+            "lock-new",
+            "repo-1",
+            "refs/heads/main",
+            "holder-2",
+            Duration::from_secs(30),
+        );
+        let req_acquire_over_expired = RaftRequest::AcquireLock {
+            key: key.clone(),
+            lock: new_lock,
+        };
         let resp = crate::raft::apply_request(&mut state, &req_acquire_over_expired);
         match resp {
             crate::raft::Response::LockAcquired { lock_id } => assert_eq!(lock_id, "lock-new"),
-            _ => panic!("Expected LockAcquired")
+            _ => panic!("Expected LockAcquired"),
         }
         assert_eq!(state.ref_locks.get(&key).unwrap().holder_id, "holder-2");
 
@@ -1157,7 +1347,7 @@ mod tests {
         let resp = crate::raft::apply_request(&mut state, &req_cleanup);
         match resp {
             crate::raft::Response::LocksCleanedUp { count } => assert_eq!(count, 0),
-            _ => panic!("Expected LocksCleanedUp")
+            _ => panic!("Expected LocksCleanedUp"),
         }
 
         for i in 0..10 {
@@ -1173,13 +1363,19 @@ mod tests {
             state.ref_locks.insert(k, exp_lock);
         }
         let valid_key = RefLockKey::new("repo-valid", "refs/heads/main");
-        let valid_lock = LockInfo::new("lock-valid", "repo-valid", "refs/heads/main", "holder-valid", Duration::from_secs(3600));
+        let valid_lock = LockInfo::new(
+            "lock-valid",
+            "repo-valid",
+            "refs/heads/main",
+            "holder-valid",
+            Duration::from_secs(3600),
+        );
         state.ref_locks.insert(valid_key.clone(), valid_lock);
 
         let resp = crate::raft::apply_request(&mut state, &req_cleanup);
         match resp {
             crate::raft::Response::LocksCleanedUp { count } => assert_eq!(count, 10),
-            _ => panic!("Expected LocksCleanedUp")
+            _ => panic!("Expected LocksCleanedUp"),
         }
         assert_eq!(state.ref_locks.len(), 1);
         assert!(state.ref_locks.get(&valid_key).is_some());
@@ -1190,7 +1386,9 @@ mod tests {
         let mut state = ClusterStateSnapshot::new();
         assert_eq!(state.version, 0);
 
-        let req = RaftRequest::AddNode { node: ExtendedNodeInfo::new("node-1", "10.0.0.1", 9001, NodeType::Object) };
+        let req = RaftRequest::AddNode {
+            node: ExtendedNodeInfo::new("node-1", "10.0.0.1", 9001, NodeType::Object),
+        };
         crate::raft::apply_request(&mut state, &req);
         assert_eq!(state.version, 1);
 
@@ -1211,30 +1409,58 @@ mod tests {
         crate::raft::apply_request(&mut state, &req);
         assert_eq!(state.version, 10);
 
-        let req = RaftRequest::RemoveNode { node_id: "node-1".to_string(), node_type: NodeType::Object };
+        let req = RaftRequest::RemoveNode {
+            node_id: "node-1".to_string(),
+            node_type: NodeType::Object,
+        };
         crate::raft::apply_request(&mut state, &req);
         assert_eq!(state.version, 11);
 
-        let req = RaftRequest::RemoveNode { node_id: "nonexistent".to_string(), node_type: NodeType::Object };
+        let req = RaftRequest::RemoveNode {
+            node_id: "nonexistent".to_string(),
+            node_type: NodeType::Object,
+        };
         crate::raft::apply_request(&mut state, &req);
         assert_eq!(state.version, 11);
 
         let key = RefLockKey::new("repo-1", "refs/heads/main");
-        let lock = LockInfo::new("lock-1", "repo-1", "refs/heads/main", "holder-1", Duration::from_secs(30));
-        let req = RaftRequest::AcquireLock { key: key.clone(), lock };
+        let lock = LockInfo::new(
+            "lock-1",
+            "repo-1",
+            "refs/heads/main",
+            "holder-1",
+            Duration::from_secs(30),
+        );
+        let req = RaftRequest::AcquireLock {
+            key: key.clone(),
+            lock,
+        };
         crate::raft::apply_request(&mut state, &req);
         assert_eq!(state.version, 12);
 
-        let lock2 = LockInfo::new("lock-2", "repo-1", "refs/heads/main", "holder-2", Duration::from_secs(30));
-        let req = RaftRequest::AcquireLock { key: key.clone(), lock: lock2 };
+        let lock2 = LockInfo::new(
+            "lock-2",
+            "repo-1",
+            "refs/heads/main",
+            "holder-2",
+            Duration::from_secs(30),
+        );
+        let req = RaftRequest::AcquireLock {
+            key: key.clone(),
+            lock: lock2,
+        };
         crate::raft::apply_request(&mut state, &req);
         assert_eq!(state.version, 12);
 
-        let req = RaftRequest::ReleaseLock { lock_id: "lock-1".to_string() };
+        let req = RaftRequest::ReleaseLock {
+            lock_id: "lock-1".to_string(),
+        };
         crate::raft::apply_request(&mut state, &req);
         assert_eq!(state.version, 13);
 
-        let req = RaftRequest::ReleaseLock { lock_id: "nonexistent".to_string() };
+        let req = RaftRequest::ReleaseLock {
+            lock_id: "nonexistent".to_string(),
+        };
         crate::raft::apply_request(&mut state, &req);
         assert_eq!(state.version, 13);
 
@@ -1243,7 +1469,13 @@ mod tests {
         assert_eq!(state.version, 13);
 
         let key2 = RefLockKey::new("repo-2", "refs/heads/main");
-        let mut expired = LockInfo::new("lock-exp", "repo-2", "refs/heads/main", "holder", Duration::from_millis(1));
+        let mut expired = LockInfo::new(
+            "lock-exp",
+            "repo-2",
+            "refs/heads/main",
+            "holder",
+            Duration::from_millis(1),
+        );
         expired.acquired_at_epoch_ms = 0;
         state.ref_locks.insert(key2, expired);
         crate::raft::apply_request(&mut state, &req);
@@ -1253,22 +1485,71 @@ mod tests {
     #[test]
     fn test_control_plane_error_variants() {
         let errors_and_checks: Vec<(ControlPlaneError, &str, tonic::Code)> = vec![
-            (ControlPlaneError::NotLeader(Some("node-2".to_string())), "node-2", tonic::Code::FailedPrecondition),
-            (ControlPlaneError::NotLeader(None), "none", tonic::Code::FailedPrecondition),
-            (ControlPlaneError::Raft("raft failure".to_string()), "raft", tonic::Code::Internal),
-            (ControlPlaneError::Storage("storage error".to_string()), "storage", tonic::Code::Internal),
-            (ControlPlaneError::NodeNotFound("node-123".to_string()), "node-123", tonic::Code::NotFound),
-            (ControlPlaneError::LockNotFound("lock-456".to_string()), "lock-456", tonic::Code::NotFound),
-            (ControlPlaneError::LockHeld("holder-789".to_string()), "holder-789", tonic::Code::AlreadyExists),
-            (ControlPlaneError::LockExpired, "expired", tonic::Code::FailedPrecondition),
-            (ControlPlaneError::InvalidRequest("bad request".to_string()), "bad request", tonic::Code::InvalidArgument),
-            (ControlPlaneError::Serialization("ser failed".to_string()), "ser", tonic::Code::Internal),
-            (ControlPlaneError::Internal("internal".to_string()), "internal", tonic::Code::Internal),
+            (
+                ControlPlaneError::NotLeader(Some("node-2".to_string())),
+                "node-2",
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                ControlPlaneError::NotLeader(None),
+                "none",
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                ControlPlaneError::Raft("raft failure".to_string()),
+                "raft",
+                tonic::Code::Internal,
+            ),
+            (
+                ControlPlaneError::Storage("storage error".to_string()),
+                "storage",
+                tonic::Code::Internal,
+            ),
+            (
+                ControlPlaneError::NodeNotFound("node-123".to_string()),
+                "node-123",
+                tonic::Code::NotFound,
+            ),
+            (
+                ControlPlaneError::LockNotFound("lock-456".to_string()),
+                "lock-456",
+                tonic::Code::NotFound,
+            ),
+            (
+                ControlPlaneError::LockHeld("holder-789".to_string()),
+                "holder-789",
+                tonic::Code::AlreadyExists,
+            ),
+            (
+                ControlPlaneError::LockExpired,
+                "expired",
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                ControlPlaneError::InvalidRequest("bad request".to_string()),
+                "bad request",
+                tonic::Code::InvalidArgument,
+            ),
+            (
+                ControlPlaneError::Serialization("ser failed".to_string()),
+                "ser",
+                tonic::Code::Internal,
+            ),
+            (
+                ControlPlaneError::Internal("internal".to_string()),
+                "internal",
+                tonic::Code::Internal,
+            ),
         ];
 
         for (err, expected_msg, expected_code) in errors_and_checks {
             let display = format!("{}", err);
-            assert!(display.to_lowercase().contains(expected_msg), "Expected '{}' in '{}'", expected_msg, display);
+            assert!(
+                display.to_lowercase().contains(expected_msg),
+                "Expected '{}' in '{}'",
+                expected_msg,
+                display
+            );
             let status: tonic::Status = err.into();
             assert_eq!(status.code(), expected_code);
         }
@@ -1284,7 +1565,7 @@ mod tests {
         let err2: ControlPlaneError = io_err2.into();
         match err2 {
             ControlPlaneError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
-            _ => panic!("Expected Io variant")
+            _ => panic!("Expected Io variant"),
         }
 
         let hashring_err = gitstratum_hashring::HashRingError::EmptyRing;
@@ -1299,13 +1580,22 @@ mod tests {
 
         use bincode::Options;
         let config = bincode::DefaultOptions::new().with_fixint_encoding();
-        let bincode_err = config.serialize::<u8>(&0u8).and_then(|_| config.deserialize::<u64>(&[0u8; 1])).unwrap_err();
+        let bincode_err = config
+            .serialize::<u8>(&0u8)
+            .and_then(|_| config.deserialize::<u64>(&[0u8; 1]))
+            .unwrap_err();
         let err: ControlPlaneError = bincode_err.into();
-        match err { ControlPlaneError::Serialization(msg) => assert!(!msg.is_empty()), _ => panic!() }
+        match err {
+            ControlPlaneError::Serialization(msg) => assert!(!msg.is_empty()),
+            _ => panic!(),
+        }
 
         let json_err = serde_json::from_str::<String>("invalid json").unwrap_err();
         let err: ControlPlaneError = json_err.into();
-        match err { ControlPlaneError::Serialization(msg) => assert!(!msg.is_empty()), _ => panic!() }
+        match err {
+            ControlPlaneError::Serialization(msg) => assert!(!msg.is_empty()),
+            _ => panic!(),
+        }
 
         let debug_err = ControlPlaneError::NotLeader(Some("leader-1".to_string()));
         let debug_str = format!("{:?}", debug_err);
@@ -1346,7 +1636,12 @@ mod tests {
 
     #[test]
     fn test_node_type_serialization() {
-        for node_type in [NodeType::ControlPlane, NodeType::Metadata, NodeType::Object, NodeType::Frontend] {
+        for node_type in [
+            NodeType::ControlPlane,
+            NodeType::Metadata,
+            NodeType::Object,
+            NodeType::Frontend,
+        ] {
             let serialized = serde_json::to_string(&node_type).unwrap();
             let deserialized: NodeType = serde_json::from_str(&serialized).unwrap();
             assert_eq!(node_type, deserialized);

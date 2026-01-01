@@ -97,7 +97,10 @@ fn test_full_cluster_resource_generation_and_naming() {
     let cp_sts = build_control_plane_statefulset(&cluster);
     assert!(cp_sts.metadata.name.is_some());
     assert!(cp_sts.spec.is_some());
-    assert_eq!(cp_sts.metadata.name.as_ref().unwrap(), &format!("{}-control-plane", name));
+    assert_eq!(
+        cp_sts.metadata.name.as_ref().unwrap(),
+        &format!("{}-control-plane", name)
+    );
 
     let cp_svc = build_control_plane_service(&cluster);
     assert!(cp_svc.metadata.name.is_some());
@@ -112,7 +115,10 @@ fn test_full_cluster_resource_generation_and_naming() {
 
     let meta_sts = build_metadata_statefulset(&cluster);
     assert!(meta_sts.metadata.name.is_some());
-    assert_eq!(meta_sts.metadata.name.as_ref().unwrap(), &format!("{}-metadata", name));
+    assert_eq!(
+        meta_sts.metadata.name.as_ref().unwrap(),
+        &format!("{}-metadata", name)
+    );
 
     let meta_svc = build_metadata_service(&cluster);
     assert!(meta_svc.metadata.name.is_some());
@@ -127,7 +133,10 @@ fn test_full_cluster_resource_generation_and_naming() {
 
     let obj_sts = build_object_statefulset(&cluster);
     assert!(obj_sts.metadata.name.is_some());
-    assert_eq!(obj_sts.metadata.name.as_ref().unwrap(), &format!("{}-object", name));
+    assert_eq!(
+        obj_sts.metadata.name.as_ref().unwrap(),
+        &format!("{}-object", name)
+    );
     let obj_spec = obj_sts.spec.as_ref().unwrap();
     assert_eq!(obj_spec.pod_management_policy, Some("Parallel".to_string()));
 
@@ -139,7 +148,10 @@ fn test_full_cluster_resource_generation_and_naming() {
 
     let fe_deploy = build_frontend_deployment(&cluster);
     assert!(fe_deploy.metadata.name.is_some());
-    assert_eq!(fe_deploy.metadata.name.as_ref().unwrap(), &format!("{}-frontend", name));
+    assert_eq!(
+        fe_deploy.metadata.name.as_ref().unwrap(),
+        &format!("{}-frontend", name)
+    );
 
     let fe_svc = build_frontend_service(&cluster);
     assert!(fe_svc.metadata.name.is_some());
@@ -153,8 +165,22 @@ fn test_full_cluster_resource_generation_and_naming() {
     assert_eq!(hpa_spec.min_replicas, Some(2));
     assert_eq!(hpa_spec.max_replicas, 50);
     let behavior = hpa_spec.behavior.as_ref().unwrap();
-    assert_eq!(behavior.scale_up.as_ref().unwrap().stabilization_window_seconds, Some(30));
-    assert_eq!(behavior.scale_down.as_ref().unwrap().stabilization_window_seconds, Some(300));
+    assert_eq!(
+        behavior
+            .scale_up
+            .as_ref()
+            .unwrap()
+            .stabilization_window_seconds,
+        Some(30)
+    );
+    assert_eq!(
+        behavior
+            .scale_down
+            .as_ref()
+            .unwrap()
+            .stabilization_window_seconds,
+        Some(300)
+    );
 }
 
 #[test]

@@ -618,8 +618,12 @@ mod tests {
         .iter()
         .enumerate()
         {
-            let mut node =
-                ExtendedNodeInfo::new(format!("node-{}", i), format!("10.0.0.{}", i), 9001 + i as u16, NodeType::Object);
+            let mut node = ExtendedNodeInfo::new(
+                format!("node-{}", i),
+                format!("10.0.0.{}", i),
+                9001 + i as u16,
+                NodeType::Object,
+            );
             node.state = *state;
             nodes_with_states.push(node);
         }
@@ -632,19 +636,39 @@ mod tests {
             version: 1,
         };
         assert_eq!(mixed_response.object_nodes.len(), 4);
-        assert_eq!(mixed_response.object_nodes[0].state, HashRingNodeState::Active);
-        assert_eq!(mixed_response.object_nodes[1].state, HashRingNodeState::Joining);
-        assert_eq!(mixed_response.object_nodes[2].state, HashRingNodeState::Draining);
-        assert_eq!(mixed_response.object_nodes[3].state, HashRingNodeState::Down);
+        assert_eq!(
+            mixed_response.object_nodes[0].state,
+            HashRingNodeState::Active
+        );
+        assert_eq!(
+            mixed_response.object_nodes[1].state,
+            HashRingNodeState::Joining
+        );
+        assert_eq!(
+            mixed_response.object_nodes[2].state,
+            HashRingNodeState::Draining
+        );
+        assert_eq!(
+            mixed_response.object_nodes[3].state,
+            HashRingNodeState::Down
+        );
 
         let lock_combinations = [
             (true, Some("lock-1".to_string()), None),
             (false, None, Some("error".to_string())),
             (false, None, None),
             (true, None, None),
-            (false, Some("lock-2".to_string()), Some("unexpected".to_string())),
+            (
+                false,
+                Some("lock-2".to_string()),
+                Some("unexpected".to_string()),
+            ),
             (true, Some("a".repeat(1000)), None),
-            (false, None, Some("Error: \u{1F4A5} something went wrong".to_string())),
+            (
+                false,
+                None,
+                Some("Error: \u{1F4A5} something went wrong".to_string()),
+            ),
             (false, Some(String::new()), Some(String::new())),
         ];
 
@@ -827,12 +851,14 @@ mod tests {
         let result = unreachable_pool.get_client().await;
         assert!(result.is_err());
 
-        let pool_with_bad_leader = ControlPlaneClientPool::new(vec!["http://127.0.0.1:59993".to_string()]);
+        let pool_with_bad_leader =
+            ControlPlaneClientPool::new(vec!["http://127.0.0.1:59993".to_string()]);
         pool_with_bad_leader.set_leader("http://127.0.0.1:59994".to_string());
         let result = pool_with_bad_leader.get_client().await;
         assert!(result.is_err());
 
-        let pool_invalid_leader = ControlPlaneClientPool::new(vec!["http://127.0.0.1:59995".to_string()]);
+        let pool_invalid_leader =
+            ControlPlaneClientPool::new(vec!["http://127.0.0.1:59995".to_string()]);
         pool_invalid_leader.set_leader("invalid-uri".to_string());
         let result = pool_invalid_leader.get_client().await;
         assert!(result.is_err());

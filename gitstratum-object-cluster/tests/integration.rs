@@ -141,7 +141,9 @@ async fn test_various_blob_sizes_and_compression() {
 async fn test_grpc_service_full_workflow() {
     use gitstratum_object_cluster::ObjectServiceImpl;
     use gitstratum_proto::object_service_server::ObjectService;
-    use gitstratum_proto::{DeleteBlobRequest, GetBlobRequest, GetStatsRequest, HasBlobRequest, PutBlobRequest};
+    use gitstratum_proto::{
+        DeleteBlobRequest, GetBlobRequest, GetStatsRequest, HasBlobRequest, PutBlobRequest,
+    };
     use tonic::Request;
 
     let (store, _dir) = create_test_store_async().await;
@@ -157,28 +159,38 @@ async fn test_grpc_service_full_workflow() {
         compressed: false,
     };
 
-    let has_request = Request::new(HasBlobRequest { oid: Some(proto_oid.clone()) });
+    let has_request = Request::new(HasBlobRequest {
+        oid: Some(proto_oid.clone()),
+    });
     let has_response = server.has_blob(has_request).await.unwrap();
     assert!(!has_response.into_inner().exists);
 
     let nonexistent_oid = gitstratum_proto::Oid {
         bytes: Oid::hash(b"nonexistent").as_bytes().to_vec(),
     };
-    let get_nonexistent = Request::new(GetBlobRequest { oid: Some(nonexistent_oid) });
+    let get_nonexistent = Request::new(GetBlobRequest {
+        oid: Some(nonexistent_oid),
+    });
     let get_response = server.get_blob(get_nonexistent).await.unwrap();
     let inner = get_response.into_inner();
     assert!(!inner.found);
     assert!(inner.blob.is_none());
 
-    let put_request = Request::new(PutBlobRequest { blob: Some(proto_blob.clone()) });
+    let put_request = Request::new(PutBlobRequest {
+        blob: Some(proto_blob.clone()),
+    });
     let put_response = server.put_blob(put_request).await.unwrap();
     assert!(put_response.into_inner().success);
 
-    let has_request = Request::new(HasBlobRequest { oid: Some(proto_oid.clone()) });
+    let has_request = Request::new(HasBlobRequest {
+        oid: Some(proto_oid.clone()),
+    });
     let has_response = server.has_blob(has_request).await.unwrap();
     assert!(has_response.into_inner().exists);
 
-    let get_request = Request::new(GetBlobRequest { oid: Some(proto_oid.clone()) });
+    let get_request = Request::new(GetBlobRequest {
+        oid: Some(proto_oid.clone()),
+    });
     let get_response = server.get_blob(get_request).await.unwrap();
     let inner = get_response.into_inner();
     assert!(inner.found);
@@ -188,11 +200,15 @@ async fn test_grpc_service_full_workflow() {
     let stats_response = server.get_stats(stats_request).await.unwrap();
     assert_eq!(stats_response.into_inner().total_blobs, 1);
 
-    let delete_request = Request::new(DeleteBlobRequest { oid: Some(proto_oid.clone()) });
+    let delete_request = Request::new(DeleteBlobRequest {
+        oid: Some(proto_oid.clone()),
+    });
     let delete_response = server.delete_blob(delete_request).await.unwrap();
     assert!(delete_response.into_inner().success);
 
-    let has_after_delete = Request::new(HasBlobRequest { oid: Some(proto_oid) });
+    let has_after_delete = Request::new(HasBlobRequest {
+        oid: Some(proto_oid),
+    });
     let has_response = server.has_blob(has_after_delete).await.unwrap();
     assert!(!has_response.into_inner().exists);
 }

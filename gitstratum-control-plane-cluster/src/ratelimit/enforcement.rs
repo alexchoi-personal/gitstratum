@@ -462,8 +462,14 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         enforcer_selective.consume(Some("client2"), None, 1);
         enforcer_selective.cleanup_stale(Duration::from_millis(30));
-        assert!(!enforcer_selective.state().per_client.contains_key("client1"));
-        assert!(enforcer_selective.state().per_client.contains_key("client2"));
+        assert!(!enforcer_selective
+            .state()
+            .per_client
+            .contains_key("client1"));
+        assert!(enforcer_selective
+            .state()
+            .per_client
+            .contains_key("client2"));
 
         let mut enforcer_refill = RateLimitEnforcer::new().with_client_limits(10, 1000.0);
         enforcer_refill.consume(Some("client1"), None, 10);

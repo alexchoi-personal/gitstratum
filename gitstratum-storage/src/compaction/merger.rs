@@ -197,10 +197,10 @@ pub struct CompactionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{BucketStoreConfig, CompactionConfig};
     use bytes::Bytes;
     use gitstratum_core::Oid;
     use tempfile::TempDir;
-    use crate::config::{BucketStoreConfig, CompactionConfig};
 
     fn create_test_oid(seed: u8) -> Oid {
         let mut bytes = [seed; 32];
@@ -323,7 +323,10 @@ mod tests {
 
         for i in 0..5 {
             let oid = create_test_oid(i);
-            store.put(oid, Bytes::from(format!("value_{}", i))).await.unwrap();
+            store
+                .put(oid, Bytes::from(format!("value_{}", i)))
+                .await
+                .unwrap();
         }
 
         let compactor = Compactor::new(store.clone());
@@ -341,7 +344,10 @@ mod tests {
 
         for i in 0..10 {
             let oid = create_test_oid(i);
-            store.put(oid, Bytes::from(format!("value_{}", i))).await.unwrap();
+            store
+                .put(oid, Bytes::from(format!("value_{}", i)))
+                .await
+                .unwrap();
         }
 
         for i in 0..5 {

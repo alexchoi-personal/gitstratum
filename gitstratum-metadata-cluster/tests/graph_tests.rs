@@ -50,7 +50,10 @@ fn setup_linear_history(store: &MetadataStore, repo_id: &RepoId, count: usize) -
     commits
 }
 
-fn setup_diamond_graph(store: &MetadataStore, repo_id: &RepoId) -> (Commit, Commit, Commit, Commit) {
+fn setup_diamond_graph(
+    store: &MetadataStore,
+    repo_id: &RepoId,
+) -> (Commit, Commit, Commit, Commit) {
     let tree = Oid::hash(b"tree");
 
     let base = create_commit_with_timestamp(tree, vec![], "Base", 1000);
@@ -76,7 +79,13 @@ async fn test_walk_commits_comprehensive() {
 
     let commits = setup_linear_history(&store, &repo_id, 10);
 
-    let mut walker = walk_commits(store.clone(), repo_id.clone(), vec![commits[9].oid], vec![], None);
+    let mut walker = walk_commits(
+        store.clone(),
+        repo_id.clone(),
+        vec![commits[9].oid],
+        vec![],
+        None,
+    );
     let mut walked = Vec::new();
     while let Some(result) = walker.next().await {
         walked.push(result.unwrap());
@@ -85,14 +94,26 @@ async fn test_walk_commits_comprehensive() {
     assert_eq!(walked[0].oid, commits[9].oid);
     assert_eq!(walked[9].oid, commits[0].oid);
 
-    let mut walker = walk_commits(store.clone(), repo_id.clone(), vec![commits[9].oid], vec![], Some(3));
+    let mut walker = walk_commits(
+        store.clone(),
+        repo_id.clone(),
+        vec![commits[9].oid],
+        vec![],
+        Some(3),
+    );
     let mut walked = Vec::new();
     while let Some(result) = walker.next().await {
         walked.push(result.unwrap());
     }
     assert_eq!(walked.len(), 3);
 
-    let mut walker = walk_commits(store.clone(), repo_id.clone(), vec![commits[9].oid], vec![commits[5].oid], None);
+    let mut walker = walk_commits(
+        store.clone(),
+        repo_id.clone(),
+        vec![commits[9].oid],
+        vec![commits[5].oid],
+        None,
+    );
     let mut walked = Vec::new();
     while let Some(result) = walker.next().await {
         walked.push(result.unwrap());
@@ -106,13 +127,31 @@ async fn test_walk_commits_comprehensive() {
     assert!(walker.next().await.is_none());
 
     let nonexistent = Oid::hash(b"nonexistent");
-    let mut walker = walk_commits(store.clone(), repo_id.clone(), vec![nonexistent], vec![], None);
+    let mut walker = walk_commits(
+        store.clone(),
+        repo_id.clone(),
+        vec![nonexistent],
+        vec![],
+        None,
+    );
     assert!(walker.next().await.is_none());
 
-    let mut walker = walk_commits(store.clone(), repo_id.clone(), vec![commits[2].oid], vec![commits[2].oid], None);
+    let mut walker = walk_commits(
+        store.clone(),
+        repo_id.clone(),
+        vec![commits[2].oid],
+        vec![commits[2].oid],
+        None,
+    );
     assert!(walker.next().await.is_none());
 
-    let mut walker = walk_commits(store.clone(), repo_id.clone(), vec![commits[2].oid, commits[2].oid, commits[2].oid], vec![], None);
+    let mut walker = walk_commits(
+        store.clone(),
+        repo_id.clone(),
+        vec![commits[2].oid, commits[2].oid, commits[2].oid],
+        vec![],
+        None,
+    );
     let mut walked = Vec::new();
     while let Some(result) = walker.next().await {
         walked.push(result.unwrap());
@@ -163,28 +202,52 @@ async fn test_walk_commits_async_api() {
     let commits = setup_linear_history(&store, &repo_id, 10);
 
     let walked = gitstratum_metadata_cluster::walk_commits_async(
-        store.clone(), repo_id.clone(), vec![commits[9].oid], vec![], None,
-    ).await.unwrap();
+        store.clone(),
+        repo_id.clone(),
+        vec![commits[9].oid],
+        vec![],
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(walked.len(), 10);
     assert_eq!(walked[0].oid, commits[9].oid);
     assert_eq!(walked[9].oid, commits[0].oid);
 
     let walked = gitstratum_metadata_cluster::walk_commits_async(
-        store.clone(), repo_id.clone(), vec![commits[9].oid], vec![], Some(3),
-    ).await.unwrap();
+        store.clone(),
+        repo_id.clone(),
+        vec![commits[9].oid],
+        vec![],
+        Some(3),
+    )
+    .await
+    .unwrap();
     assert_eq!(walked.len(), 3);
 
     let walked = gitstratum_metadata_cluster::walk_commits_async(
-        store.clone(), repo_id.clone(), vec![commits[9].oid], vec![commits[5].oid], None,
-    ).await.unwrap();
+        store.clone(),
+        repo_id.clone(),
+        vec![commits[9].oid],
+        vec![commits[5].oid],
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(walked.len(), 4);
     for commit in &walked {
         assert_ne!(commit.oid, commits[5].oid);
     }
 
     let walked = gitstratum_metadata_cluster::walk_commits_async(
-        store.clone(), repo_id, vec![], vec![], None,
-    ).await.unwrap();
+        store.clone(),
+        repo_id,
+        vec![],
+        vec![],
+        None,
+    )
+    .await
+    .unwrap();
     assert!(walked.is_empty());
 }
 
@@ -249,7 +312,8 @@ fn test_find_merge_base_fork_scenarios() {
     let result = find_merge_base(&store, &repo_id, &[branch1.oid, branch2.oid]).unwrap();
     assert_eq!(result, Some(base.oid));
 
-    let result = find_merge_base(&store, &repo_id, &[branch1.oid, branch2.oid, branch3.oid]).unwrap();
+    let result =
+        find_merge_base(&store, &repo_id, &[branch1.oid, branch2.oid, branch3.oid]).unwrap();
     assert_eq!(result, Some(base.oid));
 }
 
@@ -326,14 +390,16 @@ fn test_find_merge_base_deep_and_asymmetric() {
 
     let mut prev_a = base.oid;
     for i in 0..20 {
-        let c = create_commit_with_timestamp(tree, vec![prev_a], &format!("A{}", i), 4000 + i as i64);
+        let c =
+            create_commit_with_timestamp(tree, vec![prev_a], &format!("A{}", i), 4000 + i as i64);
         store.put_commit(&repo_id, &c).unwrap();
         prev_a = c.oid;
     }
 
     let mut prev_b = base.oid;
     for i in 0..10 {
-        let c = create_commit_with_timestamp(tree, vec![prev_b], &format!("B{}", i), 5000 + i as i64);
+        let c =
+            create_commit_with_timestamp(tree, vec![prev_b], &format!("B{}", i), 5000 + i as i64);
         store.put_commit(&repo_id, &c).unwrap();
         prev_b = c.oid;
     }

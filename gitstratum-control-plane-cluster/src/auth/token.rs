@@ -208,8 +208,7 @@ mod tests {
         assert!(debug_str.contains("Claims"));
         assert!(debug_str.contains("user"));
 
-        let clone_claims =
-            Claims::new("user", vec!["admin".to_string()], Duration::from_secs(100));
+        let clone_claims = Claims::new("user", vec!["admin".to_string()], Duration::from_secs(100));
         let cloned = clone_claims.clone();
         assert_eq!(clone_claims.sub, cloned.sub);
         assert_eq!(clone_claims.exp, cloned.exp);
@@ -306,7 +305,11 @@ mod tests {
     #[test]
     fn test_token_validation_error_variants() {
         let variants = [
-            (TokenValidationError::EmptyToken, "empty token", "EmptyToken"),
+            (
+                TokenValidationError::EmptyToken,
+                "empty token",
+                "EmptyToken",
+            ),
             (
                 TokenValidationError::InvalidFormat,
                 "invalid token format",
