@@ -119,30 +119,33 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
     }
 
     pub fn update_session_status(&self, session_id: &str, status: RepairSessionStatus) -> bool {
-        if let Some(mut session) = self.sessions.get_mut(session_id) {
-            debug!(
-                session_id = %session_id,
-                old_status = ?session.status(),
-                new_status = ?status,
-                "Updating session status"
-            );
-            session.set_status(status);
-
-            if status.is_terminal() {
-                let mut stats = self.stats.write();
-                match status {
-                    RepairSessionStatus::Completed => stats.sessions_completed += 1,
-                    RepairSessionStatus::Failed => stats.sessions_failed += 1,
-                    RepairSessionStatus::Cancelled => stats.sessions_cancelled += 1,
-                    _ => {}
-                }
-                stats.active_sessions = self.active_session_count() as u64;
+        let updated = {
+            if let Some(mut session) = self.sessions.get_mut(session_id) {
+                debug!(
+                    session_id = %session_id,
+                    old_status = ?session.status(),
+                    new_status = ?status,
+                    "Updating session status"
+                );
+                session.set_status(status);
+                true
+            } else {
+                false
             }
+        };
 
-            true
-        } else {
-            false
+        if updated && status.is_terminal() {
+            let mut stats = self.stats.write();
+            match status {
+                RepairSessionStatus::Completed => stats.sessions_completed += 1,
+                RepairSessionStatus::Failed => stats.sessions_failed += 1,
+                RepairSessionStatus::Cancelled => stats.sessions_cancelled += 1,
+                _ => {}
+            }
+            stats.active_sessions = self.active_session_count() as u64;
         }
+
+        updated
     }
 
     pub fn start_session(&self, session_id: &str) -> bool {
