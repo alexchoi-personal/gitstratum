@@ -2765,15 +2765,15 @@ mod tests {
         let rx2 = tx.subscribe();
         let rx3 = tx.subscribe();
 
-        assert_eq!(*rx1.borrow(), false);
-        assert_eq!(*rx2.borrow(), false);
-        assert_eq!(*rx3.borrow(), false);
+        assert!(!*rx1.borrow());
+        assert!(!*rx2.borrow());
+        assert!(!*rx3.borrow());
 
         tx.send(true).unwrap();
 
-        assert_eq!(*rx1.borrow(), true);
-        assert_eq!(*rx2.borrow(), true);
-        assert_eq!(*rx3.borrow(), true);
+        assert!(*rx1.borrow());
+        assert!(*rx2.borrow());
+        assert!(*rx3.borrow());
     }
 
     #[test]
