@@ -52,7 +52,7 @@ impl Compactor {
         let mut bytes_to_reclaim: u64 = 0;
 
         for bucket_id in 0..bucket_count {
-            let bucket = self.store.read_bucket(bucket_id)?;
+            let bucket = self.store.read_bucket(bucket_id).await?;
             let count = { bucket.header.count } as usize;
 
             for entry_idx in 0..count {
@@ -95,8 +95,8 @@ impl Compactor {
         let mut entries_moved = 0u64;
 
         for live in &live_entries {
-            let mut source_file = file_manager.open_data_file(live.file_id)?;
-            let value = source_file.read_at(live.offset, live.size as usize)?;
+            let source_file = file_manager.open_data_file(live.file_id)?;
+            let value = source_file.read_at(live.offset, live.size as usize).await?;
 
             let mut oid_bytes = [0u8; 32];
             oid_bytes[16..32].copy_from_slice(&live.oid_suffix);
@@ -108,7 +108,7 @@ impl Compactor {
                 .as_micros() as u64;
             let record = DataRecord::new(oid, value, timestamp)?;
 
-            let new_offset = target_file.append(&record)?;
+            let new_offset = target_file.append(&record).await?;
 
             let new_entry = CompactEntry::new(
                 &oid,
@@ -126,25 +126,29 @@ impl Compactor {
             entries_moved += 1;
         }
 
-        target_file.sync()?;
+        target_file.sync().await?;
 
         for (bucket_id, updates) in &bucket_updates {
-            let mut bucket = self.store.read_bucket(*bucket_id)?;
+            let mut bucket = self.store.read_bucket(*bucket_id).await?;
 
             for (entry_idx, new_entry) in updates {
                 bucket.entries[*entry_idx] = *new_entry;
             }
 
-            self.store.write_bucket(*bucket_id, &bucket)?;
+            self.store.write_bucket(*bucket_id, &bucket).await?;
         }
 
         let mut entries_purged = 0u64;
         let mut buckets_to_update: HashMap<u32, DiskBucket> = HashMap::new();
 
+        let unique_bucket_ids: HashSet<u32> = deleted_entries.iter().map(|(id, _)| *id).collect();
+        for bucket_id in unique_bucket_ids {
+            let bucket = self.store.read_bucket(bucket_id).await?;
+            buckets_to_update.insert(bucket_id, bucket);
+        }
+
         for (bucket_id, entry_idx) in deleted_entries.iter().rev() {
-            let bucket = buckets_to_update
-                .entry(*bucket_id)
-                .or_insert_with(|| self.store.read_bucket(*bucket_id).unwrap());
+            let bucket = buckets_to_update.get_mut(bucket_id).unwrap();
 
             let count = { bucket.header.count } as usize;
             if *entry_idx < count {
@@ -159,7 +163,7 @@ impl Compactor {
         }
 
         for (bucket_id, bucket) in &buckets_to_update {
-            self.store.write_bucket(*bucket_id, bucket)?;
+            self.store.write_bucket(*bucket_id, bucket).await?;
             self.store.bucket_index().decrement_entry_count();
         }
 
@@ -215,7 +219,6 @@ mod tests {
             data_dir: dir.to_path_buf(),
             max_data_file_size: 1024 * 1024,
             bucket_count: 64,
-            sync_interval: std::time::Duration::ZERO,
             bucket_cache_size: 16,
             io_queue_depth: 4,
             io_queue_count: 1,

@@ -41,6 +41,9 @@ pub enum BucketStoreError {
     #[error("store is closed")]
     StoreClosed,
 
+    #[error("io completion channel closed")]
+    IoCompletion,
+
     #[error("recovery failed: {0}")]
     RecoveryFailed(String),
 

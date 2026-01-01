@@ -224,22 +224,29 @@ Cache size is configurable. More cache = more buckets in RAM = fewer disk reads.
 
 ## Durability
 
-BucketStore uses configurable sync behavior via `sync_interval`:
+BucketStore uses **group commit** to batch fsync operations for better performance while bounding data loss:
 
-- **`sync_interval = 0`**: Sync on every write. Maximum durability, lower throughput.
-- **`sync_interval = 1s`** (default): Background sync every second. Bounds data loss to ~1 second of writes.
+- **`group_commit = None`**: Sync on every write. Maximum durability, lower throughput.
+- **`group_commit = Some(config)`** (default): Sync after N writes OR when oldest unsynced write exceeds age threshold.
 
 ```rust
-// Sync on every write (production with high durability needs)
-config.sync_interval = Duration::ZERO;
+// Sync on every write (maximum durability)
+config.group_commit = None;
 
-// Background sync every second (default, relies on replication)
-config.sync_interval = Duration::from_secs(1);
+// Group commit: sync after 100 writes or 1 second (default)
+config.group_commit = Some(GroupCommitConfig {
+    max_pending_writes: 100,
+    max_write_age: Duration::from_secs(1),
+});
 ```
 
-The background sync task runs on a separate tokio task and flushes both data files and bucket files at the configured interval. Call `store.start_background_sync()` after opening the store.
+Group commit checks two conditions after each write:
+1. **Pending write count**: If pending writes >= `max_pending_writes`, sync immediately
+2. **Write age**: If oldest unsynced write is older than `max_write_age`, sync immediately
 
-**Trade-off**: With non-zero `sync_interval`, a crash can lose up to one interval's worth of writes. The design assumes replication across Object nodes provides durability—lost data can be recovered from replicas.
+This batches multiple writes into a single fsync while ensuring data loss is bounded. No background task is needed—the sync decision is made inline after each put().
+
+**Trade-off**: With group commit enabled, a crash can lose up to `max_write_age` of writes (or `max_pending_writes` operations, whichever triggers first). The design assumes replication across Object nodes provides durability—lost data can be recovered from replicas.
 
 ## Why This Design
 

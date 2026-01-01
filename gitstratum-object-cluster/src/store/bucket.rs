@@ -158,7 +158,6 @@ mod tests {
             data_dir: dir.to_path_buf(),
             max_data_file_size: 1024 * 1024,
             bucket_count: 64,
-            sync_writes: true,
             bucket_cache_size: 16,
             io_queue_depth: 4,
             io_queue_count: 1,

@@ -39,6 +39,23 @@ Each cluster scales independently:
 - **Metadata** scales with repository count.
 - **Object** scales with storage capacity.
 
+## Crate Structure
+
+```
+gitstratum-cluster/
+├── gitstratum-core/             # Core types: Oid, Repo, object parsing
+├── gitstratum-proto/            # gRPC protocol definitions
+├── gitstratum-hashring/         # Consistent hashing implementation
+├── gitstratum-metrics/          # Metrics collection and export
+├── gitstratum-storage/          # BucketStore: high-performance object storage
+├── gitstratum-control-plane/    # Control plane: Raft, membership, config
+├── gitstratum-metadata/         # Metadata: refs, graph, permissions
+├── gitstratum-object/           # Object: blob storage, pack cache, replication
+├── gitstratum-frontend/         # Frontend: Git protocol, pack assembly
+├── gitstratum-operator/         # Kubernetes operator
+└── gitstratum-lfs/              # Git LFS support
+```
+
 ## Request Flow
 
 ### Clone
@@ -136,12 +153,25 @@ Frontend nodes are stateless and interchangeable. They handle:
 - Token validation (JWT signatures checked locally)
 - Rate limiting (local sliding window)
 - Pack assembly and streaming
+- Request coalescing (multiple identical requests share one backend call)
 
 A load balancer distributes connections. If a node dies, traffic routes to others. No data is lost.
 
 Frontend caches two things from other clusters:
 - **SSH keys** from Metadata (synced every few minutes)
 - **Hash ring topology** from Control Plane (watched in real-time)
+
+#### Request Coalescing
+
+When multiple CI runners request the same pack simultaneously, Frontend coalesces them:
+
+```
+Runner A ──┐
+Runner B ──┼──▶ Single backend request ──▶ Stream to all three
+Runner C ──┘
+```
+
+The first request triggers the backend call. Subsequent identical requests (same repo, ref, commit, depth) join the in-flight request and receive the same response stream. This prevents thundering herds when a popular branch gets pushed.
 
 ### Control Plane
 
@@ -159,6 +189,8 @@ Control Plane tracks cluster membership and the hash ring. It uses Raft consensu
 │     • Node membership (who's in the cluster)                │
 │     • Hash ring (which nodes own which object ranges)       │
 │     • Cluster configuration                                 │
+│     • Distributed locks (ref update coordination)           │
+│     • Audit logging                                         │
 │                                                             │
 │   Does NOT manage:                                          │
 │     • Authentication (Frontend handles locally)             │
@@ -169,25 +201,7 @@ Control Plane tracks cluster membership and the hash ring. It uses Raft consensu
 
 Control Plane is **not on the request path**. Frontend watches for topology changes in the background and caches the hash ring locally. Requests never block on Control Plane.
 
-#### Ring Topology Storage
-
-Control Plane maintains the hash ring as part of the Raft state machine. For each node in the cluster, it stores:
-
-```
-NodeInfo {
-    node_id: "object-node-7"     // Unique identifier
-    address: "10.0.5.7"          // IP or hostname
-    port: 9090                   // gRPC port
-    role: ObjectNode             // Node type
-    vnodes: [847293, 192847, ...]  // Precomputed vnode positions
-}
-```
-
-When a node joins or leaves, Control Plane:
-1. Updates the Raft log (replicated to all Control Plane nodes)
-2. Recomputes vnode positions for affected nodes
-3. Increments the ring version
-4. Pushes changes to all watchers
+Why 3 or 5 nodes? Raft needs a majority to agree. With 3 nodes you need 2 (tolerates 1 failure). With 5 you need 3 (tolerates 2). More nodes adds overhead without much benefit.
 
 #### Ring Distribution
 
@@ -198,35 +212,46 @@ Frontend                          Control Plane
    │                                    │
    │─── WatchTopology() ───────────────►│
    │                                    │
-   │◄─────────── ring v1 ──────────────│  (initial state)
+   │◀─────────── ring v1 ──────────────│  (initial state)
    │                                    │
    │              ...                   │  (time passes)
    │                                    │
-   │◄─────────── ring v2 ──────────────│  (node added)
-   │                                    │
-   │              ...                   │
+   │◀─────────── ring v2 ──────────────│  (node added)
 ```
 
-Frontend caches the ring locally. All routing decisions use the local cache—no network call to Control Plane per request. If the stream disconnects, Frontend reconnects and gets the current ring state.
-
-Why 3 or 5 nodes? Raft needs a majority to agree. With 3 nodes you need 2 (tolerates 1 failure). With 5 you need 3 (tolerates 2). More nodes adds overhead without much benefit.
+Frontend caches the ring locally. All routing decisions use the local cache—no network call to Control Plane per request.
 
 ### Metadata
 
 Metadata stores everything about repositories except the actual object bytes:
 
 - Refs (branches, tags)
-- Commit graph (parent relationships)
+- Commit graph (parent relationships, for merge-base calculations)
 - Permissions (who can read/write)
 - SSH keys (synced to Frontend)
+- Pack cache index (which packs exist, their TTLs)
+- Repository configuration and hooks
 
 It's partitioned by repository. All data for one repo lives on the same node, so ref updates are atomic without distributed transactions.
+
+Key components:
+- **RefStorage**: Atomic ref updates with optimistic locking
+- **GraphCache**: Cached commit ancestry for fast merge-base calculations
+- **PackCacheStorage**: Tracks precomputed packs with TTL-based eviction
+- **ObjectLocationIndex**: Maps object IDs to storage locations
 
 ### Object
 
 Object stores Git objects (blobs, trees, commits, tags) and the pack cache.
 
-Objects are distributed across nodes using consistent hashing. Each object's position on a ring is determined by its ID—since Git object IDs are already SHA-256 hashes, they're uniformly distributed across the keyspace. No additional hashing needed. Nodes own ranges of the ring. When you need an object, its ID directly tells you which node has it.
+Objects are distributed across nodes using consistent hashing. Each object's position on a ring is determined by its ID—since Git object IDs are already SHA-256 hashes, they're uniformly distributed across the keyspace. No additional hashing needed.
+
+Key components:
+- **ObjectStore**: Primary object storage (BucketStore or RocksDB)
+- **PackCache**: Precomputed pack files for hot repositories
+- **QuorumWriter**: Writes to N replicas, waits for quorum
+- **ReplicationRepairer**: Background repair of missing replicas
+- **HotRepoTracker**: Identifies frequently-accessed repos for precomputation
 
 #### The Hash Ring
 
@@ -241,24 +266,11 @@ Position: first 8 bytes as u64 = 0xa1b2c3d4e5f60000...
 
 Since OIDs are already SHA-256 hashes, they're uniformly distributed. No additional hashing needed.
 
-**Node positions** come from hashing the node ID. But one position per node creates uneven segments:
+**Node positions** use virtual nodes. Each physical node gets multiple positions:
 
 ```
-3 nodes with 1 position each:
+3 nodes with 16 vnodes each:
 
-    Node A              Node B                    Node C
-       ↓                   ↓                         ↓
-  ─────●───────────────────●─────────────────────────●─────
-       10%                 60%                       30%
-
-Node B owns 60% of keyspace—unfair.
-```
-
-#### Virtual Nodes
-
-The fix: give each physical node multiple positions (virtual nodes). With 16 vnodes per node:
-
-```
     A₀  B₀  C₀  A₁  B₁  C₁  A₂  B₂  ...  A₁₅ B₁₅ C₁₅
      ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓        ↓   ↓   ↓
   ───●───●───●───●───●───●───●───●── ... ─●───●───●───
@@ -266,26 +278,7 @@ The fix: give each physical node multiple positions (virtual nodes). With 16 vno
 Each node owns ~33% (many small segments instead of one big one)
 ```
 
-Vnode positions are computed by hashing the node ID with an index:
-
-```
-hash("node-a", 0) → position 847293...
-hash("node-a", 1) → position 192847...
-hash("node-a", 2) → position 583920...
-```
-
 To find which node owns an object: find its position, walk clockwise to the next vnode, that vnode's physical node is the owner.
-
-```
-OID position: 500000
-
-     A₃        B₇        C₂
-      ↓         ↓         ↓
-  ────●─────────●─────────●────
-      400000    550000    700000
-             ↑
-          500000 → next vnode is B₇ → owned by Node B
-```
 
 #### Replication
 
@@ -310,10 +303,6 @@ Walk clockwise:
 Replicas: [B, A, C]
 ```
 
-If we hit the same physical node twice (e.g., another B vnode), we skip it and keep walking.
-
-**Edge case—not enough nodes:** If the cluster has fewer physical nodes than the replication factor, objects get fewer replicas. A 2-node cluster with replication factor 3 stores each object on both nodes (2 replicas). Quorum math adjusts: 2 nodes means quorum is 2, so both must succeed.
-
 **Writes** go to all replicas in parallel, wait for quorum (2 of 3) before acknowledging:
 
 ```
@@ -324,100 +313,240 @@ Frontend ──┬──► Node B (primary)  ──┐
 
 **Reads** can go to any replica. Frontend picks based on load or latency.
 
-#### Batched Parallel Fetches
+## Storage Layer: BucketStore
 
-A large clone might need millions of objects spread across many nodes. Fetching them one-by-one would be slow. Instead, Frontend groups objects by destination node and makes parallel batch requests:
+The Object cluster uses BucketStore for high-performance object storage. BucketStore is a custom key-value store optimized for Git object workloads.
 
-```
-10 million OIDs to fetch, 10 Object nodes
-
-Step 1: Group by owner (using hash ring)
-  Node A: [oid1, oid7, oid12, ...]   ~1M OIDs
-  Node B: [oid2, oid5, oid19, ...]   ~1M OIDs
-  ...
-  Node J: [oid4, oid8, oid23, ...]   ~1M OIDs
-
-Step 2: Parallel batch requests
-  ┌─────────────┐
-  │  Frontend   │
-  └──────┬──────┘
-         │
-   ┌─────┼─────┬─────┬─────┬─────┐
-   ▼     ▼     ▼     ▼     ▼     ▼
-  [A]   [B]   [C]   [D]   ...   [J]    ← 10 parallel gRPC streams
-   │     │     │     │           │
-   └─────┴─────┴─────┴───────────┘
-                  │
-                  ▼
-         Merge results, stream to client
-```
-
-Each gRPC call uses streaming—objects flow back as they're fetched, no waiting for all objects before sending.
-
-**Load balancing across replicas:** Since each object has 3 replicas, Frontend can spread load:
+### Architecture
 
 ```
-Instead of always hitting primary:
-  Node A (primary): 1M reads
-  Node B (replica): 0 reads
-  Node C (replica): 0 reads
-
-Spread across replicas:
-  Node A: ~333K reads
-  Node B: ~333K reads
-  Node C: ~333K reads
-
-3x read throughput, even load distribution.
+┌─────────────────────────────────────────────────────────────────┐
+│                         BucketStore                              │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────────────────────────────┐   │
+│  │ BucketIndex  │    │           Bucket File                 │   │
+│  │              │    │  ┌────────┬────────┬────────┬─────┐   │   │
+│  │ bucket_id(oid) ──►│  │Bucket 0│Bucket 1│Bucket 2│ ... │   │   │
+│  │              │    │  │ 4KB    │ 4KB    │ 4KB    │     │   │   │
+│  └──────────────┘    │  └────────┴────────┴────────┴─────┘   │   │
+│                      └──────────────────────────────────────┘   │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                      Data Files                            │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │   │
+│  │  │  data.0001  │  │  data.0002  │  │  data.0003  │  ...   │   │
+│  │  │ (append-only)│  │ (append-only)│  │ (append-only)│        │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘        │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-This matters for hot repositories where many CI runners clone simultaneously.
+**Two-file design:**
+- **Bucket file**: Fixed-size 4KB pages containing object metadata (OID suffix, file ID, offset, size)
+- **Data files**: Append-only files containing actual object data
 
-#### Stale Ring Handling
+**How it works:**
 
-What happens when the ring changes but Frontend hasn't received the update yet?
+1. **Put**: Hash OID to bucket ID → append data to active data file → update bucket entry
+2. **Get**: Hash OID to bucket ID → read bucket → find entry → read data at (file_id, offset)
+3. **Delete**: Soft delete (set flag) or hard delete (remove entry, compact later)
 
-**Reads with stale ring:**
+### Bucket Structure
+
+Each 4KB bucket contains:
+
 ```
-Scenario: Node D added, Frontend doesn't know yet
-
-Frontend thinks: OID X → [A, B, C]
-Reality:         OID X → [D, A, B]  (D is new primary)
-
-Frontend asks Node A for OID X:
-  - If A has it (was a replica): Success, returns data
-  - If A doesn't have it: Returns "not found"
-
-On "not found", Frontend:
-  1. Refreshes ring from Control Plane
-  2. Retries with correct node
-```
-
-The key insight: **old replicas are still valid replicas**. When a node is added, it becomes the new primary for some range, but the previous replicas still have the data. Reads succeed; they just might hit a secondary instead of the primary.
-
-**Writes with stale ring:**
-```
-Scenario: Node D added, Frontend doesn't know yet
-
-Frontend writes to: [A, B, C]
-Should write to:    [D, A, B]
-
-Result:
-  - A and B receive the write (they're still replicas)
-  - C receives the write (but shouldn't be a replica anymore)
-  - D misses the write (new primary, but Frontend doesn't know)
-
-Quorum (2 of 3) succeeds on [A, B, C].
-D catches up via background repair.
+┌────────────────────────────────────────────────────────────┐
+│ Header (32 bytes)                                          │
+│   magic: u32      count: u16      crc32: u32    reserved   │
+├────────────────────────────────────────────────────────────┤
+│ Entry 0 (32 bytes)                                         │
+│   oid_suffix: [u8; 16]  file_id: u16  offset: u40  size: u24  flags: u8 │
+├────────────────────────────────────────────────────────────┤
+│ Entry 1                                                    │
+├────────────────────────────────────────────────────────────┤
+│ ...                                                        │
+├────────────────────────────────────────────────────────────┤
+│ Entry 125 (max 126 entries per bucket)                     │
+├────────────────────────────────────────────────────────────┤
+│ Overflow pointer + padding (32 bytes)                      │
+└────────────────────────────────────────────────────────────┘
 ```
 
-Writes succeed because the old topology's replicas overlap with the new topology's replicas. The new node catches up via repair.
+With 128M buckets (default) and 126 entries per bucket, the store supports ~16 billion objects.
 
-**Why this works:**
-1. **Objects are immutable.** No "wrong version" to read. If an object exists, it's the right one.
-2. **Replicas overlap.** Adding one node shifts ownership by one position. Two of three replicas remain the same.
-3. **Repair fixes gaps.** Background process continuously scans for missing replicas and copies data.
+### io_uring Integration
 
-The system favors **availability over immediate consistency**. A brief window of stale routing is acceptable; blocking requests while waiting for topology propagation is not.
+BucketStore uses Linux io_uring for all asynchronous I/O. A single shared io_uring instance handles both bucket operations and data file operations:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           BucketStore                                │
+│                                                                      │
+│  Creates shared AsyncMultiQueueIo, passes to all components          │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                    AsyncMultiQueueIo                         │    │
+│  │                                                              │    │
+│  │    Queue 0         Queue 1         Queue 2         Queue 3   │    │
+│  │   ┌───────┐       ┌───────┐       ┌───────┐       ┌───────┐  │    │
+│  │   │ depth │       │ depth │       │ depth │       │ depth │  │    │
+│  │   │  256  │       │  256  │       │  256  │       │  256  │  │    │
+│  │   └───┬───┘       └───┬───┘       └───┬───┘       └───┬───┘  │    │
+│  │       │               │               │               │      │    │
+│  │   Reaper 0        Reaper 1        Reaper 2        Reaper 3   │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│            │                                       │                 │
+│            ▼                                       ▼                 │
+│  ┌─────────────────────┐                ┌─────────────────────┐     │
+│  │      BucketIo       │                │      DataFile       │     │
+│  │                     │                │                     │     │
+│  │ queue = bucket_id   │                │ queue = file_id     │     │
+│  │        % num_queues │                │        % num_queues │     │
+│  └─────────────────────┘                └─────────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Queue distribution:**
+- BucketIo: `bucket_id % num_queues` — spreads bucket operations across queues
+- DataFile: `file_id % num_queues` — spreads data operations across queues
+
+**Why unified io_uring:**
+- No blocking I/O on tokio worker threads
+- Single io_uring instance reduces kernel overhead
+- Consistent async code path for all I/O
+- Better throughput under concurrent load
+
+**Configuration:**
+
+```rust
+BucketStoreConfig {
+    bucket_count: 128_000_000,    // 128M buckets
+    io_queue_count: 4,            // 4 parallel io_uring queues
+    io_queue_depth: 256,          // 256 ops per queue (1024 total)
+    bucket_cache_size: 16_384,    // 16K cached buckets (64MB)
+    ...
+}
+```
+
+**Tuning guidelines:**
+
+| Workload | Queues | Depth | Rationale |
+|----------|--------|-------|-----------|
+| Many small random reads | 8 | 128 | More parallelism, lower latency |
+| Large sequential writes | 2 | 512 | Less overhead, better batching |
+| Mixed (default) | 4 | 256 | Balanced |
+
+**Fallback:** On non-Linux platforms or without the `io_uring` feature, falls back to synchronous I/O.
+
+### Durability Model
+
+BucketStore does **not** call fsync on writes. Durability comes from quorum replication at the cluster level, not local disk sync.
+
+```
+put(oid, value)
+       │
+       ├─────────────────────────────────────────────────┐
+       │                                                 │
+       ▼                                                 ▼
+┌─────────────────┐                           ┌─────────────────┐
+│   LOCAL WRITE   │                           │    REPLICAS     │
+│                 │                           │                 │
+│  append data    │                           │   replica 1  ───┤
+│  update bucket  │                           │   replica 2  ───┼─► wait for
+│  (no fsync)     │                           │   replica 3  ───┘   2 of 3
+└─────────────────┘                           └─────────────────┘
+       │                                                 │
+       └────────────────────┬────────────────────────────┘
+                            │
+                            ▼
+                      return OK
+               (data is durable across cluster)
+```
+
+**How it works:**
+
+1. **Write path**: Data goes to kernel page cache (not disk). Returns immediately.
+2. **Kernel writeback**: Linux flushes dirty pages based on age and memory pressure.
+3. **Quorum**: Object cluster waits for 2 of 3 replicas before acknowledging.
+4. **Recovery**: If a node crashes before kernel flush, it recovers from replicas.
+
+**Kernel writeback timing** (controlled by sysctl, not the program):
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `dirty_writeback_centisecs` | 500 (5s) | How often writeback threads wake up |
+| `dirty_expire_centisecs` | 3000 (30s) | Page age before eligible for writeback |
+| `dirty_background_ratio` | 10% | Start background writeback at this dirty ratio |
+| `dirty_ratio` | 20% | Block writers until dirty ratio drops below this |
+
+Worst-case flush delay is **30 seconds** (dirty_expire). In practice, under write load, memory pressure triggers writeback much sooner.
+
+**Why no fsync:**
+
+| Concern | Solution |
+|---------|----------|
+| Node crash before flush | Data exists on 2+ other nodes |
+| Corrupted write | CRC32 in every record; re-fetch from replica |
+| All 3 nodes crash simultaneously | Extremely unlikely; pages flush within 30s max |
+
+**Trade-off:** Single-node deployments (testing, development) have up to a 30 second durability window. Production deployments with replication factor ≥ 3 are durable immediately after quorum ACK.
+
+**Performance impact:**
+
+| Operation | With fsync | Without fsync |
+|-----------|------------|---------------|
+| `put()` latency | 1-10 ms | 100-200 µs |
+| Write throughput | 1K-10K ops/s | 50K-200K ops/s |
+
+### Performance Targets
+
+Target latencies for BucketStore on NVMe SSD:
+
+| Operation | p50 | p99 | p999 |
+|-----------|-----|-----|------|
+| `get()` (cache hit) | 1-5 µs | 10 µs | 50 µs |
+| `get()` (cache miss) | 50-100 µs | 200 µs | 1 ms |
+| `put()` (local only) | 100-200 µs | 500 µs | 2 ms |
+| `put()` (with quorum) | 1-5 ms | 10 ms | 50 ms |
+
+Target throughput per node:
+
+| Metric | Target |
+|--------|--------|
+| Small reads (<4KB) | 100K-500K ops/s |
+| Small writes (<4KB) | 50K-200K ops/s |
+| Sequential read | 3-6 GB/s |
+| Sequential write | 1-3 GB/s |
+
+io_uring targets:
+
+| Metric | Target |
+|--------|--------|
+| Queue utilization | < 80% |
+| Completion latency | < 100 µs |
+| IOPS (NVMe) | 100K-1M |
+
+Cache targets:
+
+| Metric | Target |
+|--------|--------|
+| Bucket cache hit rate | > 90% |
+| Cache evictions/sec | < 1000 |
+
+**Note:** These are design targets. Actual performance depends on hardware, workload, and configuration. Benchmarks should be run on production-equivalent hardware to validate.
+
+### Compaction
+
+Over time, deletions and updates create dead space. The compactor reclaims it:
+
+1. Scan buckets for entries marked deleted or pointing to old data
+2. Copy live entries to a new data file
+3. Update bucket entries with new locations
+4. Remove entries for deleted objects
+5. Delete old data files
+
+Compaction runs when fragmentation exceeds 40% (configurable).
 
 ## Component Communication
 
@@ -436,8 +565,8 @@ The system favors **availability over immediate consistency**. A brief window of
 │                 │        │                 │        │                 │
 │  WatchTopology  │        │  GetRefs        │        │  GetObjects     │
 │  GetHashRing    │        │  UpdateRefs     │        │  PutObjects     │
-│                 │        │  CheckPermission│        │  GetPackCache   │
-│                 │        │  SyncSSHKeys    │        │  StreamBlobs    │
+│  AcquireLock    │        │  CheckPermission│        │  GetPackCache   │
+│  ReleaseLock    │        │  SyncSSHKeys    │        │  StreamBlobs    │
 └─────────────────┘        └─────────────────┘        └─────────────────┘
 ```
 
@@ -466,6 +595,19 @@ All communication uses gRPC. Frontend maintains connection pools to each cluster
 
 **Object node failure:** Objects are on 3 nodes. One down means 2 remain. Reads succeed. Writes need 2 of 3, so they succeed too. A background repairer copies data to restore the third replica when the node recovers.
 
+### Stale Ring Handling
+
+What happens when the ring changes but Frontend hasn't received the update yet?
+
+**Reads with stale ring:** Old replicas are still valid replicas. When a node is added, it becomes the new primary for some range, but the previous replicas still have the data. Reads succeed; they just might hit a secondary instead of the primary.
+
+**Writes with stale ring:** Writes succeed because the old topology's replicas overlap with the new topology's replicas. The new node catches up via background repair.
+
+**Why this works:**
+1. **Objects are immutable.** No "wrong version" to read. If an object exists, it's the right one.
+2. **Replicas overlap.** Adding one node shifts ownership by one position. Two of three replicas remain the same.
+3. **Repair fixes gaps.** Background process continuously scans for missing replicas and copies data.
+
 ## Design Tradeoffs
 
 This architecture optimizes for CI/CD workloads:
@@ -479,5 +621,9 @@ This architecture optimizes for CI/CD workloads:
 **Horizontal over vertical.** Frontend and Object scale out. Control Plane stays small but doesn't bottleneck—it's not on the request path.
 
 **Caching everywhere.** Refs are cached. Auth decisions are cached. Pack files are cached. Hash ring is cached. The goal is to avoid recomputation.
+
+**io_uring for I/O parallelism.** BucketStore uses a unified io_uring instance for all I/O (buckets and data files), enabling parallel NVMe access without blocking tokio threads.
+
+**Quorum over fsync.** Local writes don't wait for disk sync. Durability comes from replication—2 of 3 nodes must ACK before the write returns. This trades single-node durability (up to 30 second window, kernel-controlled) for 10-100x better write latency.
 
 For workloads where every clone is unique, or writes dominate reads, this design would be overkill. But for CI/CD—where the same repo is cloned thousands of times daily, always at the same ref, always shallow—it fits well.

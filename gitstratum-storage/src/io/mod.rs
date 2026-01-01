@@ -1,5 +1,3 @@
-pub mod batch;
-
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
 pub mod uring;
 
@@ -12,5 +10,5 @@ pub use uring::{IoCompletion, IoOperation, UringHandle, DEFAULT_RING_SIZE};
 #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
 pub use fallback::{IoCompletion, IoOperation, UringHandle, DEFAULT_RING_SIZE};
 
-pub mod queue;
-pub use queue::MultiQueueIo;
+pub mod async_queue;
+pub use async_queue::{AsyncMultiQueueIo, AsyncUringQueue, IoQueueConfig, IoResult};

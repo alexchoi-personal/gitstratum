@@ -1,22 +1,26 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::error::Result;
+use crate::error::{BucketStoreError, Result};
+use crate::io::AsyncMultiQueueIo;
 use crate::record::{DataRecord, BLOCK_SIZE};
 
 pub struct DataFile {
-    file: File,
+    fd: RawFd,
+    _file: File,
     file_id: u16,
     path: PathBuf,
     offset: AtomicU64,
+    io: Arc<AsyncMultiQueueIo>,
 }
 
 impl DataFile {
-    pub fn create(path: &Path, file_id: u16) -> Result<Self> {
+    pub fn create(path: &Path, file_id: u16, io: Arc<AsyncMultiQueueIo>) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -24,68 +28,77 @@ impl DataFile {
             .truncate(true)
             .open(path)?;
 
+        let fd = file.as_raw_fd();
+
         Ok(Self {
-            file,
+            fd,
+            _file: file,
             file_id,
             path: path.to_path_buf(),
             offset: AtomicU64::new(0),
+            io,
         })
     }
 
-    pub fn open(path: &Path, file_id: u16) -> Result<Self> {
+    pub fn open(path: &Path, file_id: u16, io: Arc<AsyncMultiQueueIo>) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
 
         let metadata = file.metadata()?;
         let offset = metadata.len();
+        let fd = file.as_raw_fd();
 
         Ok(Self {
-            file,
+            fd,
+            _file: file,
             file_id,
             path: path.to_path_buf(),
             offset: AtomicU64::new(offset),
+            io,
         })
     }
 
-    pub fn append(&mut self, record: &DataRecord) -> Result<u64> {
+    pub async fn append(&self, record: &DataRecord) -> Result<u64> {
         let data = record.to_bytes();
-        let offset = self.offset.load(Ordering::SeqCst);
+        let len = data.len() as u64;
+        let offset = self.offset.fetch_add(len, Ordering::SeqCst);
 
-        self.file.seek(SeekFrom::Start(offset))?;
-        self.file.write_all(&data)?;
-
-        self.offset.fetch_add(data.len() as u64, Ordering::SeqCst);
+        let queue = self.io.get_queue(self.file_id as usize % self.io.queue_count());
+        let rx = queue.submit_write(self.fd, offset, data.into())?;
+        let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
+        result.result.map_err(BucketStoreError::from)?;
 
         Ok(offset)
     }
 
-    pub fn read_at(&mut self, offset: u64, size: usize) -> Result<Bytes> {
-        self.file.seek(SeekFrom::Start(offset))?;
-
+    pub async fn read_at(&self, offset: u64, size: usize) -> Result<Bytes> {
         let aligned_size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
-        let mut buf = vec![0u8; aligned_size];
-        self.file.read_exact(&mut buf)?;
 
-        let record = DataRecord::from_bytes(&buf)?;
+        let queue = self.io.get_queue(self.file_id as usize % self.io.queue_count());
+        let rx = queue.submit_read(self.fd, offset, aligned_size)?;
+        let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
+        result.result.map_err(BucketStoreError::from)?;
+
+        let record = DataRecord::from_bytes(&result.buffer)?;
         Ok(record.value)
     }
 
-    pub fn read_record_at(
-        &mut self,
-        offset: u64,
-        size: usize,
-    ) -> Result<(gitstratum_core::Oid, Bytes)> {
-        self.file.seek(SeekFrom::Start(offset))?;
-
+    pub async fn read_record_at(&self, offset: u64, size: usize) -> Result<(gitstratum_core::Oid, Bytes)> {
         let aligned_size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
-        let mut buf = vec![0u8; aligned_size];
-        self.file.read_exact(&mut buf)?;
 
-        let record = DataRecord::from_bytes(&buf)?;
+        let queue = self.io.get_queue(self.file_id as usize % self.io.queue_count());
+        let rx = queue.submit_read(self.fd, offset, aligned_size)?;
+        let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
+        result.result.map_err(BucketStoreError::from)?;
+
+        let record = DataRecord::from_bytes(&result.buffer)?;
         Ok((record.oid, record.value))
     }
 
-    pub fn sync(&self) -> Result<()> {
-        self.file.sync_all()?;
+    pub async fn sync(&self) -> Result<()> {
+        let queue = self.io.get_queue(self.file_id as usize % self.io.queue_count());
+        let rx = queue.submit_fsync(self.fd)?;
+        let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
+        result.result.map_err(BucketStoreError::from)?;
         Ok(())
     }
 
@@ -99,5 +112,23 @@ impl DataFile {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn read_record_at_blocking(&self, offset: u64, size: usize) -> Result<(gitstratum_core::Oid, Bytes)> {
+        use std::io::{Read, Seek, SeekFrom};
+        use std::os::unix::io::FromRawFd;
+
+        let aligned_size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
+
+        let mut file = unsafe { std::fs::File::from_raw_fd(self.fd) };
+        file.seek(SeekFrom::Start(offset))?;
+
+        let mut buffer = vec![0u8; aligned_size];
+        file.read_exact(&mut buffer)?;
+
+        std::mem::forget(file);
+
+        let record = DataRecord::from_bytes(&buffer)?;
+        Ok((record.oid, record.value))
     }
 }

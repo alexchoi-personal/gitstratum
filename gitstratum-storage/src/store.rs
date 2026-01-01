@@ -8,21 +8,30 @@ use bytes::Bytes;
 use gitstratum_core::Oid;
 use parking_lot::RwLock;
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 
 use crate::bucket::{BucketCache, BucketIndex, CompactEntry, DiskBucket, EntryFlags};
 use crate::config::BucketStoreConfig;
 use crate::error::{BucketStoreError, Result};
-use crate::file::{BucketFile, DataFile, FileManager};
+use crate::file::{BucketFile, BucketIo, DataFile, FileManager};
+use crate::io::{AsyncMultiQueueIo, IoQueueConfig};
 use crate::record::DataRecord;
+
+pub struct BucketStoreInner {
+    bucket_io: Arc<BucketIo>,
+    active_file: RwLock<Arc<DataFile>>,
+}
 
 pub struct BucketStore {
     config: BucketStoreConfig,
     bucket_index: Arc<BucketIndex>,
     bucket_cache: Arc<BucketCache>,
-    bucket_file: RwLock<BucketFile>,
+    inner: Arc<BucketStoreInner>,
+    bucket_file_for_iter: RwLock<BucketFile>,
     file_manager: Arc<FileManager>,
-    active_file: RwLock<DataFile>,
+    io: Arc<AsyncMultiQueueIo>,
+    reaper_handles: RwLock<Vec<JoinHandle<()>>>,
     closed: AtomicBool,
     shutdown_notify: Arc<Notify>,
     dead_bytes: AtomicU64,
@@ -33,10 +42,24 @@ impl BucketStore {
     pub async fn open(config: BucketStoreConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir)?;
 
-        let file_manager = Arc::new(FileManager::new(&config.data_dir)?);
+        let io_config = IoQueueConfig {
+            num_queues: config.io_queue_count,
+            queue_depth: config.io_queue_depth,
+        };
+        let io = Arc::new(AsyncMultiQueueIo::new(io_config)?);
+        let reaper_handles = io.start_reapers();
+
+        let file_manager = Arc::new(FileManager::new(&config.data_dir, io.clone())?);
 
         let bucket_file_path = file_manager.bucket_file_path();
-        let bucket_file = if bucket_file_path.exists() {
+
+        let bucket_io = if bucket_file_path.exists() {
+            Arc::new(BucketIo::open(&bucket_file_path, io.clone())?)
+        } else {
+            Arc::new(BucketIo::create(&bucket_file_path, config.bucket_count, io.clone())?)
+        };
+
+        let bucket_file_for_iter = if bucket_file_path.exists() {
             BucketFile::open(&bucket_file_path)?
         } else {
             BucketFile::create(&bucket_file_path, config.bucket_count)?
@@ -45,49 +68,27 @@ impl BucketStore {
         let bucket_index = Arc::new(BucketIndex::new(config.bucket_count));
         let bucket_cache = Arc::new(BucketCache::new(config.bucket_cache_size));
 
-        let active_file = file_manager.create_data_file()?;
+        let active_file = Arc::new(file_manager.create_data_file()?);
+
+        let inner = Arc::new(BucketStoreInner {
+            bucket_io,
+            active_file: RwLock::new(active_file),
+        });
 
         Ok(Self {
             config,
             bucket_index,
             bucket_cache,
-            bucket_file: RwLock::new(bucket_file),
+            inner,
+            bucket_file_for_iter: RwLock::new(bucket_file_for_iter),
             file_manager,
-            active_file: RwLock::new(active_file),
+            io,
+            reaper_handles: RwLock::new(reaper_handles),
             closed: AtomicBool::new(false),
             shutdown_notify: Arc::new(Notify::new()),
             dead_bytes: AtomicU64::new(0),
             total_bytes: AtomicU64::new(0),
         })
-    }
-
-    pub fn start_background_sync(self: &Arc<Self>) {
-        let interval = self.config.sync_interval;
-        if interval.is_zero() {
-            return;
-        }
-
-        let store = Arc::clone(self);
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-            loop {
-                tokio::select! {
-                    _ = ticker.tick() => {
-                        if store.closed.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        if let Err(e) = store.sync().await {
-                            tracing::warn!("Background sync failed: {}", e);
-                        }
-                    }
-                    _ = store.shutdown_notify.notified() => {
-                        break;
-                    }
-                }
-            }
-        });
     }
 
     pub async fn get(&self, oid: &Oid) -> Result<Option<Bytes>> {
@@ -97,7 +98,6 @@ impl BucketStore {
 
         let bucket_id = self.bucket_index.bucket_id(oid);
 
-        // Check cache first
         if let Some(bucket) = self.bucket_cache.get(bucket_id) {
             if let Some(entry) = bucket.find_entry(oid) {
                 if entry.flags & EntryFlags::DELETED.bits() != 0 {
@@ -108,16 +108,10 @@ impl BucketStore {
             return Ok(None);
         }
 
-        // Read bucket from disk
-        let bucket = {
-            let mut bucket_file = self.bucket_file.write();
-            bucket_file.read_bucket(bucket_id)?
-        };
+        let bucket = self.inner.bucket_io.read_bucket(bucket_id).await?;
 
-        // Cache the bucket
         self.bucket_cache.put(bucket_id, bucket.clone());
 
-        // Find entry
         if let Some(entry) = bucket.find_entry(oid) {
             if entry.flags & EntryFlags::DELETED.bits() != 0 {
                 return Ok(None);
@@ -141,26 +135,20 @@ impl BucketStore {
         let record = DataRecord::new(oid, value.clone(), timestamp)?;
         let record_size = record.record_size();
 
-        // Check if we need to rotate data files
         let needs_rotation = {
-            let active = self.active_file.read();
+            let active = self.inner.active_file.read();
             active.size() + record_size as u64 > self.config.max_data_file_size
         };
         if needs_rotation {
             self.rotate_data_file().await?;
         }
 
-        // Write to data file
         let (file_id, offset) = {
-            let mut active = self.active_file.write();
-            let offset = active.append(&record)?;
-            if self.config.sync_interval.is_zero() {
-                active.sync()?;
-            }
+            let active = self.inner.active_file.read().clone();
+            let offset = active.append(&record).await?;
             (active.file_id(), offset)
         };
 
-        // Create bucket entry
         let entry = CompactEntry::new(
             &oid,
             file_id,
@@ -169,37 +157,28 @@ impl BucketStore {
             EntryFlags::NONE.bits(),
         );
 
-        // Update bucket
         let bucket_id = self.bucket_index.bucket_id(&oid);
         self.bucket_cache.invalidate(bucket_id);
 
-        {
-            let mut bucket_file = self.bucket_file.write();
-            let mut bucket = bucket_file.read_bucket(bucket_id)?;
+        let mut bucket = self.inner.bucket_io.read_bucket(bucket_id).await?;
 
-            // Check if entry already exists (update case)
-            let mut found = false;
-            for i in 0..bucket.header.count as usize {
-                if bucket.entries[i].matches(&oid) {
-                    // Track dead bytes from old entry
-                    self.dead_bytes
-                        .fetch_add(bucket.entries[i].size() as u64, Ordering::Relaxed);
-                    bucket.entries[i] = entry;
-                    found = true;
-                    break;
-                }
-            }
-
-            if !found {
-                bucket.insert(entry)?;
-                self.bucket_index.increment_entry_count();
-            }
-
-            bucket_file.write_bucket(bucket_id, &bucket)?;
-            if self.config.sync_interval.is_zero() {
-                bucket_file.sync()?;
+        let mut found = false;
+        for i in 0..bucket.header.count as usize {
+            if bucket.entries[i].matches(&oid) {
+                self.dead_bytes
+                    .fetch_add(bucket.entries[i].size() as u64, Ordering::Relaxed);
+                bucket.entries[i] = entry;
+                found = true;
+                break;
             }
         }
+
+        if !found {
+            bucket.insert(entry)?;
+            self.bucket_index.increment_entry_count();
+        }
+
+        self.inner.bucket_io.write_bucket(bucket_id, &bucket).await?;
 
         self.total_bytes
             .fetch_add(record_size as u64, Ordering::Relaxed);
@@ -215,16 +194,13 @@ impl BucketStore {
         let bucket_id = self.bucket_index.bucket_id(oid);
         self.bucket_cache.invalidate(bucket_id);
 
-        let mut bucket_file = self.bucket_file.write();
-        let mut bucket = bucket_file.read_bucket(bucket_id)?;
+        let mut bucket = self.inner.bucket_io.read_bucket(bucket_id).await?;
 
         for i in 0..bucket.header.count as usize {
             if bucket.entries[i].matches(oid) {
-                // Mark as dead bytes
                 self.dead_bytes
                     .fetch_add(bucket.entries[i].size() as u64, Ordering::Relaxed);
 
-                // Remove by swapping with last entry
                 let last_idx = bucket.header.count as usize - 1;
                 if i != last_idx {
                     bucket.entries[i] = bucket.entries[last_idx];
@@ -232,7 +208,7 @@ impl BucketStore {
                 bucket.entries[last_idx] = CompactEntry::EMPTY;
                 bucket.header.count -= 1;
 
-                bucket_file.write_bucket(bucket_id, &bucket)?;
+                self.inner.bucket_io.write_bucket(bucket_id, &bucket).await?;
                 self.bucket_index.decrement_entry_count();
 
                 return Ok(true);
@@ -250,8 +226,7 @@ impl BucketStore {
         let bucket_id = self.bucket_index.bucket_id(oid);
         self.bucket_cache.invalidate(bucket_id);
 
-        let mut bucket_file = self.bucket_file.write();
-        let mut bucket = bucket_file.read_bucket(bucket_id)?;
+        let mut bucket = self.inner.bucket_io.read_bucket(bucket_id).await?;
 
         for i in 0..bucket.header.count as usize {
             if bucket.entries[i].matches(oid) {
@@ -265,7 +240,7 @@ impl BucketStore {
                 self.dead_bytes
                     .fetch_add(bucket.entries[i].size() as u64, Ordering::Relaxed);
 
-                bucket_file.write_bucket(bucket_id, &bucket)?;
+                self.inner.bucket_io.write_bucket(bucket_id, &bucket).await?;
 
                 return Ok(true);
             }
@@ -281,7 +256,6 @@ impl BucketStore {
 
         let bucket_id = self.bucket_index.bucket_id(oid);
 
-        // Check cache first
         if let Some(bucket) = self.bucket_cache.get(bucket_id) {
             if let Some(entry) = bucket.find_entry(oid) {
                 return entry.flags & EntryFlags::DELETED.bits() == 0;
@@ -289,8 +263,7 @@ impl BucketStore {
             return false;
         }
 
-        // Read from disk
-        if let Ok(bucket) = self.bucket_file.write().read_bucket(bucket_id) {
+        if let Ok(bucket) = self.bucket_file_for_iter.write().read_bucket(bucket_id) {
             self.bucket_cache.put(bucket_id, bucket.clone());
             if let Some(entry) = bucket.find_entry(oid) {
                 return entry.flags & EntryFlags::DELETED.bits() == 0;
@@ -331,16 +304,13 @@ impl BucketStore {
         &self.file_manager
     }
 
-    pub fn read_bucket(&self, bucket_id: u32) -> Result<DiskBucket> {
-        let mut bucket_file = self.bucket_file.write();
-        bucket_file.read_bucket(bucket_id)
+    pub async fn read_bucket(&self, bucket_id: u32) -> Result<DiskBucket> {
+        self.inner.bucket_io.read_bucket(bucket_id).await
     }
 
-    pub fn write_bucket(&self, bucket_id: u32, bucket: &DiskBucket) -> Result<()> {
+    pub async fn write_bucket(&self, bucket_id: u32, bucket: &DiskBucket) -> Result<()> {
         self.bucket_cache.invalidate(bucket_id);
-        let mut bucket_file = self.bucket_file.write();
-        bucket_file.write_bucket(bucket_id, bucket)?;
-        Ok(())
+        self.inner.bucket_io.write_bucket(bucket_id, bucket).await
     }
 
     pub fn reset_dead_bytes(&self) {
@@ -352,8 +322,8 @@ impl BucketStore {
     }
 
     pub async fn sync(&self) -> Result<()> {
-        self.active_file.read().sync()?;
-        self.bucket_file.read().sync()?;
+        self.inner.active_file.read().clone().sync().await?;
+        self.inner.bucket_io.sync().await?;
         Ok(())
     }
 
@@ -362,6 +332,13 @@ impl BucketStore {
         self.shutdown_notify.notify_waiters();
 
         self.sync().await?;
+
+        self.io.shutdown();
+        let handles = std::mem::take(&mut *self.reaper_handles.write());
+        for handle in handles {
+            let _ = handle.await;
+        }
+
         Ok(())
     }
 
@@ -370,14 +347,15 @@ impl BucketStore {
         let offset = entry.offset();
         let size = entry.size() as usize;
 
-        let mut data_file = self.file_manager.open_data_file(file_id)?;
-        data_file.read_at(offset, size)
+        let data_file = self.file_manager.open_data_file(file_id)?;
+        data_file.read_at(offset, size).await
     }
 
     async fn rotate_data_file(&self) -> Result<()> {
-        let new_file = self.file_manager.create_data_file()?;
-        let mut active = self.active_file.write();
-        active.sync()?;
+        let new_file = Arc::new(self.file_manager.create_data_file()?);
+        let old_file = self.inner.active_file.read().clone();
+        old_file.sync().await?;
+        let mut active = self.inner.active_file.write();
         *active = new_file;
         Ok(())
     }
@@ -385,7 +363,7 @@ impl BucketStore {
     pub fn iter(&self) -> BucketStoreIterator {
         BucketStoreIterator::new(
             self.config.bucket_count,
-            self.bucket_file.read().clone(),
+            self.bucket_file_for_iter.read().clone(),
             self.file_manager.clone(),
         )
     }
@@ -393,7 +371,7 @@ impl BucketStore {
     pub fn iter_by_position(&self, from: u64, to: u64) -> BucketStorePositionIterator {
         BucketStorePositionIterator::new(
             self.config.bucket_count,
-            self.bucket_file.read().clone(),
+            self.bucket_file_for_iter.read().clone(),
             self.file_manager.clone(),
             from,
             to,
@@ -453,8 +431,8 @@ impl BucketStoreIterator {
         let offset = entry.offset();
         let size = entry.size() as usize;
 
-        let mut data_file = self.file_manager.open_data_file(file_id).ok()?;
-        data_file.read_record_at(offset, size).ok()
+        let data_file = self.file_manager.open_data_file(file_id).ok()?;
+        data_file.read_record_at_blocking(offset, size).ok()
     }
 }
 
@@ -545,7 +523,6 @@ impl BucketStoreStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use tempfile::TempDir;
 
     fn create_test_oid(seed: u8) -> Oid {
@@ -561,7 +538,6 @@ mod tests {
             data_dir: dir.to_path_buf(),
             max_data_file_size: 1024 * 1024,
             bucket_count: 64,
-            sync_interval: Duration::ZERO, // Sync on every write for tests
             bucket_cache_size: 16,
             io_queue_depth: 4,
             io_queue_count: 1,
@@ -800,7 +776,7 @@ mod tests {
         let config = test_config(tmp.path());
         let store = BucketStore::open(config).await.unwrap();
 
-        let bucket = store.read_bucket(0).unwrap();
+        let bucket = store.read_bucket(0).await.unwrap();
         let count = { bucket.header.count };
         assert_eq!(count, 0);
 
@@ -809,8 +785,8 @@ mod tests {
             .await
             .unwrap();
 
-        let bucket = store.read_bucket(0).unwrap();
-        store.write_bucket(0, &bucket).unwrap();
+        let bucket = store.read_bucket(0).await.unwrap();
+        store.write_bucket(0, &bucket).await.unwrap();
     }
 
     #[tokio::test]
@@ -893,8 +869,7 @@ mod tests {
         use tokio_stream::StreamExt;
 
         let tmp = TempDir::new().unwrap();
-        let mut config = test_config(tmp.path());
-        config.sync_interval = Duration::ZERO;
+        let config = test_config(tmp.path());
         let store = BucketStore::open(config).await.unwrap();
 
         let oid1 = create_test_oid(0x01);
@@ -916,8 +891,7 @@ mod tests {
         use tokio_stream::StreamExt;
 
         let tmp = TempDir::new().unwrap();
-        let mut config = test_config(tmp.path());
-        config.sync_interval = Duration::ZERO;
+        let config = test_config(tmp.path());
         let store = BucketStore::open(config).await.unwrap();
 
         let oid1 = create_test_oid(0x01);
@@ -932,4 +906,5 @@ mod tests {
             .await;
         assert_eq!(items.len(), 2);
     }
+
 }

@@ -18,7 +18,6 @@ fn create_test_config(dir: &TempDir) -> BucketStoreConfig {
         bucket_count: 1024,
         bucket_cache_size: 64,
         max_data_file_size: 64 * 1024,
-        sync_interval: Duration::ZERO,
         io_queue_depth: 64,
         io_queue_count: 2,
         compaction: gitstratum_storage::config::CompactionConfig {

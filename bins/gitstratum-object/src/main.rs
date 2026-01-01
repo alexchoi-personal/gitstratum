@@ -82,7 +82,6 @@ async fn create_store(args: &Args) -> Result<Arc<gitstratum_object_cluster::Obje
         bucket_count: args.bucket_count,
         bucket_cache_size: args.bucket_cache_size,
         max_data_file_size: args.max_data_file_size,
-        sync_writes: false,
         io_queue_depth: 64,
         io_queue_count: 2,
         compaction: gitstratum_storage::config::CompactionConfig {

@@ -21,7 +21,6 @@ async fn create_test_store_async() -> (Arc<ObjectStore>, TempDir) {
         bucket_count: 64,
         bucket_cache_size: 16,
         max_data_file_size: 1024 * 1024,
-        sync_writes: true,
         io_queue_depth: 4,
         io_queue_count: 1,
         compaction: gitstratum_storage::config::CompactionConfig {

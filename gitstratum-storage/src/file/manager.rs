@@ -1,20 +1,23 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 
 use super::data_file::DataFile;
 use crate::error::Result;
+use crate::io::AsyncMultiQueueIo;
 
 pub struct FileManager {
     data_dir: PathBuf,
     next_file_id: AtomicU16,
     data_files: RwLock<HashMap<u16, PathBuf>>,
+    io: Arc<AsyncMultiQueueIo>,
 }
 
 impl FileManager {
-    pub fn new(data_dir: &Path) -> Result<Self> {
+    pub fn new(data_dir: &Path, io: Arc<AsyncMultiQueueIo>) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
 
         let mut max_file_id = 0u16;
@@ -39,6 +42,7 @@ impl FileManager {
             data_dir: data_dir.to_path_buf(),
             next_file_id: AtomicU16::new(max_file_id + 1),
             data_files: RwLock::new(data_files),
+            io,
         })
     }
 
@@ -46,7 +50,7 @@ impl FileManager {
         let file_id = self.next_file_id.fetch_add(1, Ordering::SeqCst);
         let path = self.data_file_path(file_id);
 
-        let file = DataFile::create(&path, file_id)?;
+        let file = DataFile::create(&path, file_id, self.io.clone())?;
 
         self.data_files.write().insert(file_id, path);
 
@@ -55,7 +59,7 @@ impl FileManager {
 
     pub fn open_data_file(&self, file_id: u16) -> Result<DataFile> {
         let path = self.data_file_path(file_id);
-        DataFile::open(&path, file_id)
+        DataFile::open(&path, file_id, self.io.clone())
     }
 
     pub fn data_file_path(&self, file_id: u16) -> PathBuf {
