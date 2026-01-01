@@ -16,11 +16,7 @@ pub struct BucketIo {
 }
 
 impl BucketIo {
-    pub fn create(
-        path: &Path,
-        bucket_count: u32,
-        io: Arc<AsyncMultiQueueIo>,
-    ) -> Result<Self> {
+    pub fn create(path: &Path, bucket_count: u32, io: Arc<AsyncMultiQueueIo>) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -67,14 +63,15 @@ impl BucketIo {
         let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
 
         result.result.map_err(BucketStoreError::from)?;
-        let bytes: [u8; BUCKET_SIZE] = result
-            .buffer
-            .as_ref()
-            .try_into()
-            .map_err(|_| BucketStoreError::CorruptedBucket {
-                offset,
-                reason: "invalid buffer size".into(),
-            })?;
+        let bytes: [u8; BUCKET_SIZE] =
+            result
+                .buffer
+                .as_ref()
+                .try_into()
+                .map_err(|_| BucketStoreError::CorruptedBucket {
+                    offset,
+                    reason: "invalid buffer size".into(),
+                })?;
         DiskBucket::from_bytes(&bytes)
     }
 

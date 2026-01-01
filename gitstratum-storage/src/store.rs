@@ -56,7 +56,11 @@ impl BucketStore {
         let bucket_io = if bucket_file_path.exists() {
             Arc::new(BucketIo::open(&bucket_file_path, io.clone())?)
         } else {
-            Arc::new(BucketIo::create(&bucket_file_path, config.bucket_count, io.clone())?)
+            Arc::new(BucketIo::create(
+                &bucket_file_path,
+                config.bucket_count,
+                io.clone(),
+            )?)
         };
 
         let bucket_file_for_iter = if bucket_file_path.exists() {
@@ -178,7 +182,10 @@ impl BucketStore {
             self.bucket_index.increment_entry_count();
         }
 
-        self.inner.bucket_io.write_bucket(bucket_id, &bucket).await?;
+        self.inner
+            .bucket_io
+            .write_bucket(bucket_id, &bucket)
+            .await?;
 
         self.total_bytes
             .fetch_add(record_size as u64, Ordering::Relaxed);
@@ -208,7 +215,10 @@ impl BucketStore {
                 bucket.entries[last_idx] = CompactEntry::EMPTY;
                 bucket.header.count -= 1;
 
-                self.inner.bucket_io.write_bucket(bucket_id, &bucket).await?;
+                self.inner
+                    .bucket_io
+                    .write_bucket(bucket_id, &bucket)
+                    .await?;
                 self.bucket_index.decrement_entry_count();
 
                 return Ok(true);
@@ -240,7 +250,10 @@ impl BucketStore {
                 self.dead_bytes
                     .fetch_add(bucket.entries[i].size() as u64, Ordering::Relaxed);
 
-                self.inner.bucket_io.write_bucket(bucket_id, &bucket).await?;
+                self.inner
+                    .bucket_io
+                    .write_bucket(bucket_id, &bucket)
+                    .await?;
 
                 return Ok(true);
             }
@@ -906,5 +919,4 @@ mod tests {
             .await;
         assert_eq!(items.len(), 2);
     }
-
 }

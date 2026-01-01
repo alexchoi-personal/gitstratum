@@ -415,3 +415,109 @@ message GetStatsResponse {
   uint64 available_bytes = 4;
   float io_utilization = 5;
 }
+
+// Object Repair Service
+service ObjectRepairService {
+    // Get Merkle tree for position range
+    rpc GetMerkleTree(GetMerkleTreeRequest) returns (MerkleTreeResponse);
+
+    // Stream missing objects by OIDs
+    rpc StreamMissingBlobs(StreamMissingBlobsRequest) returns (stream Blob);
+
+    // Get repair session status
+    rpc GetRepairStatus(GetRepairStatusRequest) returns (GetRepairStatusResponse);
+
+    // List active repair sessions
+    rpc ListRepairSessions(ListRepairSessionsRequest) returns (ListRepairSessionsResponse);
+
+    // Cancel a repair session
+    rpc CancelRepairSession(CancelRepairSessionRequest) returns (CancelRepairSessionResponse);
+}
+
+message GetMerkleTreeRequest {
+    uint64 position_start = 1;
+    uint64 position_end = 2;
+    uint32 depth = 3;  // Default: 4
+}
+
+message MerkleNodeProto {
+    bytes hash = 1;
+    uint64 position_start = 2;
+    uint64 position_end = 3;
+    uint64 object_count = 4;
+    uint32 level = 5;
+    uint32 child_index = 6;  // Index within parent (0-15)
+}
+
+message MerkleTreeResponse {
+    bytes root_hash = 1;
+    uint64 object_count = 2;
+    repeated MerkleNodeProto nodes = 3;  // Flattened tree (level-order)
+    uint64 ring_version = 4;
+}
+
+message StreamMissingBlobsRequest {
+    repeated Oid oids = 1;
+}
+
+enum RepairSessionStatusProto {
+    REPAIR_STATUS_UNKNOWN = 0;
+    REPAIR_STATUS_PENDING = 1;
+    REPAIR_STATUS_IN_PROGRESS = 2;
+    REPAIR_STATUS_COMPLETED = 3;
+    REPAIR_STATUS_FAILED = 4;
+    REPAIR_STATUS_CANCELLED = 5;
+}
+
+enum RepairTypeProto {
+    REPAIR_TYPE_UNKNOWN = 0;
+    REPAIR_TYPE_CRASH_RECOVERY = 1;
+    REPAIR_TYPE_ANTI_ENTROPY = 2;
+    REPAIR_TYPE_REBALANCE_INCOMING = 3;
+    REPAIR_TYPE_REBALANCE_OUTGOING = 4;
+}
+
+message RepairProgressProto {
+    uint64 objects_compared = 1;
+    uint64 objects_missing = 2;
+    uint64 objects_transferred = 3;
+    uint64 bytes_transferred = 4;
+}
+
+message RepairSessionProto {
+    string id = 1;
+    RepairTypeProto repair_type = 2;
+    RepairSessionStatusProto status = 3;
+    uint64 ring_version = 4;
+    RepairProgressProto progress = 5;
+    repeated string peer_nodes = 6;
+    uint64 created_at = 7;
+    uint64 updated_at = 8;
+}
+
+message GetRepairStatusRequest {
+    string session_id = 1;
+}
+
+message GetRepairStatusResponse {
+    RepairSessionProto session = 1;
+    bool found = 2;
+}
+
+message ListRepairSessionsRequest {
+    RepairSessionStatusProto status_filter = 1;  // Optional filter by status
+    uint32 limit = 2;
+}
+
+message ListRepairSessionsResponse {
+    repeated RepairSessionProto sessions = 1;
+}
+
+message CancelRepairSessionRequest {
+    string session_id = 1;
+}
+
+message CancelRepairSessionResponse {
+    bool success = 1;
+    string error = 2;
+}

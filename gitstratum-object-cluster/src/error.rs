@@ -65,6 +65,9 @@ pub enum ObjectStoreError {
         expected: String,
         computed: String,
     },
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 impl From<ObjectStoreError> for tonic::Status {
