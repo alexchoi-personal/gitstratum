@@ -169,6 +169,46 @@ Control Plane tracks cluster membership and the hash ring. It uses Raft consensu
 
 Control Plane is **not on the request path**. Frontend watches for topology changes in the background and caches the hash ring locally. Requests never block on Control Plane.
 
+#### Ring Topology Storage
+
+Control Plane maintains the hash ring as part of the Raft state machine. For each node in the cluster, it stores:
+
+```
+NodeInfo {
+    node_id: "object-node-7"     // Unique identifier
+    address: "10.0.5.7"          // IP or hostname
+    port: 9090                   // gRPC port
+    role: ObjectNode             // Node type
+    vnodes: [847293, 192847, ...]  // Precomputed vnode positions
+}
+```
+
+When a node joins or leaves, Control Plane:
+1. Updates the Raft log (replicated to all Control Plane nodes)
+2. Recomputes vnode positions for affected nodes
+3. Increments the ring version
+4. Pushes changes to all watchers
+
+#### Ring Distribution
+
+Frontend nodes subscribe to ring updates via `WatchTopology`—a streaming gRPC call that stays open. When the ring changes, Control Plane pushes the delta:
+
+```
+Frontend                          Control Plane
+   │                                    │
+   │─── WatchTopology() ───────────────►│
+   │                                    │
+   │◄─────────── ring v1 ──────────────│  (initial state)
+   │                                    │
+   │              ...                   │  (time passes)
+   │                                    │
+   │◄─────────── ring v2 ──────────────│  (node added)
+   │                                    │
+   │              ...                   │
+```
+
+Frontend caches the ring locally. All routing decisions use the local cache—no network call to Control Plane per request. If the stream disconnects, Frontend reconnects and gets the current ring state.
+
 Why 3 or 5 nodes? Raft needs a majority to agree. With 3 nodes you need 2 (tolerates 1 failure). With 5 you need 3 (tolerates 2). More nodes adds overhead without much benefit.
 
 ### Metadata
@@ -272,6 +312,8 @@ Replicas: [B, A, C]
 
 If we hit the same physical node twice (e.g., another B vnode), we skip it and keep walking.
 
+**Edge case—not enough nodes:** If the cluster has fewer physical nodes than the replication factor, objects get fewer replicas. A 2-node cluster with replication factor 3 stores each object on both nodes (2 replicas). Quorum math adjusts: 2 nodes means quorum is 2, so both must succeed.
+
 **Writes** go to all replicas in parallel, wait for quorum (2 of 3) before acknowledging:
 
 ```
@@ -329,6 +371,53 @@ Spread across replicas:
 ```
 
 This matters for hot repositories where many CI runners clone simultaneously.
+
+#### Stale Ring Handling
+
+What happens when the ring changes but Frontend hasn't received the update yet?
+
+**Reads with stale ring:**
+```
+Scenario: Node D added, Frontend doesn't know yet
+
+Frontend thinks: OID X → [A, B, C]
+Reality:         OID X → [D, A, B]  (D is new primary)
+
+Frontend asks Node A for OID X:
+  - If A has it (was a replica): Success, returns data
+  - If A doesn't have it: Returns "not found"
+
+On "not found", Frontend:
+  1. Refreshes ring from Control Plane
+  2. Retries with correct node
+```
+
+The key insight: **old replicas are still valid replicas**. When a node is added, it becomes the new primary for some range, but the previous replicas still have the data. Reads succeed; they just might hit a secondary instead of the primary.
+
+**Writes with stale ring:**
+```
+Scenario: Node D added, Frontend doesn't know yet
+
+Frontend writes to: [A, B, C]
+Should write to:    [D, A, B]
+
+Result:
+  - A and B receive the write (they're still replicas)
+  - C receives the write (but shouldn't be a replica anymore)
+  - D misses the write (new primary, but Frontend doesn't know)
+
+Quorum (2 of 3) succeeds on [A, B, C].
+D catches up via background repair.
+```
+
+Writes succeed because the old topology's replicas overlap with the new topology's replicas. The new node catches up via repair.
+
+**Why this works:**
+1. **Objects are immutable.** No "wrong version" to read. If an object exists, it's the right one.
+2. **Replicas overlap.** Adding one node shifts ownership by one position. Two of three replicas remain the same.
+3. **Repair fixes gaps.** Background process continuously scans for missing replicas and copies data.
+
+The system favors **availability over immediate consistency**. A brief window of stale routing is acceptable; blocking requests while waiting for topology propagation is not.
 
 ## Component Communication
 

@@ -67,21 +67,120 @@ Now adding a node takes a little from everyone instead of a lot from one neighbo
 
 Every object is stored on multiple nodes (3 by default) for durability. If one node dies, the data still exists on others.
 
-The replicas are the N nodes clockwise from the object's ring position. Any node can compute this without asking anyone—just use the object ID as the position and walk the ring.
+### Finding Replicas
+
+The replicas are N **distinct physical nodes** clockwise from the object's ring position. The algorithm walks the ring, collecting nodes until it has enough distinct physical nodes:
+
+```
+find_replicas(oid, replication_factor):
+    position = oid_position(oid)
+    replicas = []
+    seen_nodes = set()
+
+    for vnode in ring.walk_clockwise_from(position):
+        physical_node = vnode.owner
+        if physical_node not in seen_nodes:
+            seen_nodes.add(physical_node)
+            replicas.append(physical_node)
+            if len(replicas) == replication_factor:
+                return replicas
+
+    return replicas  // fewer than requested if not enough nodes
+```
+
+**Why skip vnodes of the same physical node?** Virtual nodes spread a physical node's ownership across the ring. Without skipping, two consecutive vnodes might belong to the same physical node, giving you only 2 distinct machines for 3 "replicas"—defeating the purpose of replication.
+
+```
+OID position: 500000
+Replication factor: 3
+
+     A₃        B₇        B₁₂       A₁₁       C₂
+      ↓         ↓         ↓         ↓         ↓
+  ────●─────────●─────────●─────────●─────────●────
+      400000    550000    580000    600000    700000
+             ↑
+          500000
+
+Walk clockwise:
+  1. B₇   → Node B ✓ (1st replica - primary)
+  2. B₁₂  → Node B ✗ (skip, already have B)
+  3. A₁₁  → Node A ✓ (2nd replica)
+  4. C₂   → Node C ✓ (3rd replica)
+
+Replicas: [B, A, C]
+```
+
+Any node can compute this locally—no coordination needed. Frontend and Object nodes use the same algorithm, so they agree on replica placement.
+
+### Edge Cases
+
+**Not enough distinct nodes:** If the cluster has fewer physical nodes than the replication factor, you get fewer replicas. A 2-node cluster with replication factor 3 stores each object on both nodes (2 replicas).
+
+```
+2 nodes, replication_factor = 3
+
+     A₀        B₀        A₁        B₁        A₂    ...
+      ↓         ↓         ↓         ↓         ↓
+  ────●─────────●─────────●─────────●─────────●────
+
+Walk from any position:
+  - Hit A vnode → add A
+  - Hit B vnode → add B
+  - Hit A vnode → skip (already have A)
+  - Hit B vnode → skip (already have B)
+  - ... exhausted ring, only found 2 distinct nodes
+
+Replicas: [A, B]  // 2 instead of 3
+```
+
+**Single node cluster:** All objects live on one node. No fault tolerance, but the system still works.
 
 ### Quorum Writes
 
-When storing an object, we write to all 3 replicas but only wait for 2 to acknowledge success. This is called **quorum**—a majority is enough.
+When storing an object, we write to all replicas but only wait for a **quorum** (majority) to acknowledge success:
 
-Why not wait for all 3? Because one slow or dead node would block every write. With quorum, writes succeed as long as most replicas are healthy. The third replica catches up eventually.
+```
+Replication factor: 3
+Quorum: 2 (majority)
+
+Frontend ──┬──► Node B  ── OK ──┐
+           ├──► Node A  ── OK ──┼──► 2 of 3 succeeded → ACK to client
+           └──► Node C  ── slow ┘
+
+Node C catches up via repair.
+```
+
+Why not wait for all 3? Because one slow or dead node would block every write. With quorum, writes succeed as long as most replicas are healthy.
 
 ### Reading from Replicas
 
-Reads can go to any replica. If one is slow or down, try another. The Frontend picks based on which node is likely fastest (considering latency and current load).
+Reads can go to any replica. Frontend picks based on:
+- **Latency:** Prefer nodes with lower response times
+- **Load:** Prefer nodes with fewer in-flight requests
+- **Locality:** Prefer nodes in the same datacenter (if applicable)
+
+If one replica is slow or down, try another. The object is the same on all replicas (immutable).
 
 ### Repair
 
-A background process compares replicas and fixes inconsistencies. If one replica is missing an object that others have, it copies the object over. This handles the case where a node was down during a write and missed some objects.
+A background process ensures all replicas are in sync:
+
+```
+repair_loop():
+    for each object range this node owns:
+        for each object in range:
+            replicas = find_replicas(object.oid)
+            for replica in replicas:
+                if replica doesn't have object:
+                    copy object to replica
+```
+
+Repair handles:
+- **Missed writes:** Node was down during a write
+- **New nodes:** Node joined and needs data for its range
+- **Recovered nodes:** Node was offline and missed updates
+
+Repair runs continuously in the background, prioritizing ranges with known inconsistencies.
 
 ## Frontend Routing
 
@@ -202,6 +301,46 @@ When the ring changes (node added/removed), Frontend and Object nodes must agree
 5. Writes to old primary still reach replicas (quorum handles it)
 
 The system tolerates brief inconsistency because objects are immutable—there's no "wrong version" to read.
+
+### Ring Topology Distribution
+
+Control Plane maintains the authoritative ring. For each node, it stores:
+
+```
+NodeInfo {
+    node_id: "object-node-7"
+    address: "10.0.5.7"
+    port: 9090
+    vnodes: [position1, position2, ...]  // 16 positions per node
+}
+```
+
+Frontend caches this locally via `WatchTopology`—a streaming gRPC call that receives updates when the ring changes. All routing decisions use the local cache. No network call to Control Plane per request.
+
+### Handling Stale Ring
+
+What happens when Frontend's cached ring is outdated?
+
+**Node added (Frontend doesn't know):**
+```
+Frontend thinks: OID X → [A, B, C]
+Reality:         OID X → [D, A, B]  (D is new primary)
+```
+- Reads: A or B still have the data. Success.
+- Writes: A and B receive the write. D misses it but catches up via repair.
+
+**Node removed (Frontend doesn't know):**
+```
+Frontend thinks: OID X → [A, B, C]
+Reality:         OID X → [B, C, E]  (A is gone, E takes over)
+```
+- Reads to A fail, Frontend retries with B or C. Success.
+- Writes to A fail, but B and C succeed. Quorum achieved.
+
+**Why this works:**
+1. **Immutability.** No "wrong version" of an object. If it exists, it's correct.
+2. **Replica overlap.** Ring changes shift ownership gradually. Most replicas remain valid.
+3. **Background repair.** Continuously scans for missing replicas and copies data to restore replication factor.
 
 ## Compression
 
