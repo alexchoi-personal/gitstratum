@@ -50,7 +50,7 @@ gitstratum-cluster/
 ├── gitstratum-storage/          # BucketStore: high-performance object storage
 ├── gitstratum-control-plane/    # Control plane: Raft, membership, config
 ├── gitstratum-metadata/         # Metadata: refs, graph, permissions
-├── gitstratum-object/           # Object: blob storage, pack cache, replication
+├── gitstratum-object-cluster/   # Object: blob storage, pack cache, replication, repair
 ├── gitstratum-frontend/         # Frontend: Git protocol, pack assembly
 ├── gitstratum-operator/         # Kubernetes operator
 └── gitstratum-lfs/              # Git LFS support
@@ -250,8 +250,9 @@ Key components:
 - **ObjectStore**: Primary object storage (BucketStore or RocksDB)
 - **PackCache**: Precomputed pack files for hot repositories
 - **QuorumWriter**: Writes to N replicas, waits for quorum
-- **ReplicationRepairer**: Background repair of missing replicas
 - **HotRepoTracker**: Identifies frequently-accessed repos for precomputation
+- **RepairCoordinator**: Central orchestrator for crash recovery, anti-entropy, and rebalancing
+- **MerkleTree**: Position-based tree for O(log N) object set comparison between nodes
 
 #### The Hash Ring
 
@@ -594,6 +595,234 @@ All communication uses gRPC. Frontend maintains connection pools to each cluster
 **Metadata failure:** Partitioned by repo. If one partition is down, those repos are affected but others continue. Cached packs in Object cluster can still stream (cache key includes commit hash, so it's still valid).
 
 **Object node failure:** Objects are on 3 nodes. One down means 2 remain. Reads succeed. Writes need 2 of 3, so they succeed too. A background repairer copies data to restore the third replica when the node recovers.
+
+## Object Cluster Repair System
+
+When nodes fail, restart, or join/leave the cluster, the repair system ensures data consistency. It handles three scenarios:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          REPAIR COORDINATOR                                  │
+│                                                                             │
+│   Orchestrates all repair types, manages sessions, enforces rate limits    │
+└──────────────────────────┬──────────────────────────────────────────────────┘
+                           │
+         ┌─────────────────┼─────────────────┐
+         │                 │                 │
+         ▼                 ▼                 ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ CrashRecovery   │ │  AntiEntropy    │ │   Rebalance     │
+│     Handler     │ │    Repairer     │ │     Handler     │
+│                 │ │                 │ │                 │
+│ • Downtime      │ │ • Periodic      │ │ • Node join     │
+│   tracking      │ │   background    │ │ • Node drain    │
+│ • Startup       │ │   scans         │ │ • Range         │
+│   recovery      │ │ • Random        │ │   streaming     │
+│                 │ │   sampling      │ │                 │
+└────────┬────────┘ └────────┬────────┘ └────────┬────────┘
+         │                   │                   │
+         └───────────────────┼───────────────────┘
+                             │
+                             ▼
+                  ┌────────────────────────┐
+                  │      Merkle Trees      │
+                  │                        │
+                  │  Position-based tree   │
+                  │  for efficient diff    │
+                  └────────────────────────┘
+```
+
+### Repair Types
+
+| Type | Trigger | Priority | Description |
+|------|---------|----------|-------------|
+| Failed Write | Quorum write partially fails | 1 (highest) | Retry writes that succeeded on <N nodes |
+| Crash Recovery | Node restart | 2 | Recover objects missed during downtime |
+| Rebalance | Hash ring change | 3 | Move objects when nodes join/leave |
+| Anti-Entropy | Periodic timer | 4 (lowest) | Background consistency verification |
+
+### Merkle Trees for Efficient Comparison
+
+Comparing billions of objects between nodes would be expensive. Instead, each node maintains Merkle trees over its object positions:
+
+```
+Position Space: 0 ────────────────────────────────────────── 2^64
+                │                                             │
+                ▼                                             ▼
+Level 0:    [Root Hash]
+                │
+Level 1:    [0x0..]  [0x1..]  [0x2..]  ...  [0xF..]     (16 children)
+                │
+Level 2:    [0x00..] [0x01..] ...                        (16 children)
+                │
+Level 3:    [0x000.] [0x001.] ...                        (16 children)
+                │
+Level 4:    [OID list] ← Leaf nodes contain actual OIDs
+```
+
+**How comparison works:**
+
+1. Exchange root hashes. If equal, trees are identical—done.
+2. If different, exchange Level 1 hashes. Find differing children.
+3. Recurse into differing subtrees only.
+4. At leaf level, exchange OID lists to find missing objects.
+
+This reduces O(N) full-scan comparison to O(log N) tree traversal. For a billion objects, we exchange ~4 levels of hashes instead of a billion OIDs.
+
+### Crash Recovery Flow
+
+When a node restarts after a crash:
+
+```
+Node Restart
+     │
+     ▼
+┌─────────────────────────────────────┐
+│ 1. Read last_healthy_timestamp      │
+│    from persistent storage          │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────┐
+│ 2. Compute downtime window          │
+│    (last_healthy → now)             │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────┐
+│ 3. For each owned range:            │
+│    a. Get Merkle tree from peer     │
+│    b. Compare with local tree       │
+│    c. Queue missing OIDs            │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────┐
+│ 4. Stream missing objects           │
+│    with rate limiting               │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────┐
+│ 5. Verify (CRC32) and store         │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────┐
+│ 6. Update last_healthy_timestamp    │
+│    Node ready to serve              │
+└─────────────────────────────────────┘
+```
+
+The **DowntimeTracker** persists a `healthy_timestamp` file. A background heartbeat updates it every few seconds. On restart, the gap between the file's timestamp and current time indicates how long the node was down.
+
+### Anti-Entropy
+
+Continuous background process that detects and fixes inconsistencies:
+
+```rust
+loop {
+    for range in owned_ranges.round_robin() {
+        // Build local Merkle tree
+        let local_tree = build_merkle_tree(store, range);
+
+        // Compare with each replica peer
+        for peer in peers_for_range(range) {
+            let remote_tree = get_merkle_tree(peer, range);
+            let missing = local_tree.diff(remote_tree);
+
+            if !missing.is_empty() {
+                repair_queue.extend(missing);
+            }
+        }
+    }
+
+    sleep(scan_interval);  // Default: 1 hour
+}
+```
+
+Anti-entropy catches problems that other repair types miss:
+- Bit rot (data corruption on disk)
+- Objects lost during crashes before crash recovery ran
+- Bugs in replication code
+
+### Rebalancing
+
+When the hash ring changes (node added or removed):
+
+**Node Join (Incoming):**
+```
+New Node                              Existing Node
+    │                                       │
+    │  1. Compute ranges to receive         │
+    │────────────────────────────────────►  │
+    │                                       │
+    │  2. GetMerkleTree(range)              │
+    │────────────────────────────────────►  │
+    │                                       │
+    │  3. MerkleTreeResponse                │
+    │◄────────────────────────────────────  │
+    │                                       │
+    │  [Find missing objects]               │
+    │                                       │
+    │  4. StreamBlobs(missing_oids)         │
+    │────────────────────────────────────►  │
+    │                                       │
+    │  5. stream(Blob1, Blob2, ...)         │
+    │◄────────────────────────────────────  │
+    │                                       │
+    │  [Verify CRC32, store]                │
+    │                                       │
+    ▼  Node transitions to Active           ▼
+```
+
+**Node Drain (Outgoing):**
+1. Node enters `Draining` state (accepts reads, rejects writes)
+2. Computes ranges that transfer to other nodes
+3. Streams objects to new owners
+4. Once complete, node leaves the ring
+
+### Rate Limiting and Checkpointing
+
+Repairs consume bandwidth. The RepairCoordinator enforces limits:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          RepairCoordinator                                   │
+│                                                                             │
+│   max_bandwidth_bytes_per_sec: 100 MB/s (configurable)                      │
+│   max_concurrent_sessions: 5                                                │
+│   pause_threshold_write_rate: 10K writes/sec                                │
+│                                                                             │
+│   If write load exceeds threshold → pause repairs                           │
+│   Checkpoint every 1000 objects → resume after failure                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Checkpointing:** Every N objects, the repair session saves its position. If a repair is interrupted, it resumes from the last checkpoint instead of restarting.
+
+### gRPC APIs
+
+The ObjectRepairService provides:
+
+```protobuf
+service ObjectRepairService {
+    // Get Merkle tree for position range (for comparison)
+    rpc GetMerkleTree(GetMerkleTreeRequest) returns (MerkleTreeResponse);
+
+    // Stream missing objects by OIDs
+    rpc StreamMissingBlobs(StreamMissingBlobsRequest) returns (stream Blob);
+
+    // Get repair session status
+    rpc GetRepairStatus(GetRepairStatusRequest) returns (GetRepairStatusResponse);
+
+    // List active repair sessions
+    rpc ListRepairSessions(ListRepairSessionsRequest) returns (ListRepairSessionsResponse);
+
+    // Cancel a repair session
+    rpc CancelRepairSession(CancelRepairSessionRequest) returns (CancelRepairSessionResponse);
+}
+```
 
 ### Stale Ring Handling
 

@@ -62,7 +62,9 @@ impl DataFile {
         let len = data.len() as u64;
         let offset = self.offset.fetch_add(len, Ordering::SeqCst);
 
-        let queue = self.io.get_queue(self.file_id as usize % self.io.queue_count());
+        let queue = self
+            .io
+            .get_queue(self.file_id as usize % self.io.queue_count());
         let rx = queue.submit_write(self.fd, offset, data.into())?;
         let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
         result.result.map_err(BucketStoreError::from)?;
@@ -73,7 +75,9 @@ impl DataFile {
     pub async fn read_at(&self, offset: u64, size: usize) -> Result<Bytes> {
         let aligned_size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
 
-        let queue = self.io.get_queue(self.file_id as usize % self.io.queue_count());
+        let queue = self
+            .io
+            .get_queue(self.file_id as usize % self.io.queue_count());
         let rx = queue.submit_read(self.fd, offset, aligned_size)?;
         let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
         result.result.map_err(BucketStoreError::from)?;
@@ -82,10 +86,16 @@ impl DataFile {
         Ok(record.value)
     }
 
-    pub async fn read_record_at(&self, offset: u64, size: usize) -> Result<(gitstratum_core::Oid, Bytes)> {
+    pub async fn read_record_at(
+        &self,
+        offset: u64,
+        size: usize,
+    ) -> Result<(gitstratum_core::Oid, Bytes)> {
         let aligned_size = (size + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1);
 
-        let queue = self.io.get_queue(self.file_id as usize % self.io.queue_count());
+        let queue = self
+            .io
+            .get_queue(self.file_id as usize % self.io.queue_count());
         let rx = queue.submit_read(self.fd, offset, aligned_size)?;
         let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
         result.result.map_err(BucketStoreError::from)?;
@@ -95,7 +105,9 @@ impl DataFile {
     }
 
     pub async fn sync(&self) -> Result<()> {
-        let queue = self.io.get_queue(self.file_id as usize % self.io.queue_count());
+        let queue = self
+            .io
+            .get_queue(self.file_id as usize % self.io.queue_count());
         let rx = queue.submit_fsync(self.fd)?;
         let result = rx.await.map_err(|_| BucketStoreError::IoCompletion)?;
         result.result.map_err(BucketStoreError::from)?;
@@ -114,7 +126,11 @@ impl DataFile {
         &self.path
     }
 
-    pub fn read_record_at_blocking(&self, offset: u64, size: usize) -> Result<(gitstratum_core::Oid, Bytes)> {
+    pub fn read_record_at_blocking(
+        &self,
+        offset: u64,
+        size: usize,
+    ) -> Result<(gitstratum_core::Oid, Bytes)> {
         use std::io::{Read, Seek, SeekFrom};
         use std::os::unix::io::FromRawFd;
 

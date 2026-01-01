@@ -9,6 +9,7 @@ pub mod error;
 pub mod gc;
 pub mod integrity;
 pub mod pack_cache;
+pub mod repair;
 pub mod replication;
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod server;
@@ -17,6 +18,14 @@ pub mod store;
 pub use client::ObjectClusterClient;
 pub use error::{ObjectStoreError, Result};
 pub use pack_cache::{HotRepoTracker, PackCache, PackPrecomputer};
+pub use repair::{
+    AntiEntropyConfig, AntiEntropyRepairer, AntiEntropyStats, CrashRecoveryConfig,
+    CrashRecoveryHandler, DowntimeTracker, MerkleNode, MerkleTreeBuilder, ObjectMerkleTree,
+    PositionRange, RangeTransfer, RebalanceConfig, RebalanceDirection, RebalanceHandler,
+    RebalanceState, RebalanceStats, RecoveryNeeded, RepairCheckpoint, RepairCoordinator,
+    RepairCoordinatorConfig, RepairItem, RepairPriority, RepairProgress, RepairQueue,
+    RepairRateLimiter, RepairSession, RepairSessionStatus, RepairStats, RepairType,
+};
 pub use replication::{QuorumWriter, ReplicationRepairer};
 pub use server::ObjectServiceImpl;
 pub use store::{ObjectStorage, ObjectStore, StorageStats};
