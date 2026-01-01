@@ -61,6 +61,35 @@ impl BucketStore {
         })
     }
 
+    pub fn start_background_sync(self: &Arc<Self>) {
+        let interval = self.config.sync_interval;
+        if interval.is_zero() {
+            return;
+        }
+
+        let store = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if store.closed.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        if let Err(e) = store.sync().await {
+                            tracing::warn!("Background sync failed: {}", e);
+                        }
+                    }
+                    _ = store.shutdown_notify.notified() => {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     pub async fn get(&self, oid: &Oid) -> Result<Option<Bytes>> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(BucketStoreError::StoreClosed);
@@ -125,7 +154,7 @@ impl BucketStore {
         let (file_id, offset) = {
             let mut active = self.active_file.write();
             let offset = active.append(&record)?;
-            if self.config.sync_writes {
+            if self.config.sync_interval.is_zero() {
                 active.sync()?;
             }
             (active.file_id(), offset)
@@ -167,7 +196,7 @@ impl BucketStore {
             }
 
             bucket_file.write_bucket(bucket_id, &bucket)?;
-            if self.config.sync_writes {
+            if self.config.sync_interval.is_zero() {
                 bucket_file.sync()?;
             }
         }
@@ -516,6 +545,7 @@ impl BucketStoreStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn create_test_oid(seed: u8) -> Oid {
@@ -531,7 +561,7 @@ mod tests {
             data_dir: dir.to_path_buf(),
             max_data_file_size: 1024 * 1024,
             bucket_count: 64,
-            sync_writes: false,
+            sync_interval: Duration::ZERO, // Sync on every write for tests
             bucket_cache_size: 16,
             io_queue_depth: 4,
             io_queue_count: 1,
@@ -864,7 +894,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(tmp.path());
-        config.sync_writes = true;
+        config.sync_interval = Duration::ZERO;
         let store = BucketStore::open(config).await.unwrap();
 
         let oid1 = create_test_oid(0x01);
@@ -887,7 +917,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(tmp.path());
-        config.sync_writes = true;
+        config.sync_interval = Duration::ZERO;
         let store = BucketStore::open(config).await.unwrap();
 
         let oid1 = create_test_oid(0x01);

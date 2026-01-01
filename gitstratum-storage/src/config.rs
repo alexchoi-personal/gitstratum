@@ -6,7 +6,8 @@ pub struct BucketStoreConfig {
     pub data_dir: PathBuf,
     pub max_data_file_size: u64,
     pub bucket_count: u32,
-    pub sync_writes: bool,
+    /// Sync interval. Zero = sync on every write. Non-zero = background sync.
+    pub sync_interval: Duration,
     pub bucket_cache_size: usize,
     pub io_queue_depth: u32,
     pub io_queue_count: usize,
@@ -19,8 +20,8 @@ impl Default for BucketStoreConfig {
             data_dir: PathBuf::from("./data"),
             max_data_file_size: 1024 * 1024 * 1024, // 1GB
             bucket_count: 1 << 27,                  // 128M buckets
-            sync_writes: true,
-            bucket_cache_size: 16 * 1024, // 16K buckets = 64MB
+            sync_interval: Duration::from_secs(1), // Background sync every second
+            bucket_cache_size: 16 * 1024,          // 16K buckets = 64MB
             io_queue_depth: 256,
             io_queue_count: 4,
             compaction: CompactionConfig::default(),

@@ -222,6 +222,25 @@ Cache size is configurable. More cache = more buckets in RAM = fewer disk reads.
 
 **Not an LSM-tree** (like RocksDB or LevelDB). Those use a write-ahead log, an in-memory buffer that flushes to sorted files, and background compaction across levels. BucketStore is simpler: writes go directly to bucket file and data file. No write-ahead log, no levels.
 
+## Durability
+
+BucketStore uses configurable sync behavior via `sync_interval`:
+
+- **`sync_interval = 0`**: Sync on every write. Maximum durability, lower throughput.
+- **`sync_interval = 1s`** (default): Background sync every second. Bounds data loss to ~1 second of writes.
+
+```rust
+// Sync on every write (production with high durability needs)
+config.sync_interval = Duration::ZERO;
+
+// Background sync every second (default, relies on replication)
+config.sync_interval = Duration::from_secs(1);
+```
+
+The background sync task runs on a separate tokio task and flushes both data files and bucket files at the configured interval. Call `store.start_background_sync()` after opening the store.
+
+**Trade-off**: With non-zero `sync_interval`, a crash can lose up to one interval's worth of writes. The design assumes replication across Object nodes provides durability—lost data can be recovered from replicas.
+
 ## Why This Design
 
 For Git object storage:
