@@ -60,6 +60,7 @@ GitStratum caches assembled pack files. The first clone does the work. Every sub
 | `gitstratum-frontend-cluster` | Git protocol (SSH/HTTPS), pack assembly |
 | `gitstratum-storage` | BucketStore: bucket-based key-value storage for objects |
 | `gitstratum-hashring` | Consistent hashing with virtual nodes |
+| `gitstratum-lfs` | Git LFS support with cloud object storage backends |
 | `gitstratum-operator` | Kubernetes operator for cluster management |
 
 ## Building

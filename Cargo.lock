@@ -1103,6 +1103,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitstratum-lfs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "gitstratum-core",
+ "hex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "gitstratum-metadata-bin"
 version = "0.1.0"
 dependencies = [

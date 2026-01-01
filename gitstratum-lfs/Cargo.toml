@@ -1,0 +1,33 @@
+[package]
+name = "gitstratum-lfs"
+version = "0.1.0"
+edition = "2021"
+description = "Git LFS support for GitStratum with cloud object storage backends"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+gitstratum-core = { path = "../gitstratum-core" }
+
+async-trait = "0.1"
+bytes = "1.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+hex = "0.4"
+
+# Cloud storage SDKs (optional features)
+# Enable these when the SDKs are vendored
+# aws-config = { version = "1.0", optional = true }
+# aws-sdk-s3 = { version = "1.0", optional = true }
+# google-cloud-storage = { version = "0.15", optional = true }
+
+[features]
+default = []
+# s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+# gcs = ["dep:google-cloud-storage"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.10"

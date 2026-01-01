@@ -11,6 +11,7 @@ members = [
     "gitstratum-operator",
     "gitstratum-metrics",
     "gitstratum-storage",
+    "gitstratum-lfs",
     "bins/gitstratum-control",
     "bins/gitstratum-ctl",
     "bins/gitstratum-frontend",
@@ -97,6 +98,7 @@ gitstratum-frontend-cluster = { path = "gitstratum-frontend-cluster" }
 gitstratum-proto = { path = "gitstratum-proto" }
 gitstratum-operator = { path = "gitstratum-operator" }
 gitstratum-storage = { path = "gitstratum-storage" }
+gitstratum-lfs = { path = "gitstratum-lfs" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
