@@ -86,3 +86,171 @@ impl HashRingConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_node_info() -> NodeInfo {
+        NodeInfo {
+            id: "node-1".to_string(),
+            address: "192.168.1.10".to_string(),
+            port: 9000,
+            state: NodeState::Active as i32,
+            r#type: NodeType::Object as i32,
+            last_heartbeat_at: 1234567890,
+            suspect_count: 0,
+            generation_id: "uuid-1234".to_string(),
+            registered_at: 1234567000,
+        }
+    }
+
+    #[test]
+    fn test_cluster_topology_default() {
+        let topo = ClusterTopology::default();
+        assert!(topo.object_nodes.is_empty());
+        assert!(topo.metadata_nodes.is_empty());
+        assert_eq!(topo.version, 0);
+    }
+
+    #[test]
+    fn test_cluster_topology_clone() {
+        let mut topo = ClusterTopology::default();
+        topo.version = 42;
+        let cloned = topo.clone();
+        assert_eq!(cloned.version, 42);
+    }
+
+    #[test]
+    fn test_cluster_topology_debug() {
+        let topo = ClusterTopology::default();
+        let debug_str = format!("{:?}", topo);
+        assert!(debug_str.contains("ClusterTopology"));
+    }
+
+    #[test]
+    fn test_cluster_topology_serialize() {
+        let topo = ClusterTopology::default();
+        let json = serde_json::to_string(&topo).unwrap();
+        let deserialized: ClusterTopology = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.version, topo.version);
+    }
+
+    #[test]
+    fn test_node_entry_from_proto() {
+        let info = sample_node_info();
+        let entry = NodeEntry::from_proto(&info);
+
+        assert_eq!(entry.id, "node-1");
+        assert_eq!(entry.address, "192.168.1.10");
+        assert_eq!(entry.port, 9000);
+        assert_eq!(entry.state, NodeState::Active as i32);
+        assert_eq!(entry.last_heartbeat_at, 1234567890);
+        assert_eq!(entry.suspect_count, 0);
+        assert_eq!(entry.generation_id, "uuid-1234");
+        assert_eq!(entry.registered_at, 1234567000);
+    }
+
+    #[test]
+    fn test_node_entry_to_proto() {
+        let info = sample_node_info();
+        let entry = NodeEntry::from_proto(&info);
+        let proto = entry.to_proto(NodeType::Object);
+
+        assert_eq!(proto.id, "node-1");
+        assert_eq!(proto.address, "192.168.1.10");
+        assert_eq!(proto.port, 9000);
+        assert_eq!(proto.r#type, NodeType::Object as i32);
+    }
+
+    #[test]
+    fn test_node_entry_state() {
+        let info = sample_node_info();
+        let entry = NodeEntry::from_proto(&info);
+        assert_eq!(entry.state(), NodeState::Active);
+    }
+
+    #[test]
+    fn test_node_entry_unknown_state() {
+        let mut info = sample_node_info();
+        info.state = 999;
+        let entry = NodeEntry::from_proto(&info);
+        assert_eq!(entry.state(), NodeState::Unknown);
+    }
+
+    #[test]
+    fn test_node_entry_clone() {
+        let info = sample_node_info();
+        let entry = NodeEntry::from_proto(&info);
+        let cloned = entry.clone();
+        assert_eq!(entry.id, cloned.id);
+    }
+
+    #[test]
+    fn test_node_entry_debug() {
+        let info = sample_node_info();
+        let entry = NodeEntry::from_proto(&info);
+        let debug_str = format!("{:?}", entry);
+        assert!(debug_str.contains("NodeEntry"));
+        assert!(debug_str.contains("node-1"));
+    }
+
+    #[test]
+    fn test_node_entry_serialize() {
+        let info = sample_node_info();
+        let entry = NodeEntry::from_proto(&info);
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: NodeEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, entry.id);
+    }
+
+    #[test]
+    fn test_hash_ring_config_default() {
+        let config = HashRingConfig::default();
+        assert_eq!(config.virtual_nodes_per_physical, 16);
+        assert_eq!(config.replication_factor, 3);
+    }
+
+    #[test]
+    fn test_hash_ring_config_to_proto() {
+        let config = HashRingConfig {
+            virtual_nodes_per_physical: 32,
+            replication_factor: 5,
+        };
+        let proto = config.to_proto();
+        assert_eq!(proto.virtual_nodes_per_physical, 32);
+        assert_eq!(proto.replication_factor, 5);
+    }
+
+    #[test]
+    fn test_hash_ring_config_from_proto() {
+        let proto = gitstratum_proto::HashRingConfig {
+            virtual_nodes_per_physical: 64,
+            replication_factor: 2,
+        };
+        let config = HashRingConfig::from_proto(&proto);
+        assert_eq!(config.virtual_nodes_per_physical, 64);
+        assert_eq!(config.replication_factor, 2);
+    }
+
+    #[test]
+    fn test_hash_ring_config_clone() {
+        let config = HashRingConfig::default();
+        let cloned = config.clone();
+        assert_eq!(
+            config.virtual_nodes_per_physical,
+            cloned.virtual_nodes_per_physical
+        );
+    }
+
+    #[test]
+    fn test_hash_ring_config_serialize() {
+        let config = HashRingConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: HashRingConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.virtual_nodes_per_physical,
+            config.virtual_nodes_per_physical
+        );
+    }
+}

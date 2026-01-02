@@ -204,6 +204,31 @@ impl GlobalRateLimiter {
     pub fn watch_count(&self) -> u32 {
         self.watch_connections.load(Ordering::SeqCst)
     }
+
+    pub fn decrement_watch(&self) {
+        self.watch_connections.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub fn try_increment_watch(&self) -> Result<(), RateLimitError> {
+        loop {
+            let current = self.watch_connections.load(Ordering::SeqCst);
+            if current >= self.max_watch_connections {
+                return Err(RateLimitError::TooManyWatchers {
+                    current,
+                    max: self.max_watch_connections,
+                });
+            }
+            match self.watch_connections.compare_exchange(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(_) => continue,
+            }
+        }
+    }
 }
 
 impl Default for GlobalRateLimiter {
@@ -314,12 +339,42 @@ mod tests {
     }
 
     #[test]
+    fn test_token_bucket_time_until_available_with_tokens() {
+        let bucket = TokenBucket::new(10, 10);
+        assert_eq!(bucket.time_until_available(), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_token_bucket_time_until_available_empty() {
+        let bucket = TokenBucket::new(1, 10);
+        bucket.try_acquire();
+        let time = bucket.time_until_available();
+        assert!(time > Duration::ZERO);
+    }
+
+    #[test]
     fn test_global_rate_limiter_register() {
         let limiter = GlobalRateLimiter::new();
         for _ in 0..200 {
             assert!(limiter.try_register().is_ok());
         }
         assert!(limiter.try_register().is_err());
+    }
+
+    #[test]
+    fn test_global_rate_limiter_heartbeat() {
+        let limiter = GlobalRateLimiter::new();
+        for _ in 0..100 {
+            assert!(limiter.try_heartbeat().is_ok());
+        }
+    }
+
+    #[test]
+    fn test_global_rate_limiter_topology_read() {
+        let limiter = GlobalRateLimiter::new();
+        for _ in 0..100 {
+            assert!(limiter.try_topology_read().is_ok());
+        }
     }
 
     #[test]
@@ -332,6 +387,30 @@ mod tests {
         assert!(limiter.try_watch().is_err());
         drop(guards.pop());
         assert!(limiter.try_watch().is_ok());
+    }
+
+    #[test]
+    fn test_global_rate_limiter_default() {
+        let limiter = GlobalRateLimiter::default();
+        assert_eq!(limiter.watch_count(), 0);
+    }
+
+    #[test]
+    fn test_global_rate_limiter_decrement_watch() {
+        let limiter = GlobalRateLimiter::new();
+        limiter.try_increment_watch().unwrap();
+        assert_eq!(limiter.watch_count(), 1);
+        limiter.decrement_watch();
+        assert_eq!(limiter.watch_count(), 0);
+    }
+
+    #[test]
+    fn test_global_rate_limiter_try_increment_watch() {
+        let limiter = GlobalRateLimiter::new();
+        for _ in 0..1000 {
+            assert!(limiter.try_increment_watch().is_ok());
+        }
+        assert!(limiter.try_increment_watch().is_err());
     }
 
     #[test]
@@ -355,7 +434,51 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_limit_error_display() {
+    fn test_client_rate_limiter_heartbeat() {
+        let limiter = ClientRateLimiter::new();
+        for _ in 0..100 {
+            assert!(limiter.try_heartbeat().is_ok());
+        }
+        assert!(limiter.try_heartbeat().is_err());
+    }
+
+    #[test]
+    fn test_client_rate_limiter_topology_read() {
+        let limiter = ClientRateLimiter::new();
+        for _ in 0..1_000 {
+            assert!(limiter.try_topology_read().is_ok());
+        }
+        assert!(limiter.try_topology_read().is_err());
+    }
+
+    #[test]
+    fn test_client_rate_limiter_watch() {
+        let limiter = ClientRateLimiter::new();
+        let mut guards = Vec::new();
+        for _ in 0..10 {
+            guards.push(limiter.try_watch().unwrap());
+        }
+        assert!(limiter.try_watch().is_err());
+        drop(guards.pop());
+        assert!(limiter.try_watch().is_ok());
+    }
+
+    #[test]
+    fn test_client_rate_limiter_watch_count() {
+        let limiter = ClientRateLimiter::new();
+        assert_eq!(limiter.watch_count(), 0);
+        let _guard = limiter.try_watch().unwrap();
+        assert_eq!(limiter.watch_count(), 1);
+    }
+
+    #[test]
+    fn test_client_rate_limiter_default() {
+        let limiter = ClientRateLimiter::default();
+        assert_eq!(limiter.watch_count(), 0);
+    }
+
+    #[test]
+    fn test_rate_limit_error_display_global() {
         let err = RateLimitError::GlobalLimitExceeded {
             operation: "RegisterNode".to_string(),
             limit: "100/sec".to_string(),
@@ -363,5 +486,59 @@ mod tests {
         };
         assert!(err.to_string().contains("RegisterNode"));
         assert!(err.to_string().contains("100/sec"));
+        assert!(err.to_string().contains("Global"));
+    }
+
+    #[test]
+    fn test_rate_limit_error_display_per_client() {
+        let err = RateLimitError::PerClientLimitExceeded {
+            operation: "Heartbeat".to_string(),
+            limit: "100/min".to_string(),
+            retry_after: Duration::from_millis(500),
+        };
+        assert!(err.to_string().contains("Heartbeat"));
+        assert!(err.to_string().contains("Per-client"));
+    }
+
+    #[test]
+    fn test_rate_limit_error_display_too_many_watchers() {
+        let err = RateLimitError::TooManyWatchers {
+            current: 1000,
+            max: 1000,
+        };
+        assert!(err.to_string().contains("Too many watchers"));
+        assert!(err.to_string().contains("1000"));
+    }
+
+    #[test]
+    fn test_rate_limit_error_clone() {
+        let err = RateLimitError::GlobalLimitExceeded {
+            operation: "Test".to_string(),
+            limit: "10/sec".to_string(),
+            retry_after: Duration::from_secs(1),
+        };
+        let cloned = err.clone();
+        assert_eq!(err.to_string(), cloned.to_string());
+    }
+
+    #[test]
+    fn test_rate_limit_error_debug() {
+        let err = RateLimitError::GlobalLimitExceeded {
+            operation: "Test".to_string(),
+            limit: "10/sec".to_string(),
+            retry_after: Duration::from_secs(1),
+        };
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("GlobalLimitExceeded"));
+    }
+
+    #[test]
+    fn test_rate_limit_error_is_std_error() {
+        let err = RateLimitError::GlobalLimitExceeded {
+            operation: "Test".to_string(),
+            limit: "10/sec".to_string(),
+            retry_after: Duration::from_secs(1),
+        };
+        let _: &dyn std::error::Error = &err;
     }
 }

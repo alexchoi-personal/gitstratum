@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use gitstratum_coordinator::{
     run_heartbeat_flush_loop, ClusterCommand, CoordinatorConfig, CoordinatorServer,
-    HeartbeatBatcher, HeartbeatInfo, SerializableHeartbeatInfo,
+    GlobalRateLimiter, HeartbeatBatcher, HeartbeatInfo, SerializableHeartbeatInfo,
 };
 use gitstratum_proto::coordinator_service_server::CoordinatorServiceServer;
 use k8s_operator::raft::{KeyValueStateMachine, RaftConfig, RaftNodeManager, RaftRequest};
@@ -88,6 +88,7 @@ async fn main() -> Result<()> {
     config.heartbeat_batch_interval = Duration::from_secs(args.heartbeat_batch_interval);
 
     let batcher = Arc::new(HeartbeatBatcher::new(config.heartbeat_batch_interval));
+    let global_limiter = Arc::new(GlobalRateLimiter::new());
     let raft = Arc::new(raft);
 
     let raft_for_flush = Arc::clone(&raft);
@@ -137,12 +138,22 @@ async fn main() -> Result<()> {
         .await;
     });
 
-    let server = CoordinatorServer::new(raft, config, batcher);
+    let server = Arc::new(CoordinatorServer::new(
+        raft,
+        config,
+        batcher,
+        global_limiter,
+    ));
+
+    let server_for_detector = Arc::clone(&server);
+    tokio::spawn(async move {
+        server_for_detector.run_failure_detector().await;
+    });
 
     tracing::info!("Starting gRPC server on {}", args.grpc_addr);
 
     Server::builder()
-        .add_service(CoordinatorServiceServer::new(server))
+        .add_service(CoordinatorServiceServer::from_arc(server))
         .serve(args.grpc_addr)
         .await?;
 

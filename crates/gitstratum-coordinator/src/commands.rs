@@ -88,3 +88,200 @@ pub struct VersionedCommand {
     pub version: u32,
     pub command: ClusterCommand,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_node_entry() -> NodeEntry {
+        NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.10".to_string(),
+            port: 9000,
+            state: 1,
+            last_heartbeat_at: 1234567890,
+            suspect_count: 0,
+            generation_id: "uuid-1234".to_string(),
+            registered_at: 1234567000,
+        }
+    }
+
+    #[test]
+    fn test_cluster_command_add_object_node() {
+        let cmd = ClusterCommand::AddObjectNode(sample_node_entry());
+        let json = serde_json::to_string(&cmd).unwrap();
+        let deserialized: ClusterCommand = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            ClusterCommand::AddObjectNode(entry) => assert_eq!(entry.id, "node-1"),
+            _ => panic!("Expected AddObjectNode"),
+        }
+    }
+
+    #[test]
+    fn test_cluster_command_add_metadata_node() {
+        let cmd = ClusterCommand::AddMetadataNode(sample_node_entry());
+        let json = serde_json::to_string(&cmd).unwrap();
+        let deserialized: ClusterCommand = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            ClusterCommand::AddMetadataNode(entry) => assert_eq!(entry.id, "node-1"),
+            _ => panic!("Expected AddMetadataNode"),
+        }
+    }
+
+    #[test]
+    fn test_cluster_command_remove_node() {
+        let cmd = ClusterCommand::RemoveNode {
+            node_id: "node-1".to_string(),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let deserialized: ClusterCommand = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            ClusterCommand::RemoveNode { node_id } => assert_eq!(node_id, "node-1"),
+            _ => panic!("Expected RemoveNode"),
+        }
+    }
+
+    #[test]
+    fn test_cluster_command_set_node_state() {
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: 2,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let deserialized: ClusterCommand = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            ClusterCommand::SetNodeState { node_id, state } => {
+                assert_eq!(node_id, "node-1");
+                assert_eq!(state, 2);
+            }
+            _ => panic!("Expected SetNodeState"),
+        }
+    }
+
+    #[test]
+    fn test_cluster_command_update_hash_ring_config() {
+        let cmd = ClusterCommand::UpdateHashRingConfig(HashRingConfig::default());
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("UpdateHashRingConfig"));
+    }
+
+    #[test]
+    fn test_cluster_command_batch_heartbeat() {
+        let mut batch = HashMap::new();
+        batch.insert(
+            "node-1".to_string(),
+            SerializableHeartbeatInfo {
+                known_version: 10,
+                reported_state: 1,
+                generation_id: "uuid-1234".to_string(),
+                received_at_ms: 1000,
+            },
+        );
+        let cmd = ClusterCommand::BatchHeartbeat(batch);
+        let json = serde_json::to_string(&cmd).unwrap();
+        let deserialized: ClusterCommand = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            ClusterCommand::BatchHeartbeat(b) => {
+                assert!(b.contains_key("node-1"));
+                assert_eq!(b.get("node-1").unwrap().known_version, 10);
+            }
+            _ => panic!("Expected BatchHeartbeat"),
+        }
+    }
+
+    #[test]
+    fn test_cluster_response_success() {
+        let resp = ClusterResponse::success(42);
+        assert!(resp.is_success());
+        assert_eq!(resp.version(), Some(42));
+        let (success, error) = resp.to_result();
+        assert!(success);
+        assert!(error.is_empty());
+    }
+
+    #[test]
+    fn test_cluster_response_already_registered() {
+        let resp = ClusterResponse::already_registered(10);
+        assert!(!resp.is_success());
+        assert!(resp.is_already_registered());
+        assert_eq!(resp.version(), Some(10));
+        let (success, error) = resp.to_result();
+        assert!(success);
+        assert!(error.is_empty());
+    }
+
+    #[test]
+    fn test_cluster_response_not_found() {
+        let resp = ClusterResponse::not_found();
+        assert!(!resp.is_success());
+        assert!(!resp.is_already_registered());
+        assert_eq!(resp.version(), None);
+        let (success, error) = resp.to_result();
+        assert!(!success);
+        assert_eq!(error, "Node not found");
+    }
+
+    #[test]
+    fn test_cluster_response_generation_mismatch() {
+        let resp = ClusterResponse::generation_mismatch("expected-id", "got-id");
+        assert!(!resp.is_success());
+        assert_eq!(resp.version(), None);
+        let (success, error) = resp.to_result();
+        assert!(!success);
+        assert!(error.contains("expected-id"));
+        assert!(error.contains("got-id"));
+    }
+
+    #[test]
+    fn test_cluster_response_error() {
+        let resp = ClusterResponse::error("something went wrong");
+        assert!(!resp.is_success());
+        assert_eq!(resp.version(), None);
+        let (success, error) = resp.to_result();
+        assert!(!success);
+        assert_eq!(error, "something went wrong");
+    }
+
+    #[test]
+    fn test_cluster_response_clone() {
+        let resp = ClusterResponse::success(10);
+        let cloned = resp.clone();
+        assert_eq!(resp.version(), cloned.version());
+    }
+
+    #[test]
+    fn test_cluster_response_debug() {
+        let resp = ClusterResponse::success(10);
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("Success"));
+    }
+
+    #[test]
+    fn test_serializable_heartbeat_info() {
+        let info = SerializableHeartbeatInfo {
+            known_version: 100,
+            reported_state: 1,
+            generation_id: "uuid-5678".to_string(),
+            received_at_ms: 5000,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let deserialized: SerializableHeartbeatInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.known_version, 100);
+        assert_eq!(deserialized.reported_state, 1);
+        assert_eq!(deserialized.generation_id, "uuid-5678");
+        assert_eq!(deserialized.received_at_ms, 5000);
+    }
+
+    #[test]
+    fn test_versioned_command() {
+        let cmd = VersionedCommand {
+            version: 1,
+            command: ClusterCommand::RemoveNode {
+                node_id: "node-1".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let deserialized: VersionedCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.version, 1);
+    }
+}

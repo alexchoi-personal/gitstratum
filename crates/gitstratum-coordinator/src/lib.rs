@@ -3,6 +3,7 @@ mod config;
 mod convert;
 mod error;
 mod heartbeat_batcher;
+pub mod metrics;
 mod rate_limit;
 mod state_machine;
 pub mod tls;
@@ -17,6 +18,7 @@ pub use commands::{ClusterCommand, ClusterResponse, SerializableHeartbeatInfo, V
 pub use config::{CoordinatorConfig, TlsConfig};
 pub use error::CoordinatorError;
 pub use heartbeat_batcher::{run_heartbeat_flush_loop, HeartbeatBatcher, HeartbeatInfo};
+pub use metrics::CoordinatorMetrics;
 pub use rate_limit::{
     ClientRateLimiter, GlobalRateLimiter, RateLimitError, TokenBucket, WatchGuard,
 };

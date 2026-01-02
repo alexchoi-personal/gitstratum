@@ -1150,12 +1150,14 @@ dependencies = [
 name = "gitstratum-coordinator"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "async-trait",
  "criterion",
  "futures",
  "gitstratum-hashring",
  "gitstratum-proto",
  "k8s-operator",
+ "metrics",
  "parking_lot",
  "proptest",
  "prost 0.12.6",
