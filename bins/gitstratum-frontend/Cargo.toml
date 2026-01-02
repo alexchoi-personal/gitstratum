@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 gitstratum-frontend-cluster = { path = "../../crates/gitstratum-frontend-cluster" }
-gitstratum-control-plane-cluster = { path = "../../crates/gitstratum-control-plane-cluster" }
 gitstratum-metadata-cluster = { path = "../../crates/gitstratum-metadata-cluster" }
 gitstratum-object-cluster = { path = "../../crates/gitstratum-object-cluster" }
 gitstratum-core = { path = "../../crates/gitstratum-core" }

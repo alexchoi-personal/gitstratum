@@ -40,24 +40,19 @@ message Commit {
   string message = 6;
 }
 
-// Control Plane Service
-service ControlPlaneService {
+// Coordinator Service - cluster membership management for metadata and object clusters
+service CoordinatorService {
   // Cluster membership
   rpc GetClusterState(GetClusterStateRequest) returns (GetClusterStateResponse);
   rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
   rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
   rpc SetNodeState(SetNodeStateRequest) returns (SetNodeStateResponse);
 
-  // Distributed locks for ref updates
-  rpc AcquireRefLock(AcquireRefLockRequest) returns (AcquireRefLockResponse);
-  rpc ReleaseRefLock(ReleaseRefLockRequest) returns (ReleaseRefLockResponse);
-
-  // Hash ring
+  // Hash ring (for object cluster routing)
   rpc GetHashRing(GetHashRingRequest) returns (GetHashRingResponse);
 
-  // Rebalancing
-  rpc TriggerRebalance(TriggerRebalanceRequest) returns (TriggerRebalanceResponse);
-  rpc GetRebalanceStatus(GetRebalanceStatusRequest) returns (GetRebalanceStatusResponse);
+  // Watch for topology changes
+  rpc WatchTopology(WatchTopologyRequest) returns (stream TopologyUpdate);
 }
 
 message NodeInfo {
@@ -78,21 +73,23 @@ enum NodeState {
 
 enum NodeType {
   NODE_TYPE_UNKNOWN = 0;
-  NODE_TYPE_CONTROL_PLANE = 1;
-  NODE_TYPE_METADATA = 2;
-  NODE_TYPE_OBJECT = 3;
-  NODE_TYPE_FRONTEND = 4;
+  NODE_TYPE_METADATA = 1;
+  NODE_TYPE_OBJECT = 2;
 }
 
 message GetClusterStateRequest {}
 
 message GetClusterStateResponse {
-  repeated NodeInfo control_plane_nodes = 1;
-  repeated NodeInfo metadata_nodes = 2;
-  repeated NodeInfo object_nodes = 3;
-  repeated NodeInfo frontend_nodes = 4;
-  string leader_id = 5;
-  uint64 version = 6;
+  repeated NodeInfo metadata_nodes = 1;
+  repeated NodeInfo object_nodes = 2;
+  string leader_id = 3;
+  uint64 version = 4;
+  HashRingConfig hash_ring_config = 5;
+}
+
+message HashRingConfig {
+  uint32 virtual_nodes_per_physical = 1;
+  uint32 replication_factor = 2;
 }
 
 message AddNodeRequest {
@@ -123,28 +120,6 @@ message SetNodeStateResponse {
   string error = 2;
 }
 
-message AcquireRefLockRequest {
-  string repo_id = 1;
-  string ref_name = 2;
-  string holder_id = 3;
-  uint64 timeout_ms = 4;
-}
-
-message AcquireRefLockResponse {
-  bool acquired = 1;
-  string lock_id = 2;
-  string error = 3;
-}
-
-message ReleaseRefLockRequest {
-  string lock_id = 1;
-}
-
-message ReleaseRefLockResponse {
-  bool success = 1;
-  string error = 2;
-}
-
 message HashRingEntry {
   uint64 position = 1;
   string node_id = 2;
@@ -158,26 +133,18 @@ message GetHashRingResponse {
   uint64 version = 3;
 }
 
-message TriggerRebalanceRequest {
-  string reason = 1;
+message WatchTopologyRequest {
+  uint64 since_version = 1;
 }
 
-message TriggerRebalanceResponse {
-  bool started = 1;
-  string rebalance_id = 2;
-  string error = 3;
-}
-
-message GetRebalanceStatusRequest {
-  string rebalance_id = 1;
-}
-
-message GetRebalanceStatusResponse {
-  bool in_progress = 1;
-  float progress_percent = 2;
-  uint64 bytes_moved = 3;
-  uint64 bytes_remaining = 4;
-  string error = 5;
+message TopologyUpdate {
+  uint64 version = 1;
+  oneof update {
+    NodeInfo node_added = 2;
+    NodeInfo node_updated = 3;
+    string node_removed = 4;
+    HashRingConfig hash_ring_config_updated = 5;
+  }
 }
 
 // Metadata Service

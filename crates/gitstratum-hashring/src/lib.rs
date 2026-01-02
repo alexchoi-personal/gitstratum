@@ -56,6 +56,11 @@ impl NodeInfo {
         }
     }
 
+    pub fn with_state(mut self, state: NodeState) -> Self {
+        self.state = state;
+        self
+    }
+
     pub fn endpoint(&self) -> String {
         format!("{}:{}", self.address, self.port)
     }
@@ -235,6 +240,14 @@ impl ConsistentHashRing {
 
     pub fn version(&self) -> u64 {
         *self.version.read()
+    }
+
+    pub fn get_ring_entries(&self) -> Vec<(u64, NodeId)> {
+        self.ring
+            .read()
+            .iter()
+            .map(|(pos, vnode)| (*pos, vnode.node_id.clone()))
+            .collect()
     }
 
     fn primary_node_at_position(&self, position: u64) -> Result<NodeInfo> {
