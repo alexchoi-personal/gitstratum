@@ -1028,6 +1028,7 @@ name = "gitstratum-core"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "criterion",
  "flate2",
  "hex",
  "proptest",
@@ -1093,6 +1094,7 @@ dependencies = [
 name = "gitstratum-hashring"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "gitstratum-core",
  "parking_lot",
  "proptest",
@@ -1190,6 +1192,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "bytes",
+ "criterion",
  "dashmap",
  "flate2",
  "gitstratum-core",

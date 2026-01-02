@@ -132,7 +132,6 @@ impl ObjectClusterClient {
         }
 
         let mut success_count = 0;
-        let mut last_error = None;
 
         for node in &nodes {
             debug!(node_id = %node.id, "putting to node");
@@ -141,13 +140,18 @@ impl ObjectClusterClient {
                 Ok(()) => success_count += 1,
                 Err(e) => {
                     warn!(node_id = %node.id, error = %e, "failed to put to node");
-                    last_error = Some(e);
                 }
             }
         }
 
-        if success_count == 0 {
-            return Err(last_error.unwrap_or(ObjectStoreError::AllReplicasFailed));
+        let replication_factor = self.ring.replication_factor();
+        let quorum = (replication_factor / 2) + 1;
+
+        if success_count < quorum {
+            return Err(ObjectStoreError::InsufficientReplicas {
+                required: quorum,
+                achieved: success_count,
+            });
         }
 
         Ok(())

@@ -331,9 +331,9 @@ impl ConsistentHashRing {
         self.nodes_at_position(position)
     }
 
-    pub fn nodes_for_prefix(&self, prefix: u8) -> Vec<NodeInfo> {
+    pub fn nodes_for_prefix(&self, prefix: u8) -> Result<Vec<NodeInfo>> {
         let key = [prefix, 0, 0, 0, 0, 0, 0, 0];
-        self.nodes_for_key(&key).unwrap_or_default()
+        self.nodes_for_key(&key)
     }
 
     pub fn replication_factor(&self) -> usize {
@@ -670,15 +670,15 @@ mod tests {
             .build()
             .unwrap();
 
-        let nodes = ring.nodes_for_prefix(0xAB);
+        let nodes = ring.nodes_for_prefix(0xAB).unwrap();
         assert_eq!(nodes.len(), 2);
     }
 
     #[test]
     fn test_nodes_for_prefix_empty_ring() {
         let ring = ConsistentHashRing::new(16, 2);
-        let nodes = ring.nodes_for_prefix(0xAB);
-        assert!(nodes.is_empty());
+        let result = ring.nodes_for_prefix(0xAB);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -903,6 +903,132 @@ mod tests {
                     node.id
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_concurrent_reads_during_writes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(2)
+                .add_node(create_test_node("node-1"))
+                .add_node(create_test_node("node-2"))
+                .add_node(create_test_node("node-3"))
+                .build()
+                .unwrap(),
+        );
+
+        let mut handles = vec![];
+
+        for i in 0..4 {
+            let ring_clone = Arc::clone(&ring);
+            let handle = thread::spawn(move || {
+                for j in 0..100 {
+                    let key = format!("key-{}-{}", i, j);
+                    let _ = ring_clone.primary_node(key.as_bytes());
+                }
+            });
+            handles.push(handle);
+        }
+
+        let ring_writer = Arc::clone(&ring);
+        let writer_handle = thread::spawn(move || {
+            for i in 0..50 {
+                let node = NodeInfo::new(
+                    format!("temp-node-{}", i),
+                    format!("10.0.1.{}", i % 256),
+                    9002,
+                );
+                let _ = ring_writer.add_node(node);
+                let _ = ring_writer.remove_node(&NodeId::new(format!("temp-node-{}", i)));
+            }
+        });
+        handles.push(writer_handle);
+
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+    }
+
+    #[test]
+    fn test_concurrent_node_additions() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let ring = Arc::new(ConsistentHashRing::new(16, 2));
+
+        let mut handles = vec![];
+
+        for i in 0..8 {
+            let ring_clone = Arc::clone(&ring);
+            let handle = thread::spawn(move || {
+                for j in 0..100 {
+                    let node = NodeInfo::new(
+                        format!("node-{}-{}", i, j),
+                        format!("10.0.{}.{}", i, j % 256),
+                        9002,
+                    );
+                    let _ = ring_clone.add_node(node);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        assert_eq!(ring.node_count(), 800);
+    }
+
+    #[test]
+    fn test_concurrent_lookups_with_state_changes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(2)
+                .add_node(create_test_node("node-1"))
+                .add_node(create_test_node("node-2"))
+                .add_node(create_test_node("node-3"))
+                .add_node(create_test_node("node-4"))
+                .build()
+                .unwrap(),
+        );
+
+        let mut handles = vec![];
+
+        for i in 0..4 {
+            let ring_clone = Arc::clone(&ring);
+            let handle = thread::spawn(move || {
+                for j in 0..100 {
+                    let key = format!("lookup-key-{}-{}", i, j);
+                    let _ = ring_clone.nodes_for_key(key.as_bytes());
+                }
+            });
+            handles.push(handle);
+        }
+
+        for i in 0..2 {
+            let ring_clone = Arc::clone(&ring);
+            let handle = thread::spawn(move || {
+                let node_id = NodeId::new(format!("node-{}", (i % 4) + 1));
+                for _ in 0..100 {
+                    let _ = ring_clone.set_node_state(&node_id, NodeState::Draining);
+                    let _ = ring_clone.set_node_state(&node_id, NodeState::Active);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().expect("Thread panicked");
         }
     }
 }
