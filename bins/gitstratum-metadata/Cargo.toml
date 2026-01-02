@@ -11,9 +11,9 @@ name = "gitstratum-metadata"
 path = "src/main.rs"
 
 [dependencies]
-gitstratum-metadata-cluster = { path = "../../gitstratum-metadata-cluster" }
-gitstratum-core = { path = "../../gitstratum-core" }
-gitstratum-proto = { path = "../../gitstratum-proto" }
+gitstratum-metadata-cluster = { path = "../../crates/gitstratum-metadata-cluster" }
+gitstratum-core = { path = "../../crates/gitstratum-core" }
+gitstratum-proto = { path = "../../crates/gitstratum-proto" }
 tokio.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 tonic.workspace = true
