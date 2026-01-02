@@ -1,58 +1,40 @@
+use async_trait::async_trait;
 use gitstratum_core::{Blob, Oid};
 use gitstratum_object_cluster::{
-    NodeId, ObjectStorage, RebalanceDirection, RepairCoordinator, RepairCoordinatorConfig,
-    RepairPriority, RepairSession, RepairSessionStatus, RepairType, SessionId, StorageStats,
+    error::Result,
+    store::{ObjectStorage, StorageStats},
+    NodeId, RebalanceDirection, RepairCoordinator, RepairCoordinatorConfig, RepairPriority,
+    RepairSession, RepairSessionStatus, RepairType, SessionId,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-struct MockObjectStorage {
+/// Minimal mock for integration tests.
+pub struct MockObjectStorage {
     objects: RwLock<HashMap<Oid, Blob>>,
-    put_count: AtomicU64,
-    get_count: AtomicU64,
 }
 
 impl MockObjectStorage {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             objects: RwLock::new(HashMap::new()),
-            put_count: AtomicU64::new(0),
-            get_count: AtomicU64::new(0),
         }
-    }
-
-    fn with_blobs(blobs: Vec<Blob>) -> Self {
-        let storage = Self::new();
-        {
-            let mut map = storage.objects.write().unwrap();
-            for blob in blobs {
-                map.insert(blob.oid, blob);
-            }
-        }
-        storage
-    }
-
-    fn object_count(&self) -> usize {
-        self.objects.read().unwrap().len()
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl ObjectStorage for MockObjectStorage {
-    async fn get(&self, oid: &Oid) -> gitstratum_object_cluster::Result<Option<Blob>> {
-        self.get_count.fetch_add(1, Ordering::Relaxed);
+    async fn get(&self, oid: &Oid) -> Result<Option<Blob>> {
         Ok(self.objects.read().unwrap().get(oid).cloned())
     }
 
-    async fn put(&self, blob: &Blob) -> gitstratum_object_cluster::Result<()> {
-        self.put_count.fetch_add(1, Ordering::Relaxed);
+    async fn put(&self, blob: &Blob) -> Result<()> {
         self.objects.write().unwrap().insert(blob.oid, blob.clone());
         Ok(())
     }
 
-    async fn delete(&self, oid: &Oid) -> gitstratum_object_cluster::Result<bool> {
+    async fn delete(&self, oid: &Oid) -> Result<bool> {
         Ok(self.objects.write().unwrap().remove(oid).is_some())
     }
 
@@ -61,19 +43,15 @@ impl ObjectStorage for MockObjectStorage {
     }
 
     fn stats(&self) -> StorageStats {
-        let objects = self.objects.read().unwrap();
-        let total_bytes: u64 = objects.values().map(|b| b.data.len() as u64).sum();
         StorageStats {
-            total_blobs: objects.len() as u64,
-            total_bytes,
-            used_bytes: total_bytes,
-            available_bytes: 1024 * 1024 * 1024,
+            total_blobs: self.objects.read().unwrap().len() as u64,
+            total_bytes: 0,
+            used_bytes: 0,
+            available_bytes: 0,
             io_utilization: 0.0,
         }
     }
 }
-
-use std::sync::Arc;
 
 #[tokio::test]
 async fn test_repair_session_lifecycle() {
@@ -579,21 +557,27 @@ async fn test_session_builder_validation() {
         .ring_version(1)
         .build();
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), "id is required");
+    assert!(result.unwrap_err().to_string().contains("id is required"));
 
     let result = RepairSession::builder()
         .id("test-session")
         .ring_version(1)
         .build();
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), "session_type is required");
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("session_type is required"));
 
     let result = RepairSession::builder()
         .id("test-session")
         .session_type(RepairType::AntiEntropy)
         .build();
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), "ring_version is required");
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("ring_version is required"));
 
     let result = RepairSession::builder()
         .id("test-session")

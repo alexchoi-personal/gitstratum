@@ -11,11 +11,17 @@ use crate::repair::constants::{
     DEFAULT_ANTI_ENTROPY_INTERVAL, DEFAULT_ANTI_ENTROPY_SAMPLE_SIZE, DEFAULT_MERKLE_TREE_DEPTH,
     DEFAULT_REPAIR_QUEUE_SIZE,
 };
+use crate::repair::types::NodeId;
 use crate::repair::{
-    MerkleTreeBuilder, ObjectMerkleTree, PositionRange, RepairPriority, RepairSession, RepairType,
+    generate_session_id, MerkleTreeBuilder, ObjectMerkleTree, PositionRange, RepairPriority,
+    RepairSession, RepairType,
 };
 use crate::store::ObjectStorage;
 
+/// Configuration for anti-entropy repair operations.
+///
+/// Anti-entropy repair periodically scans owned ranges, comparing Merkle trees
+/// with peer replicas to detect and repair inconsistencies.
 #[derive(Debug, Clone)]
 pub struct AntiEntropyConfig {
     pub scan_interval: Duration,
@@ -37,6 +43,10 @@ impl Default for AntiEntropyConfig {
     }
 }
 
+/// Statistics for anti-entropy repair operations.
+///
+/// Tracks cumulative metrics including scans completed, inconsistencies found,
+/// and objects repaired during background anti-entropy sweeps.
 #[derive(Debug, Default, Clone)]
 pub struct AntiEntropyStats {
     pub scans_completed: u64,
@@ -46,6 +56,10 @@ pub struct AntiEntropyStats {
     pub last_scan_duration_ms: u64,
 }
 
+/// An item in the repair queue representing an object that needs repair.
+///
+/// Contains the object identifier, its hash ring position, the peer node
+/// to fetch from, and priority/timing metadata for scheduling.
 #[derive(Debug, Clone)]
 pub struct RepairItem {
     pub oid: Oid,
@@ -72,6 +86,10 @@ impl RepairItem {
     }
 }
 
+/// A bounded FIFO queue for repair items awaiting processing.
+///
+/// Thread-safe queue with configurable maximum size. Tracks total items
+/// queued and processed for monitoring repair throughput.
 pub struct RepairQueue {
     items: Mutex<VecDeque<RepairItem>>,
     max_size: usize,
@@ -145,10 +163,14 @@ impl Default for RepairQueue {
     }
 }
 
+/// Background anti-entropy repair handler for detecting and repairing inconsistencies.
+///
+/// Periodically compares Merkle trees with peer replicas to find missing or
+/// divergent objects. Queues repair items for streaming from healthy replicas.
 pub struct AntiEntropyRepairer<S: ObjectStorage> {
     store: Arc<S>,
     config: AntiEntropyConfig,
-    local_node_id: String,
+    local_node_id: NodeId,
     repair_queue: Arc<RepairQueue>,
     stats: RwLock<AntiEntropyStats>,
     running: AtomicBool,
@@ -156,12 +178,12 @@ pub struct AntiEntropyRepairer<S: ObjectStorage> {
 }
 
 impl<S: ObjectStorage + Send + Sync + 'static> AntiEntropyRepairer<S> {
-    pub fn new(store: Arc<S>, local_node_id: String, config: AntiEntropyConfig) -> Self {
+    pub fn new(store: Arc<S>, local_node_id: impl Into<NodeId>, config: AntiEntropyConfig) -> Self {
         let repair_queue = Arc::new(RepairQueue::new(config.max_queue_size));
         Self {
             store,
             config,
-            local_node_id,
+            local_node_id: local_node_id.into(),
             repair_queue,
             stats: RwLock::new(AntiEntropyStats::default()),
             running: AtomicBool::new(false),
@@ -204,13 +226,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> AntiEntropyRepairer<S> {
         range: PositionRange,
         peer_nodes: Vec<String>,
     ) -> Result<RepairSession> {
-        use crate::repair::types::NodeId;
-        let session_id = format!(
-            "anti-entropy-{}-{}-{}",
-            self.local_node_id,
-            range.start,
-            crate::util::time::current_timestamp()
-        );
+        let session_id = generate_session_id("anti-entropy", &self.local_node_id);
 
         RepairSession::builder()
             .id(session_id)
@@ -219,7 +235,6 @@ impl<S: ObjectStorage + Send + Sync + 'static> AntiEntropyRepairer<S> {
             .range(range)
             .peer_nodes(peer_nodes.into_iter().map(NodeId::from).collect())
             .build()
-            .map_err(|e| crate::error::ObjectStoreError::Internal(e.to_string()))
     }
 
     pub fn priority(&self) -> RepairPriority {
@@ -272,7 +287,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> AntiEntropyRepairer<S> {
         &self.store
     }
 
-    pub fn local_node_id(&self) -> &str {
+    pub fn local_node_id(&self) -> &NodeId {
         &self.local_node_id
     }
 }
@@ -536,9 +551,9 @@ mod tests {
     fn test_anti_entropy_repairer_new() {
         let store = Arc::new(MockObjectStorage::new());
         let config = AntiEntropyConfig::default();
-        let repairer = AntiEntropyRepairer::new(store, "node-1".to_string(), config);
+        let repairer = AntiEntropyRepairer::new(store, NodeId::new("node-1"), config);
 
-        assert_eq!(repairer.local_node_id(), "node-1");
+        assert_eq!(repairer.local_node_id().as_str(), "node-1");
         assert!(!repairer.is_running());
     }
 

@@ -83,6 +83,14 @@ impl AsRef<str> for NodeId {
     }
 }
 
+impl Deref for NodeId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,6 +9,11 @@ use crate::error::{ObjectStoreError, Result};
 
 const HEALTHY_TIMESTAMP_FILE: &str = "healthy_timestamp";
 
+/// Tracks node downtime for crash recovery by persisting healthy timestamps.
+///
+/// Periodically writes the current timestamp to disk. On restart, compares
+/// the last healthy timestamp to the current time to determine the downtime
+/// window that requires repair.
 pub struct DowntimeTracker {
     data_dir: PathBuf,
     last_healthy: AtomicU64,

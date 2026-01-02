@@ -30,7 +30,7 @@ pub(crate) use rebalance::{
     RangeTransfer, RebalanceConfig, RebalanceHandler, RebalanceState, RebalanceStats,
 };
 #[allow(unused_imports)]
-pub(crate) use session::{PositionRange, RepairCheckpoint, RepairProgress};
+pub(crate) use session::{generate_session_id, PositionRange, RepairCheckpoint, RepairProgress};
 pub use session::{
     RebalanceDirection, RepairPriority, RepairSession, RepairSessionStatus, RepairType,
 };
@@ -51,6 +51,7 @@ pub mod testing {
         RangeTransfer, RebalanceConfig, RebalanceHandler, RebalanceState, RebalanceStats,
     };
     pub use super::session::{
-        PositionRange, RebalanceDirection, RepairCheckpoint, RepairPriority, RepairProgress,
+        generate_session_id, PositionRange, RebalanceDirection, RepairCheckpoint, RepairPriority,
+        RepairProgress,
     };
 }

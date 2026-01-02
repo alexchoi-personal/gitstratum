@@ -1,12 +1,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Returns the current Unix timestamp in seconds.
 pub fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs()
 }
 
+/// Returns the current Unix timestamp in milliseconds.
 pub fn current_timestamp_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
