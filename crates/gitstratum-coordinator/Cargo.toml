@@ -11,7 +11,7 @@ rust-version.workspace = true
 gitstratum-proto.workspace = true
 gitstratum-hashring.workspace = true
 
-k8s-operator = { path = "../../../k8s-operator", features = ["ha"] }
+k8s-operator = { git = "https://github.com/alexchoi-personal/k8s-operator", features = ["ha"] }
 
 tokio.workspace = true
 tokio-stream.workspace = true

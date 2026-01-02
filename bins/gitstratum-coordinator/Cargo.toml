@@ -14,7 +14,7 @@ path = "src/main.rs"
 gitstratum-coordinator = { path = "../../crates/gitstratum-coordinator" }
 gitstratum-proto = { path = "../../crates/gitstratum-proto" }
 
-k8s-operator = { path = "../../../k8s-operator", features = ["ha"] }
+k8s-operator = { git = "https://github.com/alexchoi-personal/k8s-operator", features = ["ha"] }
 
 tokio.workspace = true
 tonic.workspace = true
