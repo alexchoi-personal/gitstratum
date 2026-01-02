@@ -23,19 +23,19 @@ The system is split into four clusters:
               ┌───────────────────────┼───────────────────────┐
               ▼                       ▼                       ▼
 ┌───────────────────────┐  ┌───────────────────┐  ┌───────────────────────────┐
-│     CONTROL PLANE     │  │      METADATA     │  │          OBJECT           │
+│     COORDINATOR       │  │      METADATA     │  │          OBJECT           │
 │                       │  │                   │  │                           │
 │  Cluster membership.  │  │  Refs, commits,   │  │  Blob storage.            │
 │  Hash ring topology.  │  │  permissions.     │  │  Pack cache.              │
-│  Background only—not  │  │  Partitioned by   │  │  Replicated across nodes. │
-│  on the request path. │  │  repository.      │  │                           │
+│  Failure detection.   │  │  Partitioned by   │  │  Replicated across nodes. │
+│  Background only.     │  │  repository.      │  │                           │
 └───────────────────────┘  └───────────────────┘  └───────────────────────────┘
 ```
 
 Each cluster scales independently:
 
 - **Frontend** scales with traffic. More CI runners means more Frontend nodes.
-- **Control Plane** stays small (3–5 nodes). It coordinates the cluster but doesn't serve requests.
+- **Coordinator** stays small (3–5 nodes). Manages membership and failure detection but doesn't serve requests.
 - **Metadata** scales with repository count.
 - **Object** scales with storage capacity.
 
@@ -43,17 +43,22 @@ Each cluster scales independently:
 
 ```
 gitstratum-cluster/
-├── gitstratum-core/             # Core types: Oid, Repo, object parsing
-├── gitstratum-proto/            # gRPC protocol definitions
-├── gitstratum-hashring/         # Consistent hashing implementation
-├── gitstratum-metrics/          # Metrics collection and export
-├── gitstratum-storage/          # BucketStore: high-performance object storage
-├── gitstratum-control-plane/    # Control plane: Raft, membership, config
-├── gitstratum-metadata/         # Metadata: refs, graph, permissions
-├── gitstratum-object-cluster/   # Object: blob storage, pack cache, replication, repair
-├── gitstratum-frontend/         # Frontend: Git protocol, pack assembly
-├── gitstratum-operator/         # Kubernetes operator
-└── gitstratum-lfs/              # Git LFS support
+├── crates/
+│   ├── gitstratum-core/             # Core types: Oid, Repo, object parsing
+│   ├── gitstratum-proto/            # gRPC protocol definitions
+│   ├── gitstratum-hashring/         # Consistent hashing implementation
+│   ├── gitstratum-metrics/          # Metrics collection and export
+│   ├── gitstratum-storage/          # BucketStore: high-performance object storage
+│   ├── gitstratum-coordinator/      # Coordinator: Raft, membership, failure detection
+│   ├── gitstratum-metadata-cluster/ # Metadata: refs, graph, permissions
+│   ├── gitstratum-object-cluster/   # Object: blob storage, pack cache, replication
+│   ├── gitstratum-frontend-cluster/ # Frontend: Git protocol, pack assembly
+│   └── gitstratum-lfs/              # Git LFS support
+└── bins/
+    ├── gitstratum-coordinator/      # Coordinator binary
+    ├── gitstratum-metadata/         # Metadata server binary
+    ├── gitstratum-object/           # Object server binary
+    └── gitstratum-frontend/         # Frontend server binary
 ```
 
 ## Request Flow
@@ -159,7 +164,7 @@ A load balancer distributes connections. If a node dies, traffic routes to other
 
 Frontend caches two things from other clusters:
 - **SSH keys** from Metadata (synced every few minutes)
-- **Hash ring topology** from Control Plane (watched in real-time)
+- **Hash ring topology** from Coordinator (watched in real-time)
 
 #### Request Coalescing
 
@@ -173,13 +178,13 @@ Runner C ──┘
 
 The first request triggers the backend call. Subsequent identical requests (same repo, ref, commit, depth) join the in-flight request and receive the same response stream. This prevents thundering herds when a popular branch gets pushed.
 
-### Control Plane
+### Coordinator
 
-Control Plane tracks cluster membership and the hash ring. It uses Raft consensus—a protocol where nodes elect a leader, and all changes replicate through the leader to followers.
+Coordinator tracks cluster membership, hash ring topology, and node health. It uses Raft consensus via `k8s-operator`—nodes elect a leader, and all changes replicate through the leader to followers.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      CONTROL PLANE                          │
+│                       COORDINATOR                           │
 │                                                             │
 │   ┌──────────┐      ┌──────────┐      ┌──────────┐          │
 │   │  Leader  │◄────►│ Follower │◄────►│ Follower │          │
@@ -187,10 +192,9 @@ Control Plane tracks cluster membership and the hash ring. It uses Raft consensu
 │                                                             │
 │   Manages:                                                  │
 │     • Node membership (who's in the cluster)                │
-│     • Hash ring (which nodes own which object ranges)       │
-│     • Cluster configuration                                 │
-│     • Distributed locks (ref update coordination)           │
-│     • Audit logging                                         │
+│     • Hash ring topology (which nodes own which ranges)     │
+│     • Failure detection (heartbeat-based with flap damping) │
+│     • Node state transitions (JOINING→ACTIVE→SUSPECT→DOWN) │
 │                                                             │
 │   Does NOT manage:                                          │
 │     • Authentication (Frontend handles locally)             │
@@ -199,27 +203,44 @@ Control Plane tracks cluster membership and the hash ring. It uses Raft consensu
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Control Plane is **not on the request path**. Frontend watches for topology changes in the background and caches the hash ring locally. Requests never block on Control Plane.
+Coordinator is **not on the request path**. Frontend watches for topology changes in the background and caches the hash ring locally. Requests never block on Coordinator.
 
 Why 3 or 5 nodes? Raft needs a majority to agree. With 3 nodes you need 2 (tolerates 1 failure). With 5 you need 3 (tolerates 2). More nodes adds overhead without much benefit.
 
-#### Ring Distribution
+#### Failure Detection
 
-Frontend nodes subscribe to ring updates via `WatchTopology`—a streaming gRPC call that stays open. When the ring changes, Control Plane pushes the delta:
+Nodes send heartbeats to Coordinator. If heartbeats stop, the node transitions through states:
 
 ```
-Frontend                          Control Plane
+JOINING ──► ACTIVE ──► SUSPECT ──► DOWN
+              │           │
+              └───────────┘  (heartbeat resumes)
+```
+
+- **JOINING**: Node registered but not yet receiving traffic
+- **ACTIVE**: Node healthy, receiving traffic
+- **SUSPECT**: Heartbeat missed, grace period before marking DOWN
+- **DOWN**: Node removed from routing, replication triggered
+
+Flap damping prevents oscillation: if a node goes SUSPECT 3+ times in 10 minutes, the suspect timeout doubles.
+
+#### Topology Distribution
+
+Frontend nodes subscribe to topology updates via `WatchTopology`—a streaming gRPC call that stays open. When topology changes, Coordinator pushes updates:
+
+```
+Frontend                           Coordinator
    │                                    │
    │─── WatchTopology() ───────────────►│
    │                                    │
-   │◀─────────── ring v1 ──────────────│  (initial state)
+   │◀─────────── topology v1 ──────────│  (initial state)
    │                                    │
    │              ...                   │  (time passes)
    │                                    │
-   │◀─────────── ring v2 ──────────────│  (node added)
+   │◀─────────── topology v2 ──────────│  (node added/removed)
 ```
 
-Frontend caches the ring locally. All routing decisions use the local cache—no network call to Control Plane per request.
+Frontend caches the topology locally. All routing decisions use the local cache—no network call to Coordinator per request.
 
 ### Metadata
 
@@ -556,24 +577,24 @@ Compaction runs when fragmentation exceeds 40% (configurable).
 │                                  FRONTEND                                   │
 │                                                                             │
 │  Local: JWT validation, rate limiting                                       │
-│  Cached: SSH keys (from Metadata), hash ring (from Control Plane)           │
+│  Cached: SSH keys (from Metadata), hash ring (from Coordinator)             │
 └─────────────────────────────────────────────────────────────────────────────┘
          │                          │                          │
          │ background               │ request path             │ request path
          ▼                          ▼                          ▼
 ┌─────────────────┐        ┌─────────────────┐        ┌─────────────────┐
-│  CONTROL PLANE  │        │    METADATA     │        │     OBJECT      │
+│   COORDINATOR   │        │    METADATA     │        │     OBJECT      │
 │                 │        │                 │        │                 │
 │  WatchTopology  │        │  GetRefs        │        │  GetObjects     │
-│  GetHashRing    │        │  UpdateRefs     │        │  PutObjects     │
-│  AcquireLock    │        │  CheckPermission│        │  GetPackCache   │
-│  ReleaseLock    │        │  SyncSSHKeys    │        │  StreamBlobs    │
+│  GetTopology    │        │  UpdateRefs     │        │  PutObjects     │
+│  RegisterNode   │        │  CheckPermission│        │  GetPackCache   │
+│  Heartbeat      │        │  SyncSSHKeys    │        │  StreamBlobs    │
 └─────────────────┘        └─────────────────┘        └─────────────────┘
 ```
 
 All communication uses gRPC. Frontend maintains connection pools to each cluster.
 
-**Control Plane calls are background only.** Frontend subscribes to topology changes and updates its local cache. No request ever waits on Control Plane.
+**Coordinator calls are background only.** Frontend subscribes to topology changes and updates its local cache. No request ever waits on Coordinator.
 
 **Metadata calls happen per-request** for ref resolution and permission checks. SSH key sync is periodic, not per-request.
 
@@ -584,13 +605,13 @@ All communication uses gRPC. Frontend maintains connection pools to each cluster
 | Component | What breaks | What keeps working |
 |-----------|-------------|-------------------|
 | Frontend node | Connections to that node | Other nodes handle traffic |
-| Control Plane | Can't add/remove nodes | Requests continue with cached topology |
+| Coordinator | Can't add/remove nodes | Requests continue with cached topology |
 | Metadata partition | Affected repos can't push or check permissions | Other repos unaffected; cached packs still stream |
 | Object node | That node's objects unavailable from it | Replicas serve reads; writes succeed with 2 of 3 |
 
 **Frontend failure:** Stateless, so no data loss. Load balancer routes around dead nodes. Clients retry.
 
-**Control Plane failure:** Not on request path, so requests continue. Topology is frozen—no nodes can join or leave—but existing topology works indefinitely.
+**Coordinator failure:** Not on request path, so requests continue. Topology is frozen—no nodes can join or leave—but existing topology works indefinitely.
 
 **Metadata failure:** Partitioned by repo. If one partition is down, those repos are affected but others continue. Cached packs in Object cluster can still stream (cache key includes commit hash, so it's still valid).
 
@@ -847,7 +868,7 @@ This architecture optimizes for CI/CD workloads:
 
 **Availability over consistency.** Cached packs can stream even if Metadata is down. Slightly stale data is acceptable; blocked pipelines are not.
 
-**Horizontal over vertical.** Frontend and Object scale out. Control Plane stays small but doesn't bottleneck—it's not on the request path.
+**Horizontal over vertical.** Frontend and Object scale out. Coordinator stays small but doesn't bottleneck—it's not on the request path.
 
 **Caching everywhere.** Refs are cached. Auth decisions are cached. Pack files are cached. Hash ring is cached. The goal is to avoid recomputation.
 

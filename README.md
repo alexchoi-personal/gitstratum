@@ -24,18 +24,18 @@ GitStratum caches assembled pack files. The first clone does the work. Every sub
              ┌───────────────────────┼───────────────────────┐
              ▼                       ▼                       ▼
 ┌───────────────────────┐  ┌───────────────────┐  ┌───────────────────────────┐
-│     CONTROL PLANE     │  │      METADATA     │  │          OBJECT           │
+│     COORDINATOR       │  │      METADATA     │  │          OBJECT           │
 │                       │  │                   │  │                           │
 │  Cluster membership   │  │  Refs, commits,   │  │  Blob storage (BucketStore│
 │  Hash ring topology   │  │  trees, perms     │  │  Pack cache               │
-│  Raft consensus       │  │  Partitioned by   │  │  Consistent hashing with  │
-│  (background only)    │  │  repository       │  │  vnodes, 3x replication   │
+│  Raft consensus (HA)  │  │  Partitioned by   │  │  Consistent hashing with  │
+│  Failure detection    │  │  repository       │  │  vnodes, 3x replication   │
 └───────────────────────┘  └───────────────────┘  └───────────────────────────┘
 ```
 
 **Frontend** handles Git protocol and streams data. Stateless—scales with connection count.
 
-**Control Plane** coordinates cluster membership and hash ring topology via Raft. Not on the request path—Frontend caches the ring locally.
+**Coordinator** manages cluster membership and hash ring topology via Raft consensus. Provides heartbeat-based failure detection with flap damping. Not on the request path—Frontend caches the topology locally.
 
 **Metadata** stores refs, commits, trees, and permissions. Partitioned by repository for atomic ref updates.
 
@@ -47,21 +47,22 @@ GitStratum caches assembled pack files. The first clone does the work. Every sub
 - **Consistent hashing with vnodes**: Objects distributed evenly across nodes. Adding a node shifts ~1/N of data, not 50%.
 - **Quorum replication**: Write to 3 nodes, wait for 2. One slow node doesn't block.
 - **Eventual consistency**: Objects are immutable. Stale routing still works—old replicas remain valid.
-- **Control Plane off the hot path**: Frontend caches topology. Requests never wait on Raft.
+- **Coordinator off the hot path**: Frontend caches topology. Requests never wait on Raft.
 
 ## Crates
 
 | Crate | Description |
 |-------|-------------|
 | `gitstratum-core` | Core types: Oid, Blob, Commit, Tree, Ref |
-| `gitstratum-control-plane-cluster` | Raft consensus, membership, hash ring management |
+| `gitstratum-proto` | gRPC protocol definitions |
+| `gitstratum-coordinator` | Raft-based cluster coordination, membership, failure detection |
 | `gitstratum-metadata-cluster` | Ref/commit/tree storage, partitioned by repo |
 | `gitstratum-object-cluster` | Object storage, pack cache, replication |
 | `gitstratum-frontend-cluster` | Git protocol (SSH/HTTPS), pack assembly |
 | `gitstratum-storage` | BucketStore: bucket-based key-value storage for objects |
 | `gitstratum-hashring` | Consistent hashing with virtual nodes |
 | `gitstratum-lfs` | Git LFS support with cloud object storage backends |
-| `gitstratum-operator` | Kubernetes operator for cluster management |
+| `gitstratum-metrics` | Prometheus metrics collection and export |
 
 ## Building
 
