@@ -13,7 +13,10 @@ mod validation;
 pub mod client;
 pub mod server;
 
-pub use client::{CoordinatorClient, RetryConfig, TopologyCache};
+pub use client::{
+    watch_topology_with_recovery, CoordinatorClient, RetryConfig, SmartCoordinatorClient,
+    TopologyCache, WatchConfig, WatchEvent,
+};
 pub use commands::{ClusterCommand, ClusterResponse, SerializableHeartbeatInfo, VersionedCommand};
 pub use config::{CoordinatorConfig, TlsConfig};
 pub use error::CoordinatorError;
