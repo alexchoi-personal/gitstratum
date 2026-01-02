@@ -68,6 +68,9 @@ pub enum ObjectStoreError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
 }
 
 impl From<ObjectStoreError> for tonic::Status {
@@ -77,6 +80,7 @@ impl From<ObjectStoreError> for tonic::Status {
                 tonic::Status::not_found(format!("blob not found: {}", oid))
             }
             ObjectStoreError::InvalidOid(msg) => tonic::Status::invalid_argument(msg),
+            ObjectStoreError::InvalidArgument(msg) => tonic::Status::invalid_argument(msg),
             ObjectStoreError::NoAvailableNodes => tonic::Status::unavailable("no available nodes"),
             ObjectStoreError::AllReplicasFailed => {
                 tonic::Status::unavailable("all replicas failed")

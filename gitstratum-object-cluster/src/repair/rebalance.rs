@@ -5,18 +5,22 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use tokio_stream::StreamExt;
 
-use crate::error::{ObjectStoreError, Result};
+use crate::error::Result;
 use crate::repair::constants::{
     DEFAULT_CHECKPOINT_INTERVAL, DEFAULT_PEER_TIMEOUT, DEFAULT_REBALANCE_BATCH_SIZE,
     DEFAULT_REPAIR_BANDWIDTH_BYTES_PER_SEC,
 };
 use crate::repair::types::NodeId;
 use crate::repair::{
-    MerkleTreeBuilder, ObjectMerkleTree, PositionRange, RebalanceDirection, RepairPriority,
-    RepairSession, RepairType,
+    generate_session_id, MerkleTreeBuilder, ObjectMerkleTree, PositionRange, RebalanceDirection,
+    RepairPriority, RepairSession, RepairType,
 };
 use crate::store::{ObjectStorage, ObjectStore, StorageStats};
 
+/// Configuration for rebalance operations when nodes join or leave the cluster.
+///
+/// Controls bandwidth throttling, batch sizes, checkpointing frequency,
+/// and peer communication timeouts during data transfer.
 #[derive(Debug, Clone)]
 pub struct RebalanceConfig {
     pub max_bandwidth_bytes_per_sec: u64,
@@ -71,6 +75,10 @@ pub struct RebalanceStats {
     pub ranges_processed: u64,
 }
 
+/// Represents a range transfer between nodes during rebalancing.
+///
+/// Describes a hash ring range to transfer, the direction (incoming or outgoing),
+/// the peer node involved, and an estimated object count for progress tracking.
 #[derive(Debug, Clone)]
 pub struct RangeTransfer {
     pub range: PositionRange,
@@ -104,6 +112,10 @@ impl RangeTransfer {
     }
 }
 
+/// Handles rebalancing when nodes join or leave the cluster.
+///
+/// Manages range transfers, tracks rebalance state, and coordinates with
+/// peer nodes to redistribute data according to hash ring changes.
 pub struct RebalanceHandler {
     store: Arc<ObjectStore>,
     config: RebalanceConfig,
@@ -213,13 +225,7 @@ impl RebalanceHandler {
         transfer: &RangeTransfer,
         ring_version: u64,
     ) -> Result<RepairSession> {
-        let session_id = format!(
-            "rebalance-{}-{:?}-{}-{}",
-            self.local_node_id,
-            transfer.direction,
-            transfer.range.start,
-            crate::util::time::current_timestamp()
-        );
+        let session_id = generate_session_id("rebalance", &self.local_node_id);
 
         let repair_type = match transfer.direction {
             RebalanceDirection::Incoming => RepairType::rebalance_incoming(),
@@ -233,7 +239,6 @@ impl RebalanceHandler {
             .range(transfer.range)
             .peer_node(transfer.peer_node.clone())
             .build()
-            .map_err(|e| ObjectStoreError::Internal(e.to_string()))
     }
 
     pub fn priority(&self) -> RepairPriority {
@@ -666,10 +671,7 @@ mod tests {
         let range = PositionRange::new(0, 100);
         let transfer = RangeTransfer::incoming(range, "peer-1".to_string());
         let session = handler.create_session(&transfer, 5).unwrap();
-        assert!(session
-            .id()
-            .as_str()
-            .starts_with("rebalance-node-1-Incoming"));
+        assert!(session.id().as_str().starts_with("rebalance-node-1-"));
         assert_eq!(session.ring_version(), 5);
     }
 
@@ -679,10 +681,7 @@ mod tests {
         let range = PositionRange::new(0, 100);
         let transfer = RangeTransfer::outgoing(range, "peer-2".to_string());
         let session = handler.create_session(&transfer, 10).unwrap();
-        assert!(session
-            .id()
-            .as_str()
-            .starts_with("rebalance-node-1-Outgoing"));
+        assert!(session.id().as_str().starts_with("rebalance-node-1-"));
         assert_eq!(session.ring_version(), 10);
     }
 

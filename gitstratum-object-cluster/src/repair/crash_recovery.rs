@@ -4,14 +4,15 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
-use crate::error::{ObjectStoreError, Result};
+use crate::error::Result;
 use crate::repair::constants::{
     DEFAULT_CHECKPOINT_INTERVAL, DEFAULT_MAX_CONCURRENT_PEERS, DEFAULT_MERKLE_TREE_DEPTH,
     DEFAULT_PEER_TIMEOUT, DEFAULT_REPAIR_BANDWIDTH_BYTES_PER_SEC,
 };
+use crate::repair::types::NodeId;
 use crate::repair::{
-    DowntimeTracker, MerkleTreeBuilder, ObjectMerkleTree, PositionRange, RepairPriority,
-    RepairSession, RepairType,
+    generate_session_id, DowntimeTracker, MerkleTreeBuilder, ObjectMerkleTree, PositionRange,
+    RepairPriority, RepairSession, RepairType,
 };
 use crate::store::ObjectStorage;
 
@@ -47,14 +48,14 @@ pub struct CrashRecoveryHandler<S: ObjectStorage> {
     store: Arc<S>,
     downtime_tracker: Arc<DowntimeTracker>,
     config: CrashRecoveryConfig,
-    local_node_id: String,
+    local_node_id: NodeId,
 }
 
 impl<S: ObjectStorage + Send + Sync + 'static> CrashRecoveryHandler<S> {
     pub fn new(
         store: Arc<S>,
         data_dir: &Path,
-        local_node_id: String,
+        local_node_id: impl Into<NodeId>,
         config: CrashRecoveryConfig,
     ) -> Result<Self> {
         let downtime_tracker = Arc::new(DowntimeTracker::new(data_dir)?);
@@ -62,21 +63,21 @@ impl<S: ObjectStorage + Send + Sync + 'static> CrashRecoveryHandler<S> {
             store,
             downtime_tracker,
             config,
-            local_node_id,
+            local_node_id: local_node_id.into(),
         })
     }
 
     pub fn with_tracker(
         store: Arc<S>,
         downtime_tracker: Arc<DowntimeTracker>,
-        local_node_id: String,
+        local_node_id: impl Into<NodeId>,
         config: CrashRecoveryConfig,
     ) -> Self {
         Self {
             store,
             downtime_tracker,
             config,
-            local_node_id,
+            local_node_id: local_node_id.into(),
         }
     }
 
@@ -104,11 +105,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> CrashRecoveryHandler<S> {
         ranges: Vec<PositionRange>,
         peer_nodes: Vec<String>,
     ) -> Result<RepairSession> {
-        use crate::repair::types::NodeId;
-        let session_id = format!(
-            "crash-recovery-{}-{}",
-            self.local_node_id, recovery.downtime_start
-        );
+        let session_id = generate_session_id("crash-recovery", &self.local_node_id);
 
         info!(
             session_id = %session_id,
@@ -129,7 +126,6 @@ impl<S: ObjectStorage + Send + Sync + 'static> CrashRecoveryHandler<S> {
             .ranges(ranges)
             .peer_nodes(peer_nodes.into_iter().map(NodeId::from).collect())
             .build()
-            .map_err(|e| ObjectStoreError::Internal(e.to_string()))
     }
 
     pub fn build_local_tree(&self, range: &PositionRange, ring_version: u64) -> ObjectMerkleTree {
@@ -175,7 +171,7 @@ impl<S: ObjectStorage + Send + Sync + 'static> CrashRecoveryHandler<S> {
         &self.config
     }
 
-    pub fn local_node_id(&self) -> &str {
+    pub fn local_node_id(&self) -> &NodeId {
         &self.local_node_id
     }
 
@@ -362,9 +358,9 @@ mod tests {
         let config = CrashRecoveryConfig::default();
 
         let handler =
-            CrashRecoveryHandler::with_tracker(store, tracker, "node-2".to_string(), config);
+            CrashRecoveryHandler::with_tracker(store, tracker, NodeId::new("node-2"), config);
 
-        assert_eq!(handler.local_node_id(), "node-2");
+        assert_eq!(handler.local_node_id().as_str(), "node-2");
     }
 
     #[test]
@@ -423,7 +419,7 @@ mod tests {
         let session = session.unwrap();
         assert!(session.id().contains("crash-recovery"));
         assert!(session.id().contains("node-1"));
-        assert!(session.id().contains("1000"));
+        // Session ID now uses current timestamp from generate_session_id()
     }
 
     #[test]
@@ -568,10 +564,10 @@ mod tests {
         let config = CrashRecoveryConfig::default();
 
         let handler =
-            CrashRecoveryHandler::new(store, temp_dir.path(), "test-node-123".to_string(), config)
+            CrashRecoveryHandler::new(store, temp_dir.path(), NodeId::new("test-node-123"), config)
                 .unwrap();
 
-        assert_eq!(handler.local_node_id(), "test-node-123");
+        assert_eq!(handler.local_node_id().as_str(), "test-node-123");
     }
 
     #[test]

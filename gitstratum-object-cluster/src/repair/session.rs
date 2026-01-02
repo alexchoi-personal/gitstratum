@@ -4,6 +4,11 @@ use gitstratum_core::Oid;
 
 use super::types::{NodeId, SessionId};
 
+pub fn generate_session_id(prefix: &str, node_id: &NodeId) -> SessionId {
+    let timestamp = crate::util::time::current_timestamp();
+    SessionId::new(format!("{}-{}-{}", prefix, node_id.as_str(), timestamp))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PositionRange {
     pub start: u64,
@@ -342,10 +347,16 @@ impl RepairSessionBuilder {
         self
     }
 
-    pub fn build(self) -> Result<RepairSession, &'static str> {
-        let id = self.id.ok_or("id is required")?;
-        let session_type = self.session_type.ok_or("session_type is required")?;
-        let ring_version = self.ring_version.ok_or("ring_version is required")?;
+    pub fn build(self) -> Result<RepairSession, crate::error::ObjectStoreError> {
+        let id = self.id.ok_or_else(|| {
+            crate::error::ObjectStoreError::InvalidArgument("id is required".to_string())
+        })?;
+        let session_type = self.session_type.ok_or_else(|| {
+            crate::error::ObjectStoreError::InvalidArgument("session_type is required".to_string())
+        })?;
+        let ring_version = self.ring_version.ok_or_else(|| {
+            crate::error::ObjectStoreError::InvalidArgument("ring_version is required".to_string())
+        })?;
 
         Ok(RepairSession {
             id,
@@ -643,7 +654,7 @@ mod tests {
             .ring_version(1)
             .build();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "id is required");
+        assert!(result.unwrap_err().to_string().contains("id is required"));
     }
 
     #[test]
@@ -653,7 +664,10 @@ mod tests {
             .ring_version(1)
             .build();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "session_type is required");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("session_type is required"));
     }
 
     #[test]
@@ -663,7 +677,10 @@ mod tests {
             .session_type(RepairType::AntiEntropy)
             .build();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "ring_version is required");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("ring_version is required"));
     }
 
     #[test]
@@ -1022,5 +1039,36 @@ mod tests {
         set.insert(RepairType::AntiEntropy);
         set.insert(RepairType::AntiEntropy);
         assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn test_generate_session_id() {
+        use super::generate_session_id;
+        use crate::repair::types::NodeId;
+
+        let node_id = NodeId::new("node-1");
+        let session_id = generate_session_id("rebalance", &node_id);
+
+        assert!(session_id.as_str().starts_with("rebalance-node-1-"));
+    }
+
+    #[test]
+    fn test_generate_session_id_different_prefixes() {
+        use super::generate_session_id;
+        use crate::repair::types::NodeId;
+
+        let node_id = NodeId::new("test-node");
+
+        let rebalance_id = generate_session_id("rebalance", &node_id);
+        let anti_entropy_id = generate_session_id("anti-entropy", &node_id);
+        let crash_recovery_id = generate_session_id("crash-recovery", &node_id);
+
+        assert!(rebalance_id.as_str().starts_with("rebalance-test-node-"));
+        assert!(anti_entropy_id
+            .as_str()
+            .starts_with("anti-entropy-test-node-"));
+        assert!(crash_recovery_id
+            .as_str()
+            .starts_with("crash-recovery-test-node-"));
     }
 }
