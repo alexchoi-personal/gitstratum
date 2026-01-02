@@ -50,6 +50,10 @@ mod tests {
                 address: "10.0.0.1".to_string(),
                 port: 9000,
                 state: 1,
+                last_heartbeat_at: 0,
+                suspect_count: 0,
+                generation_id: "gen-1".to_string(),
+                registered_at: 0,
             },
         );
         topology.object_nodes.insert(
@@ -59,6 +63,10 @@ mod tests {
                 address: "10.0.0.2".to_string(),
                 port: 9000,
                 state: 1,
+                last_heartbeat_at: 0,
+                suspect_count: 0,
+                generation_id: "gen-2".to_string(),
+                registered_at: 0,
             },
         );
         topology.hash_ring_config = HashRingConfig {

@@ -42,17 +42,22 @@ message Commit {
 
 // Coordinator Service - cluster membership management for metadata and object clusters
 service CoordinatorService {
-  // Cluster membership
+  // Read
+  rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);
+  rpc WatchTopology(WatchTopologyRequest) returns (stream TopologyUpdate);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Write (leader only)
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc DeregisterNode(DeregisterNodeRequest) returns (DeregisterNodeResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Legacy APIs (deprecated, will be removed)
   rpc GetClusterState(GetClusterStateRequest) returns (GetClusterStateResponse);
   rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
   rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
   rpc SetNodeState(SetNodeStateRequest) returns (SetNodeStateResponse);
-
-  // Hash ring (for object cluster routing)
   rpc GetHashRing(GetHashRingRequest) returns (GetHashRingResponse);
-
-  // Watch for topology changes
-  rpc WatchTopology(WatchTopologyRequest) returns (stream TopologyUpdate);
 }
 
 message NodeInfo {
@@ -61,6 +66,10 @@ message NodeInfo {
   uint32 port = 3;
   NodeState state = 4;
   NodeType type = 5;
+  int64 last_heartbeat_at = 6;
+  uint32 suspect_count = 7;
+  string generation_id = 8;
+  int64 registered_at = 9;
 }
 
 enum NodeState {
@@ -69,14 +78,90 @@ enum NodeState {
   NODE_STATE_JOINING = 2;
   NODE_STATE_DRAINING = 3;
   NODE_STATE_DOWN = 4;
+  NODE_STATE_SUSPECT = 5;
 }
 
 enum NodeType {
   NODE_TYPE_UNKNOWN = 0;
-  NODE_TYPE_METADATA = 1;
-  NODE_TYPE_OBJECT = 2;
+  NODE_TYPE_FRONTEND = 1;
+  NODE_TYPE_METADATA = 2;
+  NODE_TYPE_OBJECT = 3;
 }
 
+// Health Check
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  RaftState raft_state = 2;
+  uint64 raft_term = 3;
+  uint64 committed_index = 4;
+  uint64 applied_index = 5;
+  string leader_id = 6;
+  string leader_address = 7;
+  uint64 topology_version = 8;
+  uint32 active_nodes = 9;
+  uint32 suspect_nodes = 10;
+  uint32 down_nodes = 11;
+  uint32 watch_subscribers = 12;
+}
+
+enum RaftState {
+  RAFT_STATE_UNKNOWN = 0;
+  RAFT_STATE_FOLLOWER = 1;
+  RAFT_STATE_CANDIDATE = 2;
+  RAFT_STATE_LEADER = 3;
+}
+
+// Topology
+message GetTopologyRequest {
+  bool linearizable = 1;
+}
+
+message GetTopologyResponse {
+  uint64 version = 1;
+  repeated NodeInfo frontend_nodes = 2;
+  repeated NodeInfo metadata_nodes = 3;
+  repeated NodeInfo object_nodes = 4;
+  HashRingConfig hash_ring_config = 5;
+  string leader_id = 6;
+}
+
+// Registration
+message RegisterNodeRequest {
+  NodeInfo node = 1;
+}
+
+message RegisterNodeResponse {
+  uint64 topology_version = 1;
+  bool already_registered = 2;
+}
+
+message DeregisterNodeRequest {
+  string node_id = 1;
+}
+
+message DeregisterNodeResponse {
+  uint64 topology_version = 1;
+}
+
+// Heartbeat
+message HeartbeatRequest {
+  string node_id = 1;
+  uint64 known_version = 2;
+  NodeState reported_state = 3;
+  string generation_id = 4;
+}
+
+message HeartbeatResponse {
+  uint64 current_version = 1;
+  bool refresh_required = 2;
+  string leader_id = 3;
+  string leader_address = 4;
+  uint64 raft_term = 5;
+}
+
+// Legacy APIs (deprecated)
 message GetClusterStateRequest {}
 
 message GetClusterStateResponse {
@@ -139,12 +224,25 @@ message WatchTopologyRequest {
 
 message TopologyUpdate {
   uint64 version = 1;
+  uint64 previous_version = 2;
   oneof update {
-    NodeInfo node_added = 2;
-    NodeInfo node_updated = 3;
-    string node_removed = 4;
-    HashRingConfig hash_ring_config_updated = 5;
+    NodeInfo node_added = 3;
+    NodeInfo node_updated = 4;
+    string node_removed = 5;
+    GetTopologyResponse full_sync = 6;
+    Keepalive keepalive = 7;
+    Lagged lagged = 8;
   }
+}
+
+message Keepalive {
+  uint64 server_time = 1;
+}
+
+message Lagged {
+  uint64 current_version = 1;
+  uint64 missed_updates = 2;
+  string message = 3;
 }
 
 // Metadata Service

@@ -1,11 +1,16 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
-use gitstratum_coordinator::CoordinatorServer;
+use gitstratum_coordinator::{
+    run_heartbeat_flush_loop, ClusterCommand, CoordinatorConfig, CoordinatorServer,
+    HeartbeatBatcher, HeartbeatInfo, SerializableHeartbeatInfo,
+};
 use gitstratum_proto::coordinator_service_server::CoordinatorServiceServer;
-use k8s_operator::raft::{KeyValueStateMachine, RaftConfig, RaftNodeManager};
+use k8s_operator::raft::{KeyValueStateMachine, RaftConfig, RaftNodeManager, RaftRequest};
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
@@ -30,6 +35,15 @@ struct Args {
 
     #[arg(long)]
     bootstrap: bool,
+
+    #[arg(long, default_value = "45")]
+    suspect_timeout: u64,
+
+    #[arg(long, default_value = "45")]
+    down_timeout: u64,
+
+    #[arg(long, default_value = "1")]
+    heartbeat_batch_interval: u64,
 }
 
 #[tokio::main]
@@ -68,7 +82,62 @@ async fn main() -> Result<()> {
 
     raft.start_grpc_server(args.raft_addr.port()).await?;
 
-    let server = CoordinatorServer::new(Arc::new(raft));
+    let mut config = CoordinatorConfig::default();
+    config.suspect_timeout = Duration::from_secs(args.suspect_timeout);
+    config.down_timeout = Duration::from_secs(args.down_timeout);
+    config.heartbeat_batch_interval = Duration::from_secs(args.heartbeat_batch_interval);
+
+    let batcher = Arc::new(HeartbeatBatcher::new(config.heartbeat_batch_interval));
+    let raft = Arc::new(raft);
+
+    let raft_for_flush = Arc::clone(&raft);
+    let batcher_for_flush = Arc::clone(&batcher);
+    tokio::spawn(async move {
+        run_heartbeat_flush_loop(
+            batcher_for_flush,
+            |batch: HashMap<String, HeartbeatInfo>| {
+                let raft = Arc::clone(&raft_for_flush);
+                async move {
+                    let serializable_batch: HashMap<String, SerializableHeartbeatInfo> = batch
+                        .into_iter()
+                        .map(|(node_id, info)| {
+                            let serializable = SerializableHeartbeatInfo {
+                                known_version: info.known_version,
+                                reported_state: info.reported_state,
+                                generation_id: info.generation_id,
+                                received_at_ms: info
+                                    .received_at
+                                    .elapsed()
+                                    .as_millis()
+                                    .try_into()
+                                    .unwrap_or(0),
+                            };
+                            (node_id, serializable)
+                        })
+                        .collect();
+
+                    let cmd = ClusterCommand::BatchHeartbeat(serializable_batch);
+                    let cmd_bytes = serde_json::to_string(&cmd)
+                        .map_err(|e| format!("Serialize error: {}", e))?;
+
+                    let request = RaftRequest {
+                        key: "topology".to_string(),
+                        value: cmd_bytes,
+                    };
+
+                    raft.raft()
+                        .client_write(request)
+                        .await
+                        .map_err(|e| format!("Raft write error: {:?}", e))?;
+
+                    Ok::<(), String>(())
+                }
+            },
+        )
+        .await;
+    });
+
+    let server = CoordinatorServer::new(raft, config, batcher);
 
     tracing::info!("Starting gRPC server on {}", args.grpc_addr);
 

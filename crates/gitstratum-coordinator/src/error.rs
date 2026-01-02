@@ -19,6 +19,9 @@ pub enum CoordinatorError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
 }
 
 impl From<CoordinatorError> for tonic::Status {
@@ -30,6 +33,7 @@ impl From<CoordinatorError> for tonic::Status {
             CoordinatorError::Raft(_) => tonic::Status::internal(err.to_string()),
             CoordinatorError::Grpc(s) => s,
             CoordinatorError::Internal(_) => tonic::Status::internal(err.to_string()),
+            CoordinatorError::Serialization(_) => tonic::Status::internal(err.to_string()),
         }
     }
 }

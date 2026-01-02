@@ -1,18 +1,74 @@
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gitstratum_hashring::ConsistentHashRing;
 use gitstratum_proto::coordinator_service_client::CoordinatorServiceClient;
 use gitstratum_proto::{
-    AddNodeRequest, GetClusterStateRequest, GetClusterStateResponse, NodeInfo, NodeState,
-    RemoveNodeRequest, SetNodeStateRequest,
+    AddNodeRequest, GetClusterStateRequest, GetClusterStateResponse, GetTopologyResponse, NodeInfo,
+    NodeState, RemoveNodeRequest, SetNodeStateRequest,
 };
+use parking_lot::RwLock;
 use tonic::transport::Channel;
 
 use crate::error::CoordinatorError;
 use crate::topology::ClusterTopology;
 
+pub struct TopologyCache {
+    topology: RwLock<Option<GetTopologyResponse>>,
+    last_updated: RwLock<Instant>,
+    max_staleness: Duration,
+}
+
+impl TopologyCache {
+    pub fn new(max_staleness: Duration) -> Self {
+        Self {
+            topology: RwLock::new(None),
+            last_updated: RwLock::new(Instant::now()),
+            max_staleness,
+        }
+    }
+
+    pub fn get(&self) -> Option<GetTopologyResponse> {
+        self.topology.read().clone()
+    }
+
+    pub fn update(&self, topology: GetTopologyResponse) {
+        *self.topology.write() = Some(topology);
+        *self.last_updated.write() = Instant::now();
+    }
+
+    pub fn is_stale(&self) -> bool {
+        self.last_updated.read().elapsed() > self.max_staleness
+    }
+
+    pub fn staleness(&self) -> Duration {
+        self.last_updated.read().elapsed()
+    }
+}
+
+pub struct RetryConfig {
+    pub max_attempts: u32,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+    pub timeout_per_attempt: Duration,
+    pub jitter_fraction: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(5),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.25,
+        }
+    }
+}
+
 pub struct CoordinatorClient {
     client: CoordinatorServiceClient<Channel>,
+    cache: Option<Arc<TopologyCache>>,
 }
 
 impl CoordinatorClient {
@@ -27,7 +83,13 @@ impl CoordinatorClient {
 
         Ok(Self {
             client: CoordinatorServiceClient::new(channel),
+            cache: None,
         })
+    }
+
+    pub fn with_cache(mut self, cache: Arc<TopologyCache>) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     pub async fn get_cluster_state(&mut self) -> Result<GetClusterStateResponse, CoordinatorError> {

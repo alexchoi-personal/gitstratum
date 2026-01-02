@@ -17,6 +17,10 @@ pub struct NodeEntry {
     pub address: String,
     pub port: u32,
     pub state: i32,
+    pub last_heartbeat_at: i64,
+    pub suspect_count: u32,
+    pub generation_id: String,
+    pub registered_at: i64,
 }
 
 impl NodeEntry {
@@ -26,6 +30,10 @@ impl NodeEntry {
             address: info.address.clone(),
             port: info.port,
             state: info.state,
+            last_heartbeat_at: info.last_heartbeat_at,
+            suspect_count: info.suspect_count,
+            generation_id: info.generation_id.clone(),
+            registered_at: info.registered_at,
         }
     }
 
@@ -36,6 +44,10 @@ impl NodeEntry {
             port: self.port,
             state: self.state,
             r#type: node_type as i32,
+            last_heartbeat_at: self.last_heartbeat_at,
+            suspect_count: self.suspect_count,
+            generation_id: self.generation_id.clone(),
+            registered_at: self.registered_at,
         }
     }
 
