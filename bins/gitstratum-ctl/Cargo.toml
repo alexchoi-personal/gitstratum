@@ -11,10 +11,10 @@ name = "gitstratum-ctl"
 path = "src/main.rs"
 
 [dependencies]
-gitstratum-control-plane-cluster = { path = "../../gitstratum-control-plane-cluster" }
-gitstratum-core = { path = "../../gitstratum-core" }
-gitstratum-proto = { path = "../../gitstratum-proto" }
-gitstratum-hashring = { path = "../../gitstratum-hashring" }
+gitstratum-control-plane-cluster = { path = "../../crates/gitstratum-control-plane-cluster" }
+gitstratum-core = { path = "../../crates/gitstratum-core" }
+gitstratum-proto = { path = "../../crates/gitstratum-proto" }
+gitstratum-hashring = { path = "../../crates/gitstratum-hashring" }
 tokio.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 anyhow.workspace = true

@@ -11,13 +11,13 @@ name = "gitstratum-frontend"
 path = "src/main.rs"
 
 [dependencies]
-gitstratum-frontend-cluster = { path = "../../gitstratum-frontend-cluster" }
-gitstratum-control-plane-cluster = { path = "../../gitstratum-control-plane-cluster" }
-gitstratum-metadata-cluster = { path = "../../gitstratum-metadata-cluster" }
-gitstratum-object-cluster = { path = "../../gitstratum-object-cluster" }
-gitstratum-core = { path = "../../gitstratum-core" }
-gitstratum-proto = { path = "../../gitstratum-proto" }
-gitstratum-hashring = { path = "../../gitstratum-hashring" }
+gitstratum-frontend-cluster = { path = "../../crates/gitstratum-frontend-cluster" }
+gitstratum-control-plane-cluster = { path = "../../crates/gitstratum-control-plane-cluster" }
+gitstratum-metadata-cluster = { path = "../../crates/gitstratum-metadata-cluster" }
+gitstratum-object-cluster = { path = "../../crates/gitstratum-object-cluster" }
+gitstratum-core = { path = "../../crates/gitstratum-core" }
+gitstratum-proto = { path = "../../crates/gitstratum-proto" }
+gitstratum-hashring = { path = "../../crates/gitstratum-hashring" }
 tokio.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 anyhow.workspace = true

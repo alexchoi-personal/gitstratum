@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "gitstratum-core",
-    "gitstratum-hashring",
-    "gitstratum-control-plane-cluster",
-    "gitstratum-metadata-cluster",
-    "gitstratum-object-cluster",
-    "gitstratum-frontend-cluster",
-    "gitstratum-proto",
-    "gitstratum-operator",
-    "gitstratum-metrics",
-    "gitstratum-storage",
-    "gitstratum-lfs",
+    "crates/gitstratum-core",
+    "crates/gitstratum-hashring",
+    "crates/gitstratum-control-plane-cluster",
+    "crates/gitstratum-metadata-cluster",
+    "crates/gitstratum-object-cluster",
+    "crates/gitstratum-frontend-cluster",
+    "crates/gitstratum-proto",
+    "crates/gitstratum-operator",
+    "crates/gitstratum-metrics",
+    "crates/gitstratum-storage",
+    "crates/gitstratum-lfs",
     "bins/gitstratum-control",
     "bins/gitstratum-ctl",
     "bins/gitstratum-frontend",
@@ -89,16 +89,16 @@ tempfile = "3.9"
 proptest = "1.4"
 
 # Internal crates
-gitstratum-core = { path = "gitstratum-core" }
-gitstratum-hashring = { path = "gitstratum-hashring" }
-gitstratum-control-plane-cluster = { path = "gitstratum-control-plane-cluster" }
-gitstratum-metadata-cluster = { path = "gitstratum-metadata-cluster" }
-gitstratum-object-cluster = { path = "gitstratum-object-cluster" }
-gitstratum-frontend-cluster = { path = "gitstratum-frontend-cluster" }
-gitstratum-proto = { path = "gitstratum-proto" }
-gitstratum-operator = { path = "gitstratum-operator" }
-gitstratum-storage = { path = "gitstratum-storage" }
-gitstratum-lfs = { path = "gitstratum-lfs" }
+gitstratum-core = { path = "crates/gitstratum-core" }
+gitstratum-hashring = { path = "crates/gitstratum-hashring" }
+gitstratum-control-plane-cluster = { path = "crates/gitstratum-control-plane-cluster" }
+gitstratum-metadata-cluster = { path = "crates/gitstratum-metadata-cluster" }
+gitstratum-object-cluster = { path = "crates/gitstratum-object-cluster" }
+gitstratum-frontend-cluster = { path = "crates/gitstratum-frontend-cluster" }
+gitstratum-proto = { path = "crates/gitstratum-proto" }
+gitstratum-operator = { path = "crates/gitstratum-operator" }
+gitstratum-storage = { path = "crates/gitstratum-storage" }
+gitstratum-lfs = { path = "crates/gitstratum-lfs" }
 
 # External HA framework (has newer k8s dependencies, enable via kubernetes feature)
 # k8s-operator = { path = "../k8s-operator" }

@@ -11,10 +11,10 @@ name = "gitstratum-object"
 path = "src/main.rs"
 
 [dependencies]
-gitstratum-object-cluster = { path = "../../gitstratum-object-cluster" }
-gitstratum-storage = { path = "../../gitstratum-storage", optional = true }
-gitstratum-core = { path = "../../gitstratum-core" }
-gitstratum-proto = { path = "../../gitstratum-proto" }
+gitstratum-object-cluster = { path = "../../crates/gitstratum-object-cluster" }
+gitstratum-storage = { path = "../../crates/gitstratum-storage", optional = true }
+gitstratum-core = { path = "../../crates/gitstratum-core" }
+gitstratum-proto = { path = "../../crates/gitstratum-proto" }
 tokio.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 tonic.workspace = true
