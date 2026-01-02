@@ -1,0 +1,42 @@
+[package]
+name = "gitstratum-coordinator"
+description = "Raft-based HA coordinator for GitStratum cluster management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gitstratum-proto.workspace = true
+gitstratum-hashring.workspace = true
+
+k8s-operator = { git = "https://github.com/alexchoi-personal/k8s-operator", features = ["ha"] }
+
+tokio.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+async-stream.workspace = true
+tonic.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+parking_lot.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tokio-test.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+criterion = "0.5"
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "state_machine"
+harness = false

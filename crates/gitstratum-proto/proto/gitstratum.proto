@@ -40,24 +40,24 @@ message Commit {
   string message = 6;
 }
 
-// Control Plane Service
-service ControlPlaneService {
-  // Cluster membership
+// Coordinator Service - cluster membership management for metadata and object clusters
+service CoordinatorService {
+  // Read
+  rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);
+  rpc WatchTopology(WatchTopologyRequest) returns (stream TopologyUpdate);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Write (leader only)
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc DeregisterNode(DeregisterNodeRequest) returns (DeregisterNodeResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Legacy APIs (deprecated, will be removed)
   rpc GetClusterState(GetClusterStateRequest) returns (GetClusterStateResponse);
   rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
   rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
   rpc SetNodeState(SetNodeStateRequest) returns (SetNodeStateResponse);
-
-  // Distributed locks for ref updates
-  rpc AcquireRefLock(AcquireRefLockRequest) returns (AcquireRefLockResponse);
-  rpc ReleaseRefLock(ReleaseRefLockRequest) returns (ReleaseRefLockResponse);
-
-  // Hash ring
   rpc GetHashRing(GetHashRingRequest) returns (GetHashRingResponse);
-
-  // Rebalancing
-  rpc TriggerRebalance(TriggerRebalanceRequest) returns (TriggerRebalanceResponse);
-  rpc GetRebalanceStatus(GetRebalanceStatusRequest) returns (GetRebalanceStatusResponse);
 }
 
 message NodeInfo {
@@ -66,6 +66,10 @@ message NodeInfo {
   uint32 port = 3;
   NodeState state = 4;
   NodeType type = 5;
+  int64 last_heartbeat_at = 6;
+  uint32 suspect_count = 7;
+  string generation_id = 8;
+  int64 registered_at = 9;
 }
 
 enum NodeState {
@@ -74,25 +78,103 @@ enum NodeState {
   NODE_STATE_JOINING = 2;
   NODE_STATE_DRAINING = 3;
   NODE_STATE_DOWN = 4;
+  NODE_STATE_SUSPECT = 5;
 }
 
 enum NodeType {
   NODE_TYPE_UNKNOWN = 0;
-  NODE_TYPE_CONTROL_PLANE = 1;
+  NODE_TYPE_FRONTEND = 1;
   NODE_TYPE_METADATA = 2;
   NODE_TYPE_OBJECT = 3;
-  NODE_TYPE_FRONTEND = 4;
 }
 
+// Health Check
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  RaftState raft_state = 2;
+  uint64 raft_term = 3;
+  uint64 committed_index = 4;
+  uint64 applied_index = 5;
+  string leader_id = 6;
+  string leader_address = 7;
+  uint64 topology_version = 8;
+  uint32 active_nodes = 9;
+  uint32 suspect_nodes = 10;
+  uint32 down_nodes = 11;
+  uint32 watch_subscribers = 12;
+}
+
+enum RaftState {
+  RAFT_STATE_UNKNOWN = 0;
+  RAFT_STATE_FOLLOWER = 1;
+  RAFT_STATE_CANDIDATE = 2;
+  RAFT_STATE_LEADER = 3;
+}
+
+// Topology
+message GetTopologyRequest {
+  bool linearizable = 1;
+}
+
+message GetTopologyResponse {
+  uint64 version = 1;
+  repeated NodeInfo frontend_nodes = 2;
+  repeated NodeInfo metadata_nodes = 3;
+  repeated NodeInfo object_nodes = 4;
+  HashRingConfig hash_ring_config = 5;
+  string leader_id = 6;
+}
+
+// Registration
+message RegisterNodeRequest {
+  NodeInfo node = 1;
+}
+
+message RegisterNodeResponse {
+  uint64 topology_version = 1;
+  bool already_registered = 2;
+}
+
+message DeregisterNodeRequest {
+  string node_id = 1;
+}
+
+message DeregisterNodeResponse {
+  uint64 topology_version = 1;
+}
+
+// Heartbeat
+message HeartbeatRequest {
+  string node_id = 1;
+  uint64 known_version = 2;
+  NodeState reported_state = 3;
+  string generation_id = 4;
+}
+
+message HeartbeatResponse {
+  uint64 current_version = 1;
+  bool refresh_required = 2;
+  string leader_id = 3;
+  string leader_address = 4;
+  uint64 raft_term = 5;
+}
+
+// Legacy APIs (deprecated)
 message GetClusterStateRequest {}
 
 message GetClusterStateResponse {
-  repeated NodeInfo control_plane_nodes = 1;
-  repeated NodeInfo metadata_nodes = 2;
-  repeated NodeInfo object_nodes = 3;
-  repeated NodeInfo frontend_nodes = 4;
-  string leader_id = 5;
-  uint64 version = 6;
+  repeated NodeInfo metadata_nodes = 1;
+  repeated NodeInfo object_nodes = 2;
+  string leader_id = 3;
+  uint64 version = 4;
+  HashRingConfig hash_ring_config = 5;
+}
+
+message HashRingConfig {
+  uint32 virtual_nodes_per_physical = 1;
+  uint32 replication_factor = 2;
 }
 
 message AddNodeRequest {
@@ -123,28 +205,6 @@ message SetNodeStateResponse {
   string error = 2;
 }
 
-message AcquireRefLockRequest {
-  string repo_id = 1;
-  string ref_name = 2;
-  string holder_id = 3;
-  uint64 timeout_ms = 4;
-}
-
-message AcquireRefLockResponse {
-  bool acquired = 1;
-  string lock_id = 2;
-  string error = 3;
-}
-
-message ReleaseRefLockRequest {
-  string lock_id = 1;
-}
-
-message ReleaseRefLockResponse {
-  bool success = 1;
-  string error = 2;
-}
-
 message HashRingEntry {
   uint64 position = 1;
   string node_id = 2;
@@ -158,26 +218,31 @@ message GetHashRingResponse {
   uint64 version = 3;
 }
 
-message TriggerRebalanceRequest {
-  string reason = 1;
+message WatchTopologyRequest {
+  uint64 since_version = 1;
 }
 
-message TriggerRebalanceResponse {
-  bool started = 1;
-  string rebalance_id = 2;
-  string error = 3;
+message TopologyUpdate {
+  uint64 version = 1;
+  uint64 previous_version = 2;
+  oneof update {
+    NodeInfo node_added = 3;
+    NodeInfo node_updated = 4;
+    string node_removed = 5;
+    GetTopologyResponse full_sync = 6;
+    Keepalive keepalive = 7;
+    Lagged lagged = 8;
+  }
 }
 
-message GetRebalanceStatusRequest {
-  string rebalance_id = 1;
+message Keepalive {
+  uint64 server_time = 1;
 }
 
-message GetRebalanceStatusResponse {
-  bool in_progress = 1;
-  float progress_percent = 2;
-  uint64 bytes_moved = 3;
-  uint64 bytes_remaining = 4;
-  string error = 5;
+message Lagged {
+  uint64 current_version = 1;
+  uint64 missed_updates = 2;
+  string message = 3;
 }
 
 // Metadata Service
