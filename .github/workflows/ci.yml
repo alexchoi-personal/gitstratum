@@ -23,6 +23,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: gitstratum
+
+      - uses: actions/checkout@v4
+        with:
+          repository: alexchoi-personal/k8s-operator
+          path: k8s-operator
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -41,15 +48,17 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            gitstratum/target
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('gitstratum/**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.arch }}-cargo-
 
       - name: Build
+        working-directory: gitstratum
         run: cargo build --workspace
 
       - name: Run tests
+        working-directory: gitstratum
         run: cargo nextest run --workspace
 
   clippy:
@@ -58,6 +67,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: gitstratum
+
+      - uses: actions/checkout@v4
+        with:
+          repository: alexchoi-personal/k8s-operator
+          path: k8s-operator
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -74,12 +90,13 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+            gitstratum/target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('gitstratum/**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-
 
       - name: Run clippy
+        working-directory: gitstratum
         run: cargo clippy --workspace --all-targets
 
   fmt:
@@ -88,6 +105,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: gitstratum
+
+      - uses: actions/checkout@v4
+        with:
+          repository: alexchoi-personal/k8s-operator
+          path: k8s-operator
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -96,6 +120,7 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
+        working-directory: gitstratum
         run: cargo fmt --all -- --check
 
   ci:
