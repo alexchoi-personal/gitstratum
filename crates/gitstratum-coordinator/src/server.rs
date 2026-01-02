@@ -808,5 +808,6 @@ mod tests {
         flap.suspect_count += 1;
         assert_eq!(flap.suspect_count, 1);
         flap.last_suspect_at = Instant::now();
+        assert!(flap.last_suspect_at >= now);
     }
 }
