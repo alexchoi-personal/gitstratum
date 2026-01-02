@@ -312,6 +312,10 @@ impl BucketStore {
         &self.bucket_index
     }
 
+    pub fn bucket_cache(&self) -> &Arc<BucketCache> {
+        &self.bucket_cache
+    }
+
     pub fn file_manager(&self) -> &Arc<FileManager> {
         &self.file_manager
     }

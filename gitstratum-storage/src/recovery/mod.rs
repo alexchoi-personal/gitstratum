@@ -1,3 +1,3 @@
 pub mod scanner;
 
-pub use scanner::RecoveryScanner;
+pub use scanner::{IntegrityError, IntegrityReport, RecoveryScanner};

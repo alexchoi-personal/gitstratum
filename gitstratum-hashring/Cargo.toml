@@ -17,6 +17,11 @@ thiserror = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 rand = { workspace = true }
+criterion = "0.5"
+
+[[bench]]
+name = "hashring"
+harness = false
 
 [lints]
 workspace = true
