@@ -130,7 +130,21 @@ pub struct WatchGuard<'a> {
 
 impl<'a> Drop for WatchGuard<'a> {
     fn drop(&mut self) {
-        self.counter.fetch_sub(1, Ordering::SeqCst);
+        loop {
+            let current = self.counter.load(Ordering::SeqCst);
+            if current == 0 {
+                return;
+            }
+            match self.counter.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(_) => continue,
+            }
+        }
     }
 }
 
@@ -216,7 +230,21 @@ impl GlobalRateLimiter {
     }
 
     pub fn decrement_watch(&self) {
-        self.watch_connections.fetch_sub(1, Ordering::SeqCst);
+        loop {
+            let current = self.watch_connections.load(Ordering::SeqCst);
+            if current == 0 {
+                return;
+            }
+            match self.watch_connections.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(_) => continue,
+            }
+        }
     }
 
     pub fn try_increment_watch(&self) -> Result<(), RateLimitError> {

@@ -485,11 +485,12 @@ impl CoordinatorService for CoordinatorServer {
             _ => return Err(CoordinatorError::InvalidNodeType.into()),
         };
 
+        let previous_version = self.topology_cache.read().version;
         let resp = self.apply_and_write(cmd).await?;
 
         let _ = self.topology_updates.send(TopologyUpdate {
             version: resp.version().unwrap_or(0),
-            previous_version: 0,
+            previous_version,
             update: Some(gitstratum_proto::topology_update::Update::NodeAdded(node)),
         });
 
@@ -513,11 +514,12 @@ impl CoordinatorService for CoordinatorServer {
             node_id: req.node_id.clone(),
         };
 
+        let previous_version = self.topology_cache.read().version;
         let resp = self.apply_and_write(cmd).await?;
 
         let _ = self.topology_updates.send(TopologyUpdate {
             version: resp.version().unwrap_or(0),
-            previous_version: 0,
+            previous_version,
             update: Some(gitstratum_proto::topology_update::Update::NodeRemoved(
                 req.node_id,
             )),
@@ -823,11 +825,12 @@ impl CoordinatorService for CoordinatorServer {
             _ => return Err(CoordinatorError::InvalidNodeType.into()),
         };
 
+        let previous_version = self.topology_cache.read().version;
         let resp = self.apply_and_write(cmd).await?;
 
         let _ = self.topology_updates.send(TopologyUpdate {
             version: resp.version().unwrap_or(0),
-            previous_version: 0,
+            previous_version,
             update: Some(gitstratum_proto::topology_update::Update::NodeAdded(node)),
         });
 
@@ -856,11 +859,12 @@ impl CoordinatorService for CoordinatorServer {
             node_id: req.node_id.clone(),
         };
 
+        let previous_version = self.topology_cache.read().version;
         let resp = self.apply_and_write(cmd).await?;
 
         let _ = self.topology_updates.send(TopologyUpdate {
             version: resp.version().unwrap_or(0),
-            previous_version: 0,
+            previous_version,
             update: Some(gitstratum_proto::topology_update::Update::NodeRemoved(
                 req.node_id,
             )),
