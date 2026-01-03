@@ -385,7 +385,7 @@ impl CoordinatorServer {
                     last_suspect_at: now,
                     last_stable_at: now,
                 });
-            entry.suspect_count += 1;
+            entry.suspect_count = entry.suspect_count.saturating_add(1);
             entry.last_suspect_at = now;
         }
 
@@ -424,6 +424,11 @@ impl CoordinatorServer {
         if let Some(entry) = flap_info.get_mut(node_id) {
             entry.last_stable_at = Instant::now();
         }
+    }
+
+    fn cleanup_node_state(&self, node_id: &str) {
+        self.last_heartbeat.write().remove(node_id);
+        self.node_flap_info.write().remove(node_id);
     }
 }
 
@@ -516,6 +521,8 @@ impl CoordinatorService for CoordinatorServer {
 
         let previous_version = self.topology_cache.read().version;
         let resp = self.apply_and_write(cmd).await?;
+
+        self.cleanup_node_state(&req.node_id);
 
         let _ = self.topology_updates.send(TopologyUpdate {
             version: resp.version().unwrap_or(0),
@@ -861,6 +868,8 @@ impl CoordinatorService for CoordinatorServer {
 
         let previous_version = self.topology_cache.read().version;
         let resp = self.apply_and_write(cmd).await?;
+
+        self.cleanup_node_state(&req.node_id);
 
         let _ = self.topology_updates.send(TopologyUpdate {
             version: resp.version().unwrap_or(0),
@@ -1836,5 +1845,58 @@ mod tests {
         rt.block_on(async {
             let _guard = write_lock.lock().await;
         });
+    }
+
+    #[test]
+    fn test_cleanup_node_state_removes_from_both_maps() {
+        let last_heartbeat: RwLock<HashMap<String, Instant>> = RwLock::new(HashMap::new());
+        let node_flap_info: RwLock<HashMap<String, NodeFlap>> = RwLock::new(HashMap::new());
+        let now = Instant::now();
+
+        {
+            let mut hb = last_heartbeat.write();
+            hb.insert("node-1".to_string(), now);
+            hb.insert("node-2".to_string(), now);
+        }
+
+        {
+            let mut flap = node_flap_info.write();
+            flap.insert(
+                "node-1".to_string(),
+                NodeFlap {
+                    suspect_count: 3,
+                    last_suspect_at: now,
+                    last_stable_at: now,
+                },
+            );
+            flap.insert(
+                "node-2".to_string(),
+                NodeFlap {
+                    suspect_count: 1,
+                    last_suspect_at: now,
+                    last_stable_at: now,
+                },
+            );
+        }
+
+        last_heartbeat.write().remove("node-1");
+        node_flap_info.write().remove("node-1");
+
+        assert!(last_heartbeat.read().get("node-1").is_none());
+        assert!(node_flap_info.read().get("node-1").is_none());
+        assert!(last_heartbeat.read().get("node-2").is_some());
+        assert!(node_flap_info.read().get("node-2").is_some());
+    }
+
+    #[test]
+    fn test_cleanup_node_state_nonexistent_node_is_safe() {
+        let last_heartbeat: RwLock<HashMap<String, Instant>> = RwLock::new(HashMap::new());
+        let node_flap_info: RwLock<HashMap<String, NodeFlap>> = RwLock::new(HashMap::new());
+
+        last_heartbeat.write().remove("nonexistent");
+        node_flap_info.write().remove("nonexistent");
+
+        assert!(last_heartbeat.read().is_empty());
+        assert!(node_flap_info.read().is_empty());
     }
 }
