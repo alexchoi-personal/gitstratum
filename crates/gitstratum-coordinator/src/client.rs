@@ -61,6 +61,7 @@ impl TopologyCache {
 
     pub fn invalidate(&self) {
         *self.topology.write() = None;
+        *self.last_updated.write() = Instant::now() - self.max_staleness - Duration::from_secs(1);
     }
 }
 
@@ -1216,5 +1217,27 @@ mod tests {
 
         let backoff = config.compute_backoff_with_jitter(50);
         assert_eq!(backoff, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_topology_cache_invalidate_marks_as_stale() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+
+        let topo = GetTopologyResponse {
+            version: 42,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: String::new(),
+        };
+        cache.update(topo);
+
+        assert!(!cache.is_stale());
+
+        cache.invalidate();
+
+        assert!(cache.is_stale());
+        assert!(cache.get().is_none());
     }
 }
