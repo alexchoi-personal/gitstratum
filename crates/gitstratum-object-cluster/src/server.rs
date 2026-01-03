@@ -18,6 +18,9 @@ use crate::error::ObjectStoreError;
 use crate::store::ObjectStorage;
 use crate::store::ObjectStore;
 
+const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024;
+const MAX_CUMULATIVE_BLOB_SIZE: usize = 500 * 1024 * 1024;
+
 pub struct ObjectServiceImpl {
     store: Arc<ObjectStore>,
 }
@@ -53,6 +56,17 @@ impl ObjectServiceImpl {
             data: blob.data.to_vec(),
             compressed,
         }
+    }
+
+    fn validate_blob_size(blob: &Blob) -> Result<(), Status> {
+        if blob.data.len() > MAX_BLOB_SIZE {
+            return Err(Status::resource_exhausted(format!(
+                "blob size {} exceeds maximum allowed size {}",
+                blob.data.len(),
+                MAX_BLOB_SIZE
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -135,6 +149,7 @@ impl ObjectService for ObjectServiceImpl {
             .blob
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("missing blob"))?;
+        Self::validate_blob_size(blob)?;
         let core_blob = Self::proto_blob_to_core(blob)?;
 
         debug!(oid = %core_blob.oid, "put_blob");
@@ -159,22 +174,37 @@ impl ObjectService for ObjectServiceImpl {
         let mut success_count = 0u32;
         let mut error_count = 0u32;
         let mut errors = Vec::new();
+        let mut cumulative_size = 0usize;
 
         while let Some(result) = stream.next().await {
             match result {
-                Ok(blob) => match Self::proto_blob_to_core(&blob) {
-                    Ok(core_blob) => match self.store.put(&core_blob).await {
-                        Ok(()) => success_count += 1,
+                Ok(blob) => {
+                    if let Err(e) = Self::validate_blob_size(&blob) {
+                        error_count += 1;
+                        errors.push(e.to_string());
+                        continue;
+                    }
+                    cumulative_size = cumulative_size.saturating_add(blob.data.len());
+                    if cumulative_size > MAX_CUMULATIVE_BLOB_SIZE {
+                        return Err(Status::resource_exhausted(format!(
+                            "cumulative blob size {} exceeds maximum allowed {}",
+                            cumulative_size, MAX_CUMULATIVE_BLOB_SIZE
+                        )));
+                    }
+                    match Self::proto_blob_to_core(&blob) {
+                        Ok(core_blob) => match self.store.put(&core_blob).await {
+                            Ok(()) => success_count += 1,
+                            Err(e) => {
+                                error_count += 1;
+                                errors.push(e.to_string());
+                            }
+                        },
                         Err(e) => {
                             error_count += 1;
                             errors.push(e.to_string());
                         }
-                    },
-                    Err(e) => {
-                        error_count += 1;
-                        errors.push(e.to_string());
                     }
-                },
+                }
                 Err(e) => {
                     error_count += 1;
                     errors.push(e.to_string());
@@ -297,10 +327,19 @@ impl ObjectService for ObjectServiceImpl {
     ) -> Result<Response<ReceiveBlobsResponse>, Status> {
         let mut stream = request.into_inner();
         let mut received_count = 0u32;
+        let mut cumulative_size = 0usize;
 
         while let Some(result) = stream.next().await {
             match result {
                 Ok(blob) => {
+                    Self::validate_blob_size(&blob)?;
+                    cumulative_size = cumulative_size.saturating_add(blob.data.len());
+                    if cumulative_size > MAX_CUMULATIVE_BLOB_SIZE {
+                        return Err(Status::resource_exhausted(format!(
+                            "cumulative blob size {} exceeds maximum allowed {}",
+                            cumulative_size, MAX_CUMULATIVE_BLOB_SIZE
+                        )));
+                    }
                     let core_blob = Self::proto_blob_to_core(&blob)?;
                     self.store
                         .put(&core_blob)

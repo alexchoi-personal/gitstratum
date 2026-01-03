@@ -115,7 +115,7 @@ impl Compactor {
                 new_offset,
                 record.record_size() as u32,
                 live.flags,
-            );
+            )?;
 
             bucket_updates
                 .entry(live.bucket_id)

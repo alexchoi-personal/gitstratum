@@ -43,22 +43,28 @@ impl MetadataStore {
         })
     }
 
-    fn cf_repos(&self) -> &ColumnFamily {
-        self.db.cf_handle(CF_REPOS).expect("repos cf must exist")
+    fn cf_repos(&self) -> Result<&ColumnFamily> {
+        self.db
+            .cf_handle(CF_REPOS)
+            .ok_or_else(|| MetadataStoreError::ColumnFamilyNotFound(CF_REPOS.to_string()))
     }
 
-    fn cf_refs(&self) -> &ColumnFamily {
-        self.db.cf_handle(CF_REFS).expect("refs cf must exist")
+    fn cf_refs(&self) -> Result<&ColumnFamily> {
+        self.db
+            .cf_handle(CF_REFS)
+            .ok_or_else(|| MetadataStoreError::ColumnFamilyNotFound(CF_REFS.to_string()))
     }
 
-    fn cf_commits(&self) -> &ColumnFamily {
+    fn cf_commits(&self) -> Result<&ColumnFamily> {
         self.db
             .cf_handle(CF_COMMITS)
-            .expect("commits cf must exist")
+            .ok_or_else(|| MetadataStoreError::ColumnFamilyNotFound(CF_COMMITS.to_string()))
     }
 
-    fn cf_trees(&self) -> &ColumnFamily {
-        self.db.cf_handle(CF_TREES).expect("trees cf must exist")
+    fn cf_trees(&self) -> Result<&ColumnFamily> {
+        self.db
+            .cf_handle(CF_TREES)
+            .ok_or_else(|| MetadataStoreError::ColumnFamilyNotFound(CF_TREES.to_string()))
     }
 
     fn repo_key(repo_id: &RepoId) -> Vec<u8> {
@@ -79,18 +85,18 @@ impl MetadataStore {
 
     pub fn create_repo(&self, repo_id: &RepoId) -> Result<()> {
         let key = Self::repo_key(repo_id);
-        if self.db.get_cf(self.cf_repos(), &key)?.is_some() {
+        if self.db.get_cf(self.cf_repos()?, &key)?.is_some() {
             return Err(MetadataStoreError::RepoAlreadyExists(
                 repo_id.as_str().to_string(),
             ));
         }
-        self.db.put_cf(self.cf_repos(), &key, b"1")?;
+        self.db.put_cf(self.cf_repos()?, &key, b"1")?;
         Ok(())
     }
 
     pub fn delete_repo(&self, repo_id: &RepoId) -> Result<()> {
         let key = Self::repo_key(repo_id);
-        if self.db.get_cf(self.cf_repos(), &key)?.is_none() {
+        if self.db.get_cf(self.cf_repos()?, &key)?.is_none() {
             return Err(MetadataStoreError::RepoNotFound(
                 repo_id.as_str().to_string(),
             ));
@@ -99,9 +105,10 @@ impl MetadataStore {
         let prefix = format!("{}/", repo_id.as_str());
         let prefix_bytes = prefix.as_bytes();
 
+        let cf_refs = self.cf_refs()?;
         let refs_to_delete: Vec<_> = self
             .db
-            .prefix_iterator_cf(self.cf_refs(), prefix_bytes)
+            .prefix_iterator_cf(cf_refs, prefix_bytes)
             .take_while(|item| {
                 if let Ok((k, _)) = item {
                     k.starts_with(prefix_bytes)
@@ -113,12 +120,13 @@ impl MetadataStore {
             .collect();
 
         for k in refs_to_delete {
-            self.db.delete_cf(self.cf_refs(), &k)?;
+            self.db.delete_cf(cf_refs, &k)?;
         }
 
+        let cf_commits = self.cf_commits()?;
         let commits_to_delete: Vec<_> = self
             .db
-            .prefix_iterator_cf(self.cf_commits(), prefix_bytes)
+            .prefix_iterator_cf(cf_commits, prefix_bytes)
             .take_while(|item| {
                 if let Ok((k, _)) = item {
                     k.starts_with(prefix_bytes)
@@ -130,12 +138,13 @@ impl MetadataStore {
             .collect();
 
         for k in commits_to_delete {
-            self.db.delete_cf(self.cf_commits(), &k)?;
+            self.db.delete_cf(cf_commits, &k)?;
         }
 
+        let cf_trees = self.cf_trees()?;
         let trees_to_delete: Vec<_> = self
             .db
-            .prefix_iterator_cf(self.cf_trees(), prefix_bytes)
+            .prefix_iterator_cf(cf_trees, prefix_bytes)
             .take_while(|item| {
                 if let Ok((k, _)) = item {
                     k.starts_with(prefix_bytes)
@@ -147,10 +156,10 @@ impl MetadataStore {
             .collect();
 
         for k in trees_to_delete {
-            self.db.delete_cf(self.cf_trees(), &k)?;
+            self.db.delete_cf(cf_trees, &k)?;
         }
 
-        self.db.delete_cf(self.cf_repos(), &key)?;
+        self.db.delete_cf(self.cf_repos()?, &key)?;
         Ok(())
     }
 
@@ -164,10 +173,11 @@ impl MetadataStore {
         let prefix_bytes = prefix.as_bytes();
         let cursor_bytes = cursor.as_bytes();
 
+        let cf_repos = self.cf_repos()?;
         let iter = if cursor.is_empty() {
-            self.db.prefix_iterator_cf(self.cf_repos(), prefix_bytes)
+            self.db.prefix_iterator_cf(cf_repos, prefix_bytes)
         } else {
-            self.db.prefix_iterator_cf(self.cf_repos(), cursor_bytes)
+            self.db.prefix_iterator_cf(cf_repos, cursor_bytes)
         };
 
         for item in iter {
@@ -198,12 +208,12 @@ impl MetadataStore {
 
     pub fn repo_exists(&self, repo_id: &RepoId) -> Result<bool> {
         let key = Self::repo_key(repo_id);
-        Ok(self.db.get_cf(self.cf_repos(), &key)?.is_some())
+        Ok(self.db.get_cf(self.cf_repos()?, &key)?.is_some())
     }
 
     pub fn get_ref(&self, repo_id: &RepoId, ref_name: &RefName) -> Result<Option<Oid>> {
         let key = Self::ref_key(repo_id, ref_name);
-        match self.db.get_cf(self.cf_refs(), &key)? {
+        match self.db.get_cf(self.cf_refs()?, &key)? {
             Some(v) => {
                 let oid = Oid::from_slice(&v)
                     .map_err(|e| MetadataStoreError::Deserialization(e.to_string()))?;
@@ -221,7 +231,7 @@ impl MetadataStore {
 
         let mut refs = Vec::new();
 
-        for item in self.db.prefix_iterator_cf(self.cf_refs(), prefix_bytes) {
+        for item in self.db.prefix_iterator_cf(self.cf_refs()?, prefix_bytes) {
             let (k, v) = item?;
             if !k.starts_with(prefix_bytes) {
                 break;
@@ -249,9 +259,10 @@ impl MetadataStore {
         force: bool,
     ) -> Result<()> {
         let key = Self::ref_key(repo_id, ref_name);
+        let cf_refs = self.cf_refs()?;
 
         if !force {
-            let current = self.db.get_cf(self.cf_refs(), &key)?;
+            let current = self.db.get_cf(cf_refs, &key)?;
             match (old_target, current) {
                 (Some(expected), Some(actual)) => {
                     let actual_oid = Oid::from_slice(&actual)
@@ -283,14 +294,13 @@ impl MetadataStore {
             }
         }
 
-        self.db
-            .put_cf(self.cf_refs(), &key, new_target.as_bytes())?;
+        self.db.put_cf(cf_refs, &key, new_target.as_bytes())?;
         Ok(())
     }
 
     pub fn delete_ref(&self, repo_id: &RepoId, ref_name: &RefName) -> Result<()> {
         let key = Self::ref_key(repo_id, ref_name);
-        self.db.delete_cf(self.cf_refs(), &key)?;
+        self.db.delete_cf(self.cf_refs()?, &key)?;
         Ok(())
     }
 
@@ -305,7 +315,7 @@ impl MetadataStore {
         }
 
         let key = Self::commit_key(repo_id, oid);
-        match self.db.get_cf(self.cf_commits(), &key)? {
+        match self.db.get_cf(self.cf_commits()?, &key)? {
             Some(v) => {
                 let commit: Commit = bincode::deserialize(&v)?;
                 {
@@ -321,7 +331,7 @@ impl MetadataStore {
     pub fn put_commit(&self, repo_id: &RepoId, commit: &Commit) -> Result<()> {
         let key = Self::commit_key(repo_id, &commit.oid);
         let value = bincode::serialize(commit)?;
-        self.db.put_cf(self.cf_commits(), &key, &value)?;
+        self.db.put_cf(self.cf_commits()?, &key, &value)?;
 
         let cache_key = (repo_id.as_str().to_string(), commit.oid);
         let mut cache = self.commit_cache.write();
@@ -341,7 +351,7 @@ impl MetadataStore {
         }
 
         let key = Self::tree_key(repo_id, oid);
-        match self.db.get_cf(self.cf_trees(), &key)? {
+        match self.db.get_cf(self.cf_trees()?, &key)? {
             Some(v) => {
                 let tree: Tree = bincode::deserialize(&v)?;
                 {
@@ -357,7 +367,7 @@ impl MetadataStore {
     pub fn put_tree(&self, repo_id: &RepoId, tree: &Tree) -> Result<()> {
         let key = Self::tree_key(repo_id, &tree.oid);
         let value = bincode::serialize(tree)?;
-        self.db.put_cf(self.cf_trees(), &key, &value)?;
+        self.db.put_cf(self.cf_trees()?, &key, &value)?;
 
         let cache_key = (repo_id.as_str().to_string(), tree.oid);
         let mut cache = self.tree_cache.write();
