@@ -110,12 +110,7 @@ async fn main() -> Result<()> {
                                 known_version: info.known_version,
                                 reported_state: info.reported_state,
                                 generation_id: info.generation_id,
-                                received_at_ms: info
-                                    .received_at
-                                    .elapsed()
-                                    .as_millis()
-                                    .try_into()
-                                    .unwrap_or(0),
+                                received_at_ms: info.received_at,
                             };
                             (node_id, serializable)
                         })

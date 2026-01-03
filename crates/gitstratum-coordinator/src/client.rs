@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -275,6 +276,7 @@ pub struct SmartCoordinatorClient {
     current_leader: RwLock<Option<String>>,
     retry_config: RetryConfig,
     cache: Arc<TopologyCache>,
+    channels: RwLock<HashMap<String, Channel>>,
 }
 
 impl SmartCoordinatorClient {
@@ -284,12 +286,29 @@ impl SmartCoordinatorClient {
             current_leader: RwLock::new(None),
             retry_config: RetryConfig::default(),
             cache,
+            channels: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
         self.retry_config = config;
         self
+    }
+
+    async fn get_channel(&self, endpoint: &str) -> Result<Channel, CoordinatorError> {
+        if let Some(channel) = self.channels.read().get(endpoint) {
+            return Ok(channel.clone());
+        }
+        let channel = Channel::from_shared(endpoint.to_string())
+            .map_err(|e| CoordinatorError::Internal(format!("Invalid address: {}", e)))?
+            .connect_timeout(Duration::from_secs(5))
+            .connect()
+            .await
+            .map_err(|e| CoordinatorError::Internal(format!("Connection failed: {}", e)))?;
+        self.channels
+            .write()
+            .insert(endpoint.to_string(), channel.clone());
+        Ok(channel)
     }
 
     fn get_endpoint(&self, attempt: u32) -> String {
@@ -326,8 +345,14 @@ impl SmartCoordinatorClient {
             let endpoint = self.get_endpoint(attempt);
 
             let result = tokio::time::timeout(self.retry_config.timeout_per_attempt, async {
-                let mut client = CoordinatorClient::connect(&endpoint).await?;
-                client.register_node(node.clone()).await
+                let channel = self.get_channel(&endpoint).await?;
+                let mut client = CoordinatorServiceClient::new(channel);
+                let response = client
+                    .register_node(RegisterNodeRequest {
+                        node: Some(node.clone()),
+                    })
+                    .await?;
+                Ok::<_, CoordinatorError>(response.into_inner())
             })
             .await;
 
@@ -381,10 +406,17 @@ impl SmartCoordinatorClient {
             let endpoint = self.get_endpoint(attempt);
 
             let result = tokio::time::timeout(self.retry_config.timeout_per_attempt, async {
-                let mut client = CoordinatorClient::connect(&endpoint).await?;
-                client
-                    .heartbeat(node_id, known_version, reported_state, generation_id)
-                    .await
+                let channel = self.get_channel(&endpoint).await?;
+                let mut client = CoordinatorServiceClient::new(channel);
+                let response = client
+                    .heartbeat(HeartbeatRequest {
+                        node_id: node_id.to_string(),
+                        known_version,
+                        reported_state: reported_state as i32,
+                        generation_id: generation_id.to_string(),
+                    })
+                    .await?;
+                Ok::<_, CoordinatorError>(response.into_inner())
             })
             .await;
 
@@ -425,8 +457,10 @@ impl SmartCoordinatorClient {
             let endpoint = self.get_endpoint(attempt);
 
             let result = tokio::time::timeout(self.retry_config.timeout_per_attempt, async {
-                let mut client = CoordinatorClient::connect(&endpoint).await?;
-                client.get_cluster_state().await
+                let channel = self.get_channel(&endpoint).await?;
+                let mut client = CoordinatorServiceClient::new(channel);
+                let response = client.get_cluster_state(GetClusterStateRequest {}).await?;
+                Ok::<_, CoordinatorError>(response.into_inner())
             })
             .await;
 
@@ -802,5 +836,12 @@ mod tests {
 
         assert!(cache.get().is_none());
         assert_eq!(cache.get_version(), 0);
+    }
+
+    #[test]
+    fn test_smart_client_channels_initially_empty() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache);
+        assert!(client.channels.read().is_empty());
     }
 }

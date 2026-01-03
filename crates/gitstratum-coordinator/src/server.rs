@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use async_stream::stream;
 use futures::Stream;
 use parking_lot::RwLock;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
@@ -27,7 +27,7 @@ use k8s_operator::raft::{KeyValueStateMachine, RaftNodeManager, RaftRequest};
 use crate::commands::ClusterCommand;
 use crate::config::CoordinatorConfig;
 use crate::error::CoordinatorError;
-use crate::heartbeat_batcher::HeartbeatBatcher;
+use crate::heartbeat_batcher::{HeartbeatBatcher, HeartbeatInfo};
 use crate::rate_limit::{GlobalRateLimiter, RateLimitError};
 use crate::state_machine::{apply_command, deserialize_topology, serialize_topology, topology_key};
 use crate::topology::{ClusterTopology, NodeEntry};
@@ -49,12 +49,12 @@ pub struct CoordinatorServer {
     topology_cache: RwLock<ClusterTopology>,
     topology_updates: broadcast::Sender<TopologyUpdate>,
     config: CoordinatorConfig,
-    #[allow(dead_code)]
     heartbeat_batcher: Arc<HeartbeatBatcher>,
     leader_since: RwLock<Option<Instant>>,
     last_heartbeat: RwLock<HashMap<String, Instant>>,
     node_flap_info: RwLock<HashMap<String, NodeFlap>>,
     global_limiter: Arc<GlobalRateLimiter>,
+    write_lock: Mutex<()>,
 }
 
 impl CoordinatorServer {
@@ -75,6 +75,7 @@ impl CoordinatorServer {
             last_heartbeat: RwLock::new(HashMap::new()),
             node_flap_info: RwLock::new(HashMap::new()),
             global_limiter,
+            write_lock: Mutex::new(()),
         }
     }
 
@@ -82,11 +83,21 @@ impl CoordinatorServer {
         self.raft.leader_election().is_leader()
     }
 
+    fn get_leader_address(&self) -> Option<String> {
+        let metrics = self.raft.raft().metrics().borrow().clone();
+        let leader_id = metrics.current_leader?;
+        let node = metrics
+            .membership_config
+            .membership()
+            .get_node(&leader_id)?;
+        Some(node.addr.clone())
+    }
+
     fn ensure_leader(&self) -> Result<(), CoordinatorError> {
         if self.is_leader() {
             Ok(())
         } else {
-            Err(CoordinatorError::NotLeader)
+            Err(CoordinatorError::NotLeader(self.get_leader_address()))
         }
     }
 
@@ -117,6 +128,7 @@ impl CoordinatorServer {
         &self,
         cmd: ClusterCommand,
     ) -> Result<crate::commands::ClusterResponse, CoordinatorError> {
+        let _guard = self.write_lock.lock().await;
         let mut topology = self.read_topology().await;
         let response = apply_command(&mut topology, &cmd);
 
@@ -592,8 +604,8 @@ impl CoordinatorService for CoordinatorServer {
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
         let topo = self.read_topology().await;
-        let leader = self.raft.leader_election();
-        let is_leader = leader.is_leader();
+        let metrics = self.raft.raft().metrics().borrow().clone();
+        let is_leader = self.raft.leader_election().is_leader();
 
         let raft_state = if is_leader {
             RaftState::Leader
@@ -601,10 +613,16 @@ impl CoordinatorService for CoordinatorServer {
             RaftState::Follower
         };
 
-        let leader_id = if is_leader {
-            leader.node_id().to_string()
+        let (leader_id, leader_address) = if let Some(lid) = &metrics.current_leader {
+            let addr = metrics
+                .membership_config
+                .membership()
+                .get_node(lid)
+                .map(|n| n.addr.clone())
+                .unwrap_or_default();
+            (lid.to_string(), addr)
         } else {
-            String::new()
+            (String::new(), String::new())
         };
 
         let active_nodes = (topo.metadata_nodes.len() + topo.object_nodes.len()) as u32;
@@ -612,11 +630,11 @@ impl CoordinatorService for CoordinatorServer {
         Ok(Response::new(HealthCheckResponse {
             healthy: true,
             raft_state: raft_state.into(),
-            raft_term: 0,
+            raft_term: metrics.current_term,
             committed_index: 0,
             applied_index: 0,
             leader_id,
-            leader_address: String::new(),
+            leader_address,
             topology_version: topo.version,
             active_nodes,
             suspect_nodes: 0,
@@ -718,11 +736,23 @@ impl CoordinatorService for CoordinatorServer {
             }
         }
 
+        self.heartbeat_batcher.record_heartbeat(
+            node_id.clone(),
+            HeartbeatInfo::new(
+                req.known_version,
+                req.reported_state,
+                req.generation_id.clone(),
+            ),
+        );
+
         self.last_heartbeat.write().insert(node_id.clone(), now);
 
         if let Some(node) = registered_node {
-            if node.state() == NodeState::Suspect {
-                self.reset_flap_on_recovery(&node_id);
+            let current_state = node.state();
+            if current_state == NodeState::Suspect || current_state == NodeState::Joining {
+                if current_state == NodeState::Suspect {
+                    self.reset_flap_on_recovery(&node_id);
+                }
                 let cmd = ClusterCommand::SetNodeState {
                     node_id: node_id.clone(),
                     state: NodeState::Active as i32,
@@ -731,13 +761,18 @@ impl CoordinatorService for CoordinatorServer {
             }
         }
 
-        let leader = self.raft.leader_election();
-        let is_leader = leader.is_leader();
+        let metrics = self.raft.raft().metrics().borrow().clone();
 
-        let leader_id = if is_leader {
-            leader.node_id().to_string()
+        let (leader_id, leader_address) = if let Some(lid) = &metrics.current_leader {
+            let addr = metrics
+                .membership_config
+                .membership()
+                .get_node(lid)
+                .map(|n| n.addr.clone())
+                .unwrap_or_default();
+            (lid.to_string(), addr)
         } else {
-            String::new()
+            (String::new(), String::new())
         };
 
         let refresh_required = req.known_version < topo.version;
@@ -746,8 +781,8 @@ impl CoordinatorService for CoordinatorServer {
             current_version: topo.version,
             refresh_required,
             leader_id,
-            leader_address: String::new(),
-            raft_term: 0,
+            leader_address,
+            raft_term: metrics.current_term,
         }))
     }
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch;
 
@@ -13,7 +13,25 @@ pub struct HeartbeatInfo {
     pub known_version: u64,
     pub reported_state: i32,
     pub generation_id: String,
-    pub received_at: Instant,
+    pub received_at: i64,
+}
+
+fn unix_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+impl HeartbeatInfo {
+    pub fn new(known_version: u64, reported_state: i32, generation_id: String) -> Self {
+        Self {
+            known_version,
+            reported_state,
+            generation_id,
+            received_at: unix_timestamp_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +207,7 @@ async fn flush_batch_with_retry<F, Fut, L, E>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn test_new_batcher() {
@@ -221,7 +240,7 @@ mod tests {
             known_version: 42,
             reported_state: 1,
             generation_id: "gen-123".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
 
         batcher.record_heartbeat("node-1".to_string(), info);
@@ -236,7 +255,7 @@ mod tests {
             known_version: 10,
             reported_state: 1,
             generation_id: "gen-123".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info1);
 
@@ -244,7 +263,7 @@ mod tests {
             known_version: 20,
             reported_state: 1,
             generation_id: "gen-123".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info2);
 
@@ -261,7 +280,7 @@ mod tests {
             known_version: 42,
             reported_state: 1,
             generation_id: "gen-123".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info);
 
@@ -296,7 +315,7 @@ mod tests {
                 known_version: 10,
                 reported_state: 1,
                 generation_id: "gen-1".to_string(),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             },
         );
 
@@ -316,7 +335,7 @@ mod tests {
                 known_version: 20,
                 reported_state: 1,
                 generation_id: "gen-new".to_string(),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             },
         );
 
@@ -327,7 +346,7 @@ mod tests {
                 known_version: 10,
                 reported_state: 1,
                 generation_id: "gen-old".to_string(),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             },
         );
 
@@ -348,7 +367,7 @@ mod tests {
                 known_version: 10,
                 reported_state: 1,
                 generation_id: "gen-1".to_string(),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             },
         );
 
@@ -359,7 +378,7 @@ mod tests {
                 known_version: 20,
                 reported_state: 1,
                 generation_id: "gen-2".to_string(),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             },
         );
 
@@ -380,7 +399,7 @@ mod tests {
                 known_version: i as u64,
                 reported_state: 1,
                 generation_id: format!("gen-{}", i),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             };
             batcher.record_heartbeat(format!("node-{}", i), info);
         }
@@ -441,7 +460,7 @@ mod tests {
                 known_version: i as u64,
                 reported_state: 1,
                 generation_id: format!("gen-{}", i),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             };
             batcher.record_heartbeat(format!("node-{}", i), info);
         }
@@ -519,7 +538,7 @@ mod tests {
             known_version: 1,
             reported_state: 1,
             generation_id: "gen-1".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info);
 
@@ -570,7 +589,7 @@ mod tests {
             known_version: 1,
             reported_state: 1,
             generation_id: "gen-1".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info);
 
@@ -625,7 +644,7 @@ mod tests {
             known_version: 1,
             reported_state: 1,
             generation_id: "gen-1".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info);
 
@@ -670,7 +689,7 @@ mod tests {
             known_version: 1,
             reported_state: 1,
             generation_id: "gen-1".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info);
 
@@ -725,7 +744,7 @@ mod tests {
             known_version: 1,
             reported_state: 1,
             generation_id: "gen-1".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info);
 
@@ -780,7 +799,7 @@ mod tests {
             known_version: 1,
             reported_state: 1,
             generation_id: "gen-1".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         batcher.record_heartbeat("node-1".to_string(), info);
 
