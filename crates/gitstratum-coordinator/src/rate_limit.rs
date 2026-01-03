@@ -243,6 +243,7 @@ pub struct ClientRateLimiter {
     topology_limiter: TokenBucket,
     watch_connections: AtomicU32,
     max_watch_connections: u32,
+    last_access: Mutex<Instant>,
 }
 
 impl ClientRateLimiter {
@@ -253,10 +254,20 @@ impl ClientRateLimiter {
             topology_limiter: TokenBucket::new(1_000, 1_000),
             watch_connections: AtomicU32::new(0),
             max_watch_connections: 10,
+            last_access: Mutex::new(Instant::now()),
         }
     }
 
+    fn touch(&self) {
+        *self.last_access.lock().unwrap() = Instant::now();
+    }
+
+    pub fn last_access_time(&self) -> Instant {
+        *self.last_access.lock().unwrap()
+    }
+
     pub fn try_register(&self) -> Result<(), RateLimitError> {
+        self.touch();
         if !self.register_limiter.try_acquire() {
             return Err(RateLimitError::PerClientLimitExceeded {
                 operation: "RegisterNode".to_string(),
@@ -268,6 +279,7 @@ impl ClientRateLimiter {
     }
 
     pub fn try_heartbeat(&self) -> Result<(), RateLimitError> {
+        self.touch();
         if !self.heartbeat_limiter.try_acquire() {
             return Err(RateLimitError::PerClientLimitExceeded {
                 operation: "Heartbeat".to_string(),
@@ -279,6 +291,7 @@ impl ClientRateLimiter {
     }
 
     pub fn try_topology_read(&self) -> Result<(), RateLimitError> {
+        self.touch();
         if !self.topology_limiter.try_acquire() {
             return Err(RateLimitError::PerClientLimitExceeded {
                 operation: "GetTopology".to_string(),
@@ -289,7 +302,34 @@ impl ClientRateLimiter {
         Ok(())
     }
 
+    pub fn try_increment_watch(&self) -> Result<(), RateLimitError> {
+        self.touch();
+        loop {
+            let current = self.watch_connections.load(Ordering::SeqCst);
+            if current >= self.max_watch_connections {
+                return Err(RateLimitError::TooManyWatchers {
+                    current,
+                    max: self.max_watch_connections,
+                });
+            }
+            match self.watch_connections.compare_exchange(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    pub fn decrement_watch(&self) {
+        self.watch_connections.fetch_sub(1, Ordering::SeqCst);
+    }
+
     pub fn try_watch(&self) -> Result<WatchGuard<'_>, RateLimitError> {
+        self.touch();
         loop {
             let current = self.watch_connections.load(Ordering::SeqCst);
             if current >= self.max_watch_connections {
@@ -316,6 +356,10 @@ impl ClientRateLimiter {
 
     pub fn watch_count(&self) -> u32 {
         self.watch_connections.load(Ordering::SeqCst)
+    }
+
+    pub fn has_active_watches(&self) -> bool {
+        self.watch_connections.load(Ordering::SeqCst) > 0
     }
 }
 
@@ -475,6 +519,37 @@ mod tests {
     fn test_client_rate_limiter_default() {
         let limiter = ClientRateLimiter::default();
         assert_eq!(limiter.watch_count(), 0);
+    }
+
+    #[test]
+    fn test_client_rate_limiter_last_access() {
+        let limiter = ClientRateLimiter::new();
+        let before = Instant::now();
+        std::thread::sleep(Duration::from_millis(10));
+        limiter.try_heartbeat().unwrap();
+        let last_access = limiter.last_access_time();
+        assert!(last_access >= before);
+    }
+
+    #[test]
+    fn test_client_rate_limiter_try_increment_watch() {
+        let limiter = ClientRateLimiter::new();
+        for _ in 0..10 {
+            assert!(limiter.try_increment_watch().is_ok());
+        }
+        assert!(limiter.try_increment_watch().is_err());
+        limiter.decrement_watch();
+        assert!(limiter.try_increment_watch().is_ok());
+    }
+
+    #[test]
+    fn test_client_rate_limiter_has_active_watches() {
+        let limiter = ClientRateLimiter::new();
+        assert!(!limiter.has_active_watches());
+        limiter.try_increment_watch().unwrap();
+        assert!(limiter.has_active_watches());
+        limiter.decrement_watch();
+        assert!(!limiter.has_active_watches());
     }
 
     #[test]
