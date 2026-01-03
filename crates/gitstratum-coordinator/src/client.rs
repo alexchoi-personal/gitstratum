@@ -877,4 +877,337 @@ mod tests {
             channels.len()
         );
     }
+
+    #[test]
+    fn test_topology_cache_staleness_returns_elapsed_time() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+        let staleness_before = cache.staleness();
+        std::thread::sleep(Duration::from_millis(10));
+        let staleness_after = cache.staleness();
+        assert!(staleness_after > staleness_before);
+        assert!(staleness_after >= Duration::from_millis(10));
+    }
+
+    #[test]
+    fn test_topology_cache_is_stale_when_expired() {
+        let cache = TopologyCache::new(Duration::from_millis(5));
+        assert!(!cache.is_stale());
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(cache.is_stale());
+    }
+
+    #[test]
+    fn test_topology_cache_update_resets_staleness() {
+        let cache = TopologyCache::new(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(cache.is_stale());
+
+        let topo = GetTopologyResponse {
+            version: 1,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: String::new(),
+        };
+        cache.update(topo);
+
+        assert!(!cache.is_stale());
+    }
+
+    #[test]
+    fn test_retry_config_clone() {
+        let config = RetryConfig {
+            max_attempts: 10,
+            initial_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_secs(10),
+            timeout_per_attempt: Duration::from_secs(3),
+            jitter_fraction: 0.5,
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.max_attempts, 10);
+        assert_eq!(cloned.initial_backoff, Duration::from_millis(50));
+        assert_eq!(cloned.max_backoff, Duration::from_secs(10));
+        assert_eq!(cloned.timeout_per_attempt, Duration::from_secs(3));
+        assert!((cloned.jitter_fraction - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_retry_config_zero_jitter() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(5),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.0,
+        };
+        let backoff = config.compute_backoff_with_jitter(0);
+        assert_eq!(backoff, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_retry_config_backoff_capped_at_max() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(2),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.0,
+        };
+        let backoff = config.compute_backoff_with_jitter(10);
+        assert_eq!(backoff, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_watch_config_custom_values() {
+        let config = WatchConfig {
+            keepalive_timeout: Duration::from_secs(120),
+            reconnect_backoff: Duration::from_secs(5),
+            reconnect_jitter_fraction: 0.75,
+        };
+        assert_eq!(config.keepalive_timeout, Duration::from_secs(120));
+        assert_eq!(config.reconnect_backoff, Duration::from_secs(5));
+        assert!((config.reconnect_jitter_fraction - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_watch_event_copy_clone() {
+        let event = WatchEvent::NodeAdded;
+        let copied = event;
+        let cloned = event.clone();
+        assert_eq!(copied, WatchEvent::NodeAdded);
+        assert_eq!(cloned, WatchEvent::NodeAdded);
+    }
+
+    #[test]
+    fn test_watch_event_all_variants_debug() {
+        let variants = [
+            WatchEvent::NodeAdded,
+            WatchEvent::NodeUpdated,
+            WatchEvent::NodeRemoved,
+            WatchEvent::FullSync,
+            WatchEvent::Keepalive,
+            WatchEvent::Lagged,
+            WatchEvent::StreamEnded,
+            WatchEvent::Error,
+        ];
+        for event in variants {
+            let debug_str = format!("{:?}", event);
+            assert!(!debug_str.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_watch_event_equality() {
+        assert_eq!(WatchEvent::NodeAdded, WatchEvent::NodeAdded);
+        assert_eq!(WatchEvent::NodeUpdated, WatchEvent::NodeUpdated);
+        assert_eq!(WatchEvent::NodeRemoved, WatchEvent::NodeRemoved);
+        assert_eq!(WatchEvent::FullSync, WatchEvent::FullSync);
+        assert_eq!(WatchEvent::Keepalive, WatchEvent::Keepalive);
+        assert_eq!(WatchEvent::Lagged, WatchEvent::Lagged);
+        assert_eq!(WatchEvent::StreamEnded, WatchEvent::StreamEnded);
+        assert_eq!(WatchEvent::Error, WatchEvent::Error);
+
+        assert_ne!(WatchEvent::NodeAdded, WatchEvent::NodeUpdated);
+        assert_ne!(WatchEvent::FullSync, WatchEvent::Keepalive);
+        assert_ne!(WatchEvent::Error, WatchEvent::StreamEnded);
+    }
+
+    #[test]
+    fn test_smart_client_with_retry_config() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let custom_config = RetryConfig {
+            max_attempts: 10,
+            initial_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_secs(10),
+            timeout_per_attempt: Duration::from_secs(15),
+            jitter_fraction: 0.1,
+        };
+        let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache)
+            .with_retry_config(custom_config);
+
+        assert_eq!(client.retry_config.max_attempts, 10);
+        assert_eq!(
+            client.retry_config.initial_backoff,
+            Duration::from_millis(50)
+        );
+        assert_eq!(client.retry_config.max_backoff, Duration::from_secs(10));
+        assert_eq!(
+            client.retry_config.timeout_per_attempt,
+            Duration::from_secs(15)
+        );
+        assert!((client.retry_config.jitter_fraction - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_smart_client_update_leader_hint_with_valid_metadata() {
+        use tonic::metadata::MetadataValue;
+
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache);
+
+        assert!(client.current_leader.read().is_none());
+
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert(
+            "leader-address",
+            MetadataValue::try_from("http://coord-2:9000").unwrap(),
+        );
+        let status =
+            tonic::Status::with_metadata(Code::FailedPrecondition, "not the leader", metadata);
+
+        client.update_leader_hint(&status);
+
+        assert_eq!(
+            client.current_leader.read().as_ref().unwrap(),
+            "http://coord-2:9000"
+        );
+    }
+
+    #[test]
+    fn test_smart_client_update_leader_hint_without_metadata() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache);
+
+        let status = tonic::Status::new(Code::FailedPrecondition, "not the leader");
+        client.update_leader_hint(&status);
+
+        assert!(client.current_leader.read().is_none());
+    }
+
+    #[test]
+    fn test_smart_client_update_leader_hint_updates_get_endpoint() {
+        use tonic::metadata::MetadataValue;
+
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(
+            vec![
+                "http://coord-0:9000".to_string(),
+                "http://coord-1:9000".to_string(),
+            ],
+            cache,
+        );
+
+        assert_eq!(client.get_endpoint(0), "http://coord-0:9000");
+        assert_eq!(client.get_endpoint(1), "http://coord-1:9000");
+
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert(
+            "leader-address",
+            MetadataValue::try_from("http://coord-leader:9000").unwrap(),
+        );
+        let status =
+            tonic::Status::with_metadata(Code::FailedPrecondition, "not the leader", metadata);
+        client.update_leader_hint(&status);
+
+        assert_eq!(client.get_endpoint(0), "http://coord-leader:9000");
+        assert_eq!(client.get_endpoint(1), "http://coord-leader:9000");
+        assert_eq!(client.get_endpoint(100), "http://coord-leader:9000");
+    }
+
+    #[test]
+    fn test_smart_client_clear_leader_hint_falls_back_to_round_robin() {
+        use tonic::metadata::MetadataValue;
+
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(
+            vec![
+                "http://coord-0:9000".to_string(),
+                "http://coord-1:9000".to_string(),
+                "http://coord-2:9000".to_string(),
+            ],
+            cache,
+        );
+
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert(
+            "leader-address",
+            MetadataValue::try_from("http://leader:9000").unwrap(),
+        );
+        let status =
+            tonic::Status::with_metadata(Code::FailedPrecondition, "not the leader", metadata);
+        client.update_leader_hint(&status);
+        assert_eq!(client.get_endpoint(0), "http://leader:9000");
+
+        client.clear_leader_hint();
+        assert_eq!(client.get_endpoint(0), "http://coord-0:9000");
+        assert_eq!(client.get_endpoint(1), "http://coord-1:9000");
+        assert_eq!(client.get_endpoint(2), "http://coord-2:9000");
+        assert_eq!(client.get_endpoint(3), "http://coord-0:9000");
+    }
+
+    #[test]
+    fn test_topology_cache_get_returns_full_topology() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+        let topo = GetTopologyResponse {
+            version: 123,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: "test-leader".to_string(),
+        };
+        cache.update(topo);
+
+        let retrieved = cache.get().unwrap();
+        assert_eq!(retrieved.version, 123);
+        assert_eq!(retrieved.leader_id, "test-leader");
+    }
+
+    #[test]
+    fn test_smart_client_single_endpoint() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client =
+            SmartCoordinatorClient::new(vec!["http://single-coord:9000".to_string()], cache);
+
+        assert_eq!(client.get_endpoint(0), "http://single-coord:9000");
+        assert_eq!(client.get_endpoint(1), "http://single-coord:9000");
+        assert_eq!(client.get_endpoint(100), "http://single-coord:9000");
+    }
+
+    #[test]
+    fn test_retry_config_exponential_backoff_sequence() {
+        let config = RetryConfig {
+            max_attempts: 5,
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(10),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.0,
+        };
+
+        assert_eq!(
+            config.compute_backoff_with_jitter(0),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            config.compute_backoff_with_jitter(1),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            config.compute_backoff_with_jitter(2),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            config.compute_backoff_with_jitter(3),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            config.compute_backoff_with_jitter(4),
+            Duration::from_millis(1600)
+        );
+    }
+
+    #[test]
+    fn test_retry_config_saturating_pow_no_overflow() {
+        let config = RetryConfig {
+            max_attempts: 100,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(60),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.0,
+        };
+
+        let backoff = config.compute_backoff_with_jitter(50);
+        assert_eq!(backoff, Duration::from_secs(60));
+    }
 }
