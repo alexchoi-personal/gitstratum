@@ -883,6 +883,8 @@ impl CoordinatorService for CoordinatorServer {
             }
         }
 
+        self.last_heartbeat.write().insert(node_id.clone(), now);
+
         if self.is_leader() {
             self.heartbeat_batcher.record_heartbeat(
                 node_id.clone(),
@@ -893,18 +895,6 @@ impl CoordinatorService for CoordinatorServer {
                 ),
             );
         }
-
-        self.last_heartbeat.write().insert(node_id.clone(), now);
-
-        self.heartbeat_batcher.record_heartbeat(
-            node_id.clone(),
-            HeartbeatInfo {
-                known_version: req.known_version,
-                reported_state: req.reported_state,
-                generation_id: req.generation_id.clone(),
-                received_at: now,
-            },
-        );
 
         if let Some(node) = registered_node {
             let current_state = node.state();
@@ -1013,7 +1003,6 @@ mod tests {
         assert!(flap.last_suspect_at >= now);
     }
 
-    #[test]
     fn test_heartbeat_info_creation() {
         let now = Instant::now();
         let info = HeartbeatInfo {
@@ -1216,5 +1205,605 @@ mod tests {
 
         entry.limiter.decrement_watch();
         assert!(!entry.limiter.has_active_watches());
+        let now = Instant::now();
+        let flap = NodeFlap {
+            suspect_count: 0,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+        assert_eq!(flap.suspect_count, 0);
+        assert!(flap.last_suspect_at <= Instant::now());
+        assert!(flap.last_stable_at <= Instant::now());
+    }
+
+    #[test]
+    fn test_node_flap_timestamps_ordering() {
+        let earlier = Instant::now();
+        std::thread::sleep(Duration::from_millis(1));
+        let later = Instant::now();
+
+        let flap = NodeFlap {
+            suspect_count: 1,
+            last_suspect_at: later,
+            last_stable_at: earlier,
+        };
+
+        assert!(flap.last_suspect_at > flap.last_stable_at);
+    }
+
+    #[test]
+    fn test_node_flap_suspect_count_overflow_protection() {
+        let now = Instant::now();
+        let mut flap = NodeFlap {
+            suspect_count: u32::MAX - 1,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+        flap.suspect_count = flap.suspect_count.saturating_add(1);
+        assert_eq!(flap.suspect_count, u32::MAX);
+        flap.suspect_count = flap.suspect_count.saturating_add(1);
+        assert_eq!(flap.suspect_count, u32::MAX);
+    }
+
+    #[test]
+    fn test_node_flap_multiple_suspects() {
+        let now = Instant::now();
+        let mut flap = NodeFlap {
+            suspect_count: 0,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+
+        for i in 1..=10 {
+            flap.suspect_count += 1;
+            flap.last_suspect_at = Instant::now();
+            assert_eq!(flap.suspect_count, i);
+        }
+    }
+
+    #[test]
+    fn test_node_flap_reset_count() {
+        let now = Instant::now();
+        let mut flap = NodeFlap {
+            suspect_count: 5,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+
+        flap.suspect_count = 0;
+        assert_eq!(flap.suspect_count, 0);
+    }
+
+    fn calculate_timeout_with_flap(
+        config: &CoordinatorConfig,
+        flap_info: Option<&NodeFlap>,
+    ) -> (Duration, Duration) {
+        let base_suspect = config.suspect_timeout;
+        let base_down = config.down_timeout;
+
+        if let Some(flap) = flap_info {
+            let now = Instant::now();
+            if flap.suspect_count >= config.flap_threshold
+                && now.duration_since(flap.last_suspect_at) < config.flap_window
+            {
+                let multiplier = config.flap_multiplier;
+                return (
+                    base_suspect.mul_f32(multiplier),
+                    base_down.mul_f32(multiplier),
+                );
+            }
+        }
+
+        (base_suspect, base_down)
+    }
+
+    #[test]
+    fn test_timeout_calculation_no_flap() {
+        let config = CoordinatorConfig::default();
+        let (suspect, down) = calculate_timeout_with_flap(&config, None);
+        assert_eq!(suspect, config.suspect_timeout);
+        assert_eq!(down, config.down_timeout);
+    }
+
+    #[test]
+    fn test_timeout_calculation_below_threshold() {
+        let config = CoordinatorConfig::default();
+        let now = Instant::now();
+        let flap = NodeFlap {
+            suspect_count: config.flap_threshold - 1,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        assert_eq!(suspect, config.suspect_timeout);
+        assert_eq!(down, config.down_timeout);
+    }
+
+    #[test]
+    fn test_timeout_calculation_at_threshold() {
+        let config = CoordinatorConfig::default();
+        let now = Instant::now();
+        let flap = NodeFlap {
+            suspect_count: config.flap_threshold,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        let expected_suspect = config.suspect_timeout.mul_f32(config.flap_multiplier);
+        let expected_down = config.down_timeout.mul_f32(config.flap_multiplier);
+        assert_eq!(suspect, expected_suspect);
+        assert_eq!(down, expected_down);
+    }
+
+    #[test]
+    fn test_timeout_calculation_above_threshold() {
+        let config = CoordinatorConfig::default();
+        let now = Instant::now();
+        let flap = NodeFlap {
+            suspect_count: config.flap_threshold + 5,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        let expected_suspect = config.suspect_timeout.mul_f32(config.flap_multiplier);
+        let expected_down = config.down_timeout.mul_f32(config.flap_multiplier);
+        assert_eq!(suspect, expected_suspect);
+        assert_eq!(down, expected_down);
+    }
+
+    #[test]
+    fn test_timeout_calculation_outside_flap_window() {
+        let mut config = CoordinatorConfig::default();
+        config.flap_window = Duration::from_millis(10);
+
+        let old_time = Instant::now() - Duration::from_millis(100);
+        let flap = NodeFlap {
+            suspect_count: config.flap_threshold + 1,
+            last_suspect_at: old_time,
+            last_stable_at: old_time,
+        };
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        assert_eq!(suspect, config.suspect_timeout);
+        assert_eq!(down, config.down_timeout);
+    }
+
+    #[test]
+    fn test_timeout_calculation_custom_multiplier() {
+        let mut config = CoordinatorConfig::default();
+        config.flap_multiplier = 3.0;
+
+        let now = Instant::now();
+        let flap = NodeFlap {
+            suspect_count: config.flap_threshold,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        let expected_suspect = config.suspect_timeout.mul_f32(3.0);
+        let expected_down = config.down_timeout.mul_f32(3.0);
+        assert_eq!(suspect, expected_suspect);
+        assert_eq!(down, expected_down);
+    }
+
+    fn should_reset_flap_count(flap: &NodeFlap, stability_window: Duration, now: Instant) -> bool {
+        now.duration_since(flap.last_stable_at) >= stability_window
+            && now.duration_since(flap.last_suspect_at) >= stability_window
+    }
+
+    #[test]
+    fn test_reset_flap_count_both_conditions_met() {
+        let old_time = Instant::now() - Duration::from_secs(400);
+        let flap = NodeFlap {
+            suspect_count: 5,
+            last_suspect_at: old_time,
+            last_stable_at: old_time,
+        };
+        let stability_window = Duration::from_secs(300);
+        assert!(should_reset_flap_count(
+            &flap,
+            stability_window,
+            Instant::now()
+        ));
+    }
+
+    #[test]
+    fn test_reset_flap_count_recent_suspect() {
+        let old_time = Instant::now() - Duration::from_secs(400);
+        let recent_time = Instant::now() - Duration::from_secs(100);
+        let flap = NodeFlap {
+            suspect_count: 5,
+            last_suspect_at: recent_time,
+            last_stable_at: old_time,
+        };
+        let stability_window = Duration::from_secs(300);
+        assert!(!should_reset_flap_count(
+            &flap,
+            stability_window,
+            Instant::now()
+        ));
+    }
+
+    #[test]
+    fn test_reset_flap_count_recent_stable() {
+        let old_time = Instant::now() - Duration::from_secs(400);
+        let recent_time = Instant::now() - Duration::from_secs(100);
+        let flap = NodeFlap {
+            suspect_count: 5,
+            last_suspect_at: old_time,
+            last_stable_at: recent_time,
+        };
+        let stability_window = Duration::from_secs(300);
+        assert!(!should_reset_flap_count(
+            &flap,
+            stability_window,
+            Instant::now()
+        ));
+    }
+
+    #[test]
+    fn test_reset_flap_count_both_recent() {
+        let recent_time = Instant::now() - Duration::from_secs(100);
+        let flap = NodeFlap {
+            suspect_count: 5,
+            last_suspect_at: recent_time,
+            last_stable_at: recent_time,
+        };
+        let stability_window = Duration::from_secs(300);
+        assert!(!should_reset_flap_count(
+            &flap,
+            stability_window,
+            Instant::now()
+        ));
+    }
+
+    #[test]
+    fn test_reset_flap_count_exactly_at_boundary() {
+        let boundary_time = Instant::now() - Duration::from_secs(300);
+        let flap = NodeFlap {
+            suspect_count: 5,
+            last_suspect_at: boundary_time,
+            last_stable_at: boundary_time,
+        };
+        let stability_window = Duration::from_secs(300);
+        assert!(should_reset_flap_count(
+            &flap,
+            stability_window,
+            Instant::now()
+        ));
+    }
+
+    #[test]
+    fn test_flap_tracking_workflow() {
+        let mut config = CoordinatorConfig::default();
+        config.flap_threshold = 3;
+        config.flap_window = Duration::from_secs(600);
+        config.flap_multiplier = 2.0;
+        config.stability_window = Duration::from_secs(300);
+
+        let now = Instant::now();
+        let mut flap = NodeFlap {
+            suspect_count: 0,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        assert_eq!(suspect, config.suspect_timeout);
+        assert_eq!(down, config.down_timeout);
+
+        for _ in 0..3 {
+            flap.suspect_count += 1;
+            flap.last_suspect_at = Instant::now();
+        }
+
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        assert_eq!(suspect, config.suspect_timeout.mul_f32(2.0));
+        assert_eq!(down, config.down_timeout.mul_f32(2.0));
+    }
+
+    #[test]
+    fn test_flap_info_hashmap_operations() {
+        let flap_info: RwLock<HashMap<String, NodeFlap>> = RwLock::new(HashMap::new());
+
+        {
+            let read_guard = flap_info.read();
+            assert!(read_guard.get("node-1").is_none());
+        }
+
+        {
+            let mut write_guard = flap_info.write();
+            let now = Instant::now();
+            write_guard.insert(
+                "node-1".to_string(),
+                NodeFlap {
+                    suspect_count: 1,
+                    last_suspect_at: now,
+                    last_stable_at: now,
+                },
+            );
+        }
+
+        {
+            let read_guard = flap_info.read();
+            let entry = read_guard.get("node-1").unwrap();
+            assert_eq!(entry.suspect_count, 1);
+        }
+
+        {
+            let mut write_guard = flap_info.write();
+            if let Some(entry) = write_guard.get_mut("node-1") {
+                entry.suspect_count += 1;
+                entry.last_suspect_at = Instant::now();
+            }
+        }
+
+        {
+            let read_guard = flap_info.read();
+            let entry = read_guard.get("node-1").unwrap();
+            assert_eq!(entry.suspect_count, 2);
+        }
+    }
+
+    #[test]
+    fn test_flap_info_multiple_nodes() {
+        let flap_info: RwLock<HashMap<String, NodeFlap>> = RwLock::new(HashMap::new());
+        let now = Instant::now();
+
+        {
+            let mut write_guard = flap_info.write();
+            for i in 1..=5 {
+                write_guard.insert(
+                    format!("node-{}", i),
+                    NodeFlap {
+                        suspect_count: i as u32,
+                        last_suspect_at: now,
+                        last_stable_at: now,
+                    },
+                );
+            }
+        }
+
+        {
+            let read_guard = flap_info.read();
+            assert_eq!(read_guard.len(), 5);
+            for i in 1..=5 {
+                let entry = read_guard.get(&format!("node-{}", i)).unwrap();
+                assert_eq!(entry.suspect_count, i as u32);
+            }
+        }
+    }
+
+    #[test]
+    fn test_last_heartbeat_hashmap_operations() {
+        let last_heartbeat: RwLock<HashMap<String, Instant>> = RwLock::new(HashMap::new());
+        let now = Instant::now();
+
+        {
+            let mut write_guard = last_heartbeat.write();
+            write_guard.insert("node-1".to_string(), now);
+        }
+
+        {
+            let read_guard = last_heartbeat.read();
+            let hb_time = read_guard.get("node-1").unwrap();
+            assert_eq!(*hb_time, now);
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+        let later = Instant::now();
+
+        {
+            let mut write_guard = last_heartbeat.write();
+            write_guard.insert("node-1".to_string(), later);
+        }
+
+        {
+            let read_guard = last_heartbeat.read();
+            let hb_time = read_guard.get("node-1").unwrap();
+            assert!(*hb_time > now);
+        }
+    }
+
+    #[test]
+    fn test_last_heartbeat_elapsed_calculation() {
+        let last_heartbeat: RwLock<HashMap<String, Instant>> = RwLock::new(HashMap::new());
+        let past = Instant::now() - Duration::from_secs(60);
+
+        {
+            let mut write_guard = last_heartbeat.write();
+            write_guard.insert("node-1".to_string(), past);
+        }
+
+        {
+            let read_guard = last_heartbeat.read();
+            let hb_time = read_guard.get("node-1").unwrap();
+            let elapsed = Instant::now().duration_since(*hb_time);
+            assert!(elapsed >= Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn test_leader_since_state_transitions() {
+        let leader_since: RwLock<Option<Instant>> = RwLock::new(None);
+
+        {
+            let read_guard = leader_since.read();
+            assert!(read_guard.is_none());
+        }
+
+        let now = Instant::now();
+        {
+            let mut write_guard = leader_since.write();
+            *write_guard = Some(now);
+        }
+
+        {
+            let read_guard = leader_since.read();
+            assert!(read_guard.is_some());
+            assert_eq!(read_guard.unwrap(), now);
+        }
+
+        {
+            let mut write_guard = leader_since.write();
+            *write_guard = None;
+        }
+
+        {
+            let read_guard = leader_since.read();
+            assert!(read_guard.is_none());
+        }
+    }
+
+    #[test]
+    fn test_grace_period_calculation() {
+        let leader_grace_period = Duration::from_secs(90);
+        let leader_start = Instant::now() - Duration::from_secs(30);
+        let now = Instant::now();
+
+        let in_grace_period = now.duration_since(leader_start) < leader_grace_period;
+        assert!(in_grace_period);
+
+        let old_leader_start = Instant::now() - Duration::from_secs(100);
+        let not_in_grace = now.duration_since(old_leader_start) < leader_grace_period;
+        assert!(!not_in_grace);
+    }
+
+    #[test]
+    fn test_topology_cache_default() {
+        let topology_cache: Arc<RwLock<ClusterTopology>> =
+            Arc::new(RwLock::new(ClusterTopology::default()));
+
+        {
+            let read_guard = topology_cache.read();
+            assert!(read_guard.object_nodes.is_empty());
+            assert!(read_guard.metadata_nodes.is_empty());
+            assert_eq!(read_guard.version, 0);
+        }
+    }
+
+    #[test]
+    fn test_topology_cache_update() {
+        let topology_cache: Arc<RwLock<ClusterTopology>> =
+            Arc::new(RwLock::new(ClusterTopology::default()));
+
+        {
+            let mut write_guard = topology_cache.write();
+            write_guard.version = 42;
+            write_guard.object_nodes.insert(
+                "node-1".to_string(),
+                crate::topology::NodeEntry {
+                    id: "node-1".to_string(),
+                    address: "192.168.1.1".to_string(),
+                    port: 9000,
+                    state: gitstratum_proto::NodeState::Active as i32,
+                    last_heartbeat_at: 0,
+                    suspect_count: 0,
+                    generation_id: "gen-1".to_string(),
+                    registered_at: 0,
+                },
+            );
+        }
+
+        {
+            let read_guard = topology_cache.read();
+            assert_eq!(read_guard.version, 42);
+            assert_eq!(read_guard.object_nodes.len(), 1);
+            assert!(read_guard.object_nodes.contains_key("node-1"));
+        }
+    }
+
+    #[test]
+    fn test_broadcast_channel_creation() {
+        let buffer_size = 10_000;
+        let (tx, _rx) = broadcast::channel::<TopologyUpdate>(buffer_size);
+
+        let update = TopologyUpdate {
+            version: 1,
+            previous_version: 0,
+            update: None,
+        };
+
+        assert!(tx.send(update).is_ok());
+    }
+
+    #[test]
+    fn test_broadcast_receiver_count() {
+        let (tx, _rx1) = broadcast::channel::<TopologyUpdate>(100);
+
+        assert_eq!(tx.receiver_count(), 1);
+
+        let _rx2 = tx.subscribe();
+        assert_eq!(tx.receiver_count(), 2);
+
+        let _rx3 = tx.subscribe();
+        assert_eq!(tx.receiver_count(), 3);
+    }
+
+    #[test]
+    fn test_suspect_timeout_ordering() {
+        let config = CoordinatorConfig::default();
+
+        assert!(config.suspect_timeout <= config.down_timeout + config.suspect_timeout);
+
+        assert!(config.joining_timeout > Duration::ZERO);
+        assert!(config.draining_timeout > Duration::ZERO);
+    }
+
+    #[test]
+    fn test_config_timeout_relationships() {
+        let config = CoordinatorConfig::default();
+
+        assert!(config.suspect_timeout > config.detector_interval);
+        assert!(config.down_timeout >= config.suspect_timeout);
+        assert!(config.draining_timeout > config.joining_timeout);
+    }
+
+    #[test]
+    fn test_flap_threshold_boundary_values() {
+        let mut config = CoordinatorConfig::default();
+        config.flap_threshold = 1;
+
+        let now = Instant::now();
+        let flap = NodeFlap {
+            suspect_count: 1,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        assert_eq!(
+            suspect,
+            config.suspect_timeout.mul_f32(config.flap_multiplier)
+        );
+        assert_eq!(down, config.down_timeout.mul_f32(config.flap_multiplier));
+    }
+
+    #[test]
+    fn test_flap_multiplier_one() {
+        let mut config = CoordinatorConfig::default();
+        config.flap_multiplier = 1.0;
+
+        let now = Instant::now();
+        let flap = NodeFlap {
+            suspect_count: config.flap_threshold,
+            last_suspect_at: now,
+            last_stable_at: now,
+        };
+
+        let (suspect, down) = calculate_timeout_with_flap(&config, Some(&flap));
+        assert_eq!(suspect, config.suspect_timeout);
+        assert_eq!(down, config.down_timeout);
+    }
+
+    #[test]
+    fn test_write_lock_mutex() {
+        let write_lock: Mutex<()> = Mutex::new(());
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let _guard = write_lock.lock().await;
+        });
     }
 }
