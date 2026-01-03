@@ -842,10 +842,16 @@ impl CoordinatorService for CoordinatorServer {
         request: Request<DeregisterNodeRequest>,
     ) -> Result<Response<DeregisterNodeResponse>, Status> {
         let client_id = Self::extract_client_id(&request);
+        self.global_limiter.try_register()?;
         self.try_client_register(&client_id)?;
         self.ensure_leader()?;
 
         let req = request.into_inner();
+        if !crate::validation::is_valid_node_id(&req.node_id) {
+            return Err(Status::invalid_argument(
+                "Node ID must be 1-63 alphanumeric characters or hyphens, without leading/trailing hyphens",
+            ));
+        }
         let cmd = ClusterCommand::RemoveNode {
             node_id: req.node_id.clone(),
         };
@@ -900,23 +906,21 @@ impl CoordinatorService for CoordinatorServer {
             if node.generation_id != req.generation_id {
                 return Err(Status::failed_precondition("Generation ID mismatch"));
             }
-        }
 
-        self.last_heartbeat.write().insert(node_id.clone(), now);
+            if self.is_leader() {
+                self.heartbeat_batcher.record_heartbeat(
+                    node_id.clone(),
+                    HeartbeatInfo::new(
+                        req.known_version,
+                        req.reported_state,
+                        req.generation_id.clone(),
+                    ),
+                );
+            }
 
-        if self.is_leader() {
-            self.heartbeat_batcher.record_heartbeat(
-                node_id.clone(),
-                HeartbeatInfo::new(
-                    req.known_version,
-                    req.reported_state,
-                    req.generation_id.clone(),
-                ),
-            );
-        }
+            self.last_heartbeat.write().insert(node_id.clone(), now);
 
-        if self.is_leader() {
-            if let Some(node) = registered_node {
+            if self.is_leader() {
                 let current_state = node.state();
                 if current_state == NodeState::Suspect || current_state == NodeState::Joining {
                     if current_state == NodeState::Suspect {
