@@ -1,6 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn unix_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
 
 use gitstratum_coordinator::{
     apply_command, serialize_topology, ClusterCommand, ClusterTopology, CoordinatorConfig,
@@ -209,7 +216,7 @@ mod heartbeat_batcher_tests {
                 known_version: i as u64,
                 reported_state: NodeState::Active as i32,
                 generation_id: format!("gen-{}", i),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             };
             batcher.record_heartbeat(format!("node-{}", i), info);
         }
@@ -230,7 +237,7 @@ mod heartbeat_batcher_tests {
                 known_version: version,
                 reported_state: NodeState::Active as i32,
                 generation_id: "gen-1".to_string(),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             };
             batcher.record_heartbeat("node-1".to_string(), info);
         }
@@ -270,7 +277,7 @@ mod heartbeat_batcher_tests {
                 known_version: i as u64,
                 reported_state: NodeState::Active as i32,
                 generation_id: format!("gen-{}", i),
-                received_at: Instant::now(),
+                received_at: unix_timestamp_ms(),
             };
             batcher.record_heartbeat(format!("node-{}", i), info);
 
@@ -408,5 +415,310 @@ mod failure_detection_simulation {
             .filter(|n| n.state() == NodeState::Active)
             .count();
         assert_eq!(active_count, 15);
+    }
+}
+
+mod heartbeat_recovery_tests {
+    use super::*;
+    use gitstratum_coordinator::validate_generation_id;
+
+    #[test]
+    fn test_suspect_node_can_recover_to_active_via_set_node_state() {
+        let mut topo = ClusterTopology::default();
+        let node = create_test_node("node-1", NodeState::Active);
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: NodeState::Suspect as i32,
+        };
+        apply_command(&mut topo, &cmd);
+        assert_eq!(
+            topo.object_nodes.get("node-1").unwrap().state(),
+            NodeState::Suspect,
+            "Node should be in SUSPECT state"
+        );
+
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: NodeState::Active as i32,
+        };
+        let resp = apply_command(&mut topo, &cmd);
+        assert!(resp.is_success(), "SetNodeState to ACTIVE should succeed");
+        assert_eq!(
+            topo.object_nodes.get("node-1").unwrap().state(),
+            NodeState::Active,
+            "Node should recover to ACTIVE state after SetNodeState command"
+        );
+    }
+
+    #[test]
+    fn test_generation_id_mismatch_detected_before_heartbeat_processing() {
+        let mut topo = ClusterTopology::default();
+        let node = NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.1".to_string(),
+            port: 9000,
+            state: NodeState::Active as i32,
+            last_heartbeat_at: 0,
+            suspect_count: 0,
+            generation_id: "correct-generation-id".to_string(),
+            registered_at: 0,
+        };
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let result = validate_generation_id(&topo, "node-1", "wrong-generation-id");
+        assert!(
+            result.is_err(),
+            "Generation ID mismatch should return an error"
+        );
+        assert!(
+            result.unwrap_err().contains("mismatch"),
+            "Error should indicate generation ID mismatch"
+        );
+    }
+
+    #[test]
+    fn test_generation_id_match_allows_heartbeat_processing() {
+        let mut topo = ClusterTopology::default();
+        let node = NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.1".to_string(),
+            port: 9000,
+            state: NodeState::Active as i32,
+            last_heartbeat_at: 0,
+            suspect_count: 0,
+            generation_id: "correct-generation-id".to_string(),
+            registered_at: 0,
+        };
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let result = validate_generation_id(&topo, "node-1", "correct-generation-id");
+        assert!(
+            result.is_ok(),
+            "Matching generation ID should not return an error"
+        );
+    }
+
+    #[test]
+    fn test_empty_generation_id_for_registered_node_should_be_rejected_at_handler() {
+        let mut topo = ClusterTopology::default();
+        let node = NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.1".to_string(),
+            port: 9000,
+            state: NodeState::Active as i32,
+            last_heartbeat_at: 0,
+            suspect_count: 0,
+            generation_id: "valid-generation-id".to_string(),
+            registered_at: 0,
+        };
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let result = validate_generation_id(&topo, "node-1", "");
+        assert!(
+            result.is_err(),
+            "Empty generation_id should fail validation for registered nodes (zombie prevention)"
+        );
+    }
+
+    #[test]
+    fn test_unregistered_node_skips_validation() {
+        let topo = ClusterTopology::default();
+
+        let result = validate_generation_id(&topo, "unknown-node", "any-generation-id");
+        assert!(
+            result.is_ok(),
+            "Unregistered node should skip validation (returns Ok)"
+        );
+    }
+
+    #[test]
+    fn test_down_node_skips_validation() {
+        let mut topo = ClusterTopology::default();
+        let node = NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.1".to_string(),
+            port: 9000,
+            state: NodeState::Down as i32,
+            last_heartbeat_at: 0,
+            suspect_count: 0,
+            generation_id: "old-generation-id".to_string(),
+            registered_at: 0,
+        };
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let result = validate_generation_id(&topo, "node-1", "new-generation-id");
+        assert!(
+            result.is_ok(),
+            "DOWN node should skip generation ID validation to allow re-registration"
+        );
+    }
+
+    #[test]
+    fn test_suspect_to_active_transition_increments_version() {
+        let mut topo = ClusterTopology::default();
+        let node = create_test_node("node-1", NodeState::Suspect);
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+        let version_after_add = topo.version;
+
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: NodeState::Active as i32,
+        };
+        apply_command(&mut topo, &cmd);
+
+        assert_eq!(
+            topo.version,
+            version_after_add + 1,
+            "Version should increment when state changes"
+        );
+    }
+
+    #[test]
+    fn test_joining_node_can_transition_to_active_via_set_node_state() {
+        let mut topo = ClusterTopology::default();
+        let node = create_test_node("node-1", NodeState::Joining);
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+        assert_eq!(
+            topo.object_nodes.get("node-1").unwrap().state(),
+            NodeState::Joining,
+            "Node should be in JOINING state"
+        );
+
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: NodeState::Active as i32,
+        };
+        let resp = apply_command(&mut topo, &cmd);
+        assert!(resp.is_success(), "SetNodeState to ACTIVE should succeed");
+        assert_eq!(
+            topo.object_nodes.get("node-1").unwrap().state(),
+            NodeState::Active,
+            "Node should transition from JOINING to ACTIVE state"
+        );
+    }
+
+    #[test]
+    fn test_joining_to_active_transition_increments_version() {
+        let mut topo = ClusterTopology::default();
+        let node = create_test_node("node-1", NodeState::Joining);
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+        let version_after_add = topo.version;
+
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: NodeState::Active as i32,
+        };
+        apply_command(&mut topo, &cmd);
+
+        assert_eq!(
+            topo.version,
+            version_after_add + 1,
+            "Version should increment when JOINING transitions to ACTIVE"
+        );
+    }
+}
+
+mod concurrent_write_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn test_sequential_writes_preserve_version_monotonicity() {
+        let mut topo = ClusterTopology::default();
+        let mut last_version = 0u64;
+
+        for i in 0..100 {
+            let node = create_test_node(&format!("node-{}", i), NodeState::Joining);
+            let resp = apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+            assert!(resp.is_success());
+            let new_version = resp.version().unwrap_or(0);
+            assert!(
+                new_version > last_version,
+                "Version should monotonically increase: {} should be > {}",
+                new_version,
+                last_version
+            );
+            last_version = new_version;
+        }
+
+        assert_eq!(topo.version, 100);
+    }
+
+    #[test]
+    fn test_concurrent_state_updates_with_mutex_simulation() {
+        use std::sync::Mutex;
+        use std::thread;
+
+        let topo = Arc::new(Mutex::new(ClusterTopology::default()));
+        let successful_writes = Arc::new(AtomicU64::new(0));
+
+        for i in 0..10 {
+            let node = create_test_node(&format!("node-{}", i), NodeState::Joining);
+            let mut locked = topo.lock().unwrap();
+            apply_command(&mut locked, &ClusterCommand::AddObjectNode(node));
+        }
+
+        let mut handles = vec![];
+        for i in 0..10 {
+            let topo = Arc::clone(&topo);
+            let success_count = Arc::clone(&successful_writes);
+            handles.push(thread::spawn(move || {
+                for _ in 0..10 {
+                    let node_id = format!("node-{}", i);
+                    let cmd = ClusterCommand::SetNodeState {
+                        node_id,
+                        state: NodeState::Active as i32,
+                    };
+                    let mut locked = topo.lock().unwrap();
+                    let resp = apply_command(&mut locked, &cmd);
+                    if resp.is_success() {
+                        success_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let final_topo = topo.lock().unwrap();
+        assert!(
+            final_topo.version >= 10,
+            "Version should have increased from concurrent writes"
+        );
+        assert!(
+            successful_writes.load(Ordering::Relaxed) >= 10,
+            "At least some writes should succeed"
+        );
+    }
+
+    #[test]
+    fn test_interleaved_add_and_state_change_commands() {
+        let mut topo = ClusterTopology::default();
+
+        for i in 0..50 {
+            let node = create_test_node(&format!("node-{}", i), NodeState::Joining);
+            apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+            let cmd = ClusterCommand::SetNodeState {
+                node_id: format!("node-{}", i),
+                state: NodeState::Active as i32,
+            };
+            let resp = apply_command(&mut topo, &cmd);
+            assert!(resp.is_success());
+            assert_eq!(
+                topo.object_nodes
+                    .get(&format!("node-{}", i))
+                    .unwrap()
+                    .state(),
+                NodeState::Active
+            );
+        }
+
+        assert_eq!(topo.version, 100);
+        assert_eq!(topo.object_nodes.len(), 50);
     }
 }

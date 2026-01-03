@@ -20,7 +20,9 @@ pub use client::{
 pub use commands::{ClusterCommand, ClusterResponse, SerializableHeartbeatInfo, VersionedCommand};
 pub use config::{CoordinatorConfig, TlsConfig};
 pub use error::CoordinatorError;
-pub use heartbeat_batcher::{run_heartbeat_flush_loop, HeartbeatBatcher, HeartbeatInfo};
+pub use heartbeat_batcher::{
+    run_heartbeat_flush_loop, FlushConfig, HeartbeatBatcher, HeartbeatInfo,
+};
 pub use metrics::CoordinatorMetrics;
 pub use rate_limit::{
     ClientRateLimiter, GlobalRateLimiter, RateLimitError, TokenBucket, WatchGuard,
