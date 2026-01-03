@@ -46,9 +46,14 @@ tonic-build = "0.10"
 # Storage
 rocksdb = "0.22"
 
-# Hashing
+# Hashing & Cryptography
 sha2 = "0.10"
 hex = "0.4"
+argon2 = "0.5"
+
+# SSH
+russh = "0.48"
+russh-keys = "0.48"
 
 # Raft consensus
 openraft = { version = "0.9", features = ["serde"] }
@@ -67,6 +72,7 @@ anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 
 # Utilities
+base64 = "0.22"
 bytes = { version = "1.5", features = ["serde"] }
 parking_lot = "0.12"
 dashmap = "5.5"

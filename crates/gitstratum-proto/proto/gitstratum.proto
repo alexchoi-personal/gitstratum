@@ -586,3 +586,140 @@ message CancelRepairSessionResponse {
     bool success = 1;
     string error = 2;
 }
+
+// Authentication and Authorization Service
+service AuthService {
+    rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+    rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);
+    rpc AddSshKey(AddSshKeyRequest) returns (AddSshKeyResponse);
+    rpc RemoveSshKey(RemoveSshKeyRequest) returns (RemoveSshKeyResponse);
+    rpc ValidateSshKey(ValidateSshKeyRequest) returns (ValidateSshKeyResponse);
+    rpc CreateToken(CreateTokenRequest) returns (CreateTokenResponse);
+    rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+    rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+    rpc CheckPermission(CheckPermissionRequest) returns (CheckPermissionResponse);
+    rpc SetPermission(SetPermissionRequest) returns (SetPermissionResponse);
+    rpc GetUserPermissions(GetUserPermissionsRequest) returns (GetUserPermissionsResponse);
+}
+
+// User management
+message CreateUserRequest {
+    string name = 1;
+    string email = 2;
+    string password = 3;
+}
+
+message CreateUserResponse {
+    string user_id = 1;
+    string error = 2;
+}
+
+message AuthenticateRequest {
+    string email = 1;
+    string password = 2;
+}
+
+message AuthenticateResponse {
+    bool success = 1;
+    string user_id = 2;
+    string error = 3;
+}
+
+// SSH Key management
+message AddSshKeyRequest {
+    string user_id = 1;
+    string public_key = 2;
+    string title = 3;
+}
+
+message AddSshKeyResponse {
+    string key_id = 1;
+    string fingerprint = 2;
+    string error = 3;
+}
+
+message RemoveSshKeyRequest {
+    string user_id = 1;
+    string fingerprint = 2;
+}
+
+message RemoveSshKeyResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+message ValidateSshKeyRequest {
+    string fingerprint = 1;
+}
+
+message ValidateSshKeyResponse {
+    bool valid = 1;
+    string user_id = 2;
+}
+
+// Token management
+message CreateTokenRequest {
+    string user_id = 1;
+    bool scope_read = 2;
+    bool scope_write = 3;
+    bool scope_admin = 4;
+    int64 expires_at = 5;
+}
+
+message CreateTokenResponse {
+    string token = 1;
+    string token_id = 2;
+    string error = 3;
+}
+
+message RevokeTokenRequest {
+    string token_id = 1;
+}
+
+message RevokeTokenResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+message ValidateTokenRequest {
+    string token = 1;
+}
+
+message ValidateTokenResponse {
+    bool valid = 1;
+    string user_id = 2;
+    bool scope_read = 3;
+    bool scope_write = 4;
+    bool scope_admin = 5;
+}
+
+// Permission management
+message CheckPermissionRequest {
+    string repo_id = 1;
+    string user_id = 2;
+    uint32 required = 3;
+}
+
+message CheckPermissionResponse {
+    bool allowed = 1;
+}
+
+message SetPermissionRequest {
+    string repo_id = 1;
+    string user_id = 2;
+    uint32 permissions = 3;
+}
+
+message SetPermissionResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+message GetUserPermissionsRequest {
+    string user_id = 1;
+    string repo_id = 2;
+}
+
+message GetUserPermissionsResponse {
+    uint32 permissions = 1;
+}

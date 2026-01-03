@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod auth;
 pub mod cache;
 pub mod client;
 pub mod coalesce;
