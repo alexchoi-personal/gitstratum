@@ -822,20 +822,33 @@ impl CoordinatorService for CoordinatorServer {
             (String::new(), String::new())
         };
 
-        let active_nodes = (topo.metadata_nodes.len() + topo.object_nodes.len()) as u32;
+        let (active_count, suspect_count, down_count) = topo
+            .metadata_nodes
+            .values()
+            .chain(topo.object_nodes.values())
+            .fold((0u32, 0u32, 0u32), |(a, s, d), node| match node.state() {
+                NodeState::Active | NodeState::Joining => (a + 1, s, d),
+                NodeState::Suspect => (a, s + 1, d),
+                NodeState::Down | NodeState::Draining => (a, s, d + 1),
+                _ => (a, s, d),
+            });
+
+        let healthy = metrics.current_leader.is_some();
+        let committed_index = metrics.last_log_index.unwrap_or(0);
+        let applied_index = metrics.last_applied.map(|l| l.index).unwrap_or(0);
 
         Ok(Response::new(HealthCheckResponse {
-            healthy: true,
+            healthy,
             raft_state: raft_state.into(),
             raft_term: metrics.current_term,
-            committed_index: 0,
-            applied_index: 0,
+            committed_index,
+            applied_index,
             leader_id,
             leader_address,
             topology_version: topo.version,
-            active_nodes,
-            suspect_nodes: 0,
-            down_nodes: 0,
+            active_nodes: active_count,
+            suspect_nodes: suspect_count,
+            down_nodes: down_count,
             watch_subscribers: self.topology_updates.receiver_count() as u32,
         }))
     }

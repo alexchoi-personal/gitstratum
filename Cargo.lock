@@ -1180,6 +1180,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gitstratum-coordinator",
+ "gitstratum-metrics",
  "gitstratum-proto",
  "k8s-operator",
  "serde_json",
@@ -1213,9 +1214,12 @@ dependencies = [
  "gitstratum-frontend-cluster",
  "gitstratum-hashring",
  "gitstratum-metadata-cluster",
+ "gitstratum-metrics",
  "gitstratum-object-cluster",
  "gitstratum-proto",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -1281,9 +1285,12 @@ dependencies = [
  "clap",
  "gitstratum-core",
  "gitstratum-metadata-cluster",
+ "gitstratum-metrics",
  "gitstratum-proto",
  "tokio",
  "tonic 0.10.2",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -1329,11 +1336,14 @@ dependencies = [
  "anyhow",
  "clap",
  "gitstratum-core",
+ "gitstratum-metrics",
  "gitstratum-object-cluster",
  "gitstratum-proto",
  "gitstratum-storage",
  "tokio",
  "tonic 0.10.2",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
