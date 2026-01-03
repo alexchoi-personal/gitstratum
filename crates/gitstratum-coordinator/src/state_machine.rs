@@ -105,11 +105,15 @@ pub fn apply_command(topology: &mut ClusterTopology, cmd: &ClusterCommand) -> Cl
             let mut updated_count = 0;
             for (node_id, info) in batch {
                 if let Some(node) = topology.object_nodes.get_mut(node_id) {
-                    node.last_heartbeat_at = info.received_at_ms;
-                    updated_count += 1;
+                    if info.received_at_ms > node.last_heartbeat_at {
+                        node.last_heartbeat_at = info.received_at_ms;
+                        updated_count += 1;
+                    }
                 } else if let Some(node) = topology.metadata_nodes.get_mut(node_id) {
-                    node.last_heartbeat_at = info.received_at_ms;
-                    updated_count += 1;
+                    if info.received_at_ms > node.last_heartbeat_at {
+                        node.last_heartbeat_at = info.received_at_ms;
+                        updated_count += 1;
+                    }
                 }
             }
             if updated_count > 0 {
