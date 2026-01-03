@@ -46,7 +46,7 @@ pub struct NodeFlap {
 
 pub struct CoordinatorServer {
     raft: Arc<RaftNodeManager<KeyValueStateMachine>>,
-    topology_cache: RwLock<ClusterTopology>,
+    topology_cache: Arc<RwLock<ClusterTopology>>,
     topology_updates: broadcast::Sender<TopologyUpdate>,
     config: CoordinatorConfig,
     heartbeat_batcher: Arc<HeartbeatBatcher>,
@@ -67,7 +67,7 @@ impl CoordinatorServer {
         let (tx, _) = broadcast::channel(config.watch_buffer_size);
         Self {
             raft,
-            topology_cache: RwLock::new(ClusterTopology::default()),
+            topology_cache: Arc::new(RwLock::new(ClusterTopology::default())),
             topology_updates: tx,
             config,
             heartbeat_batcher,
@@ -489,6 +489,7 @@ impl CoordinatorService for CoordinatorServer {
         };
 
         let rx = self.topology_updates.subscribe();
+        let topology_cache = Arc::clone(&self.topology_cache);
 
         let output_stream = stream! {
             struct WatchDropGuard(Arc<GlobalRateLimiter>);
@@ -521,16 +522,13 @@ impl CoordinatorService for CoordinatorServer {
                                 yield Ok(update);
                             }
                             Some(Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(missed))) => {
-                                let server_time = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis() as u64;
+                                let current_topo_version = topology_cache.read().version;
                                 yield Ok(TopologyUpdate {
-                                    version: 0,
+                                    version: current_topo_version,
                                     previous_version: 0,
                                     update: Some(gitstratum_proto::topology_update::Update::Lagged(
                                         Lagged {
-                                            current_version: server_time,
+                                            current_version: current_topo_version,
                                             missed_updates: missed,
                                             message: format!("Client lagged behind by {} updates", missed),
                                         },
@@ -731,19 +729,26 @@ impl CoordinatorService for CoordinatorServer {
             .or_else(|| topo.object_nodes.get(&req.node_id));
 
         if let Some(node) = registered_node {
-            if !req.generation_id.is_empty() && node.generation_id != req.generation_id {
+            if req.generation_id.is_empty() {
+                return Err(Status::invalid_argument(
+                    "generation_id is required for registered nodes",
+                ));
+            }
+            if node.generation_id != req.generation_id {
                 return Err(Status::failed_precondition("Generation ID mismatch"));
             }
         }
 
-        self.heartbeat_batcher.record_heartbeat(
-            node_id.clone(),
-            HeartbeatInfo::new(
-                req.known_version,
-                req.reported_state,
-                req.generation_id.clone(),
-            ),
-        );
+        if self.is_leader() {
+            self.heartbeat_batcher.record_heartbeat(
+                node_id.clone(),
+                HeartbeatInfo::new(
+                    req.known_version,
+                    req.reported_state,
+                    req.generation_id.clone(),
+                ),
+            );
+        }
 
         self.last_heartbeat.write().insert(node_id.clone(), now);
 
