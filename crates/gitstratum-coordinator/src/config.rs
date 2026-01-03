@@ -30,6 +30,9 @@ pub struct CoordinatorConfig {
     pub global_registrations_per_sec: u32,
     pub global_heartbeats_per_sec: u32,
     pub global_topology_reads_per_sec: u32,
+
+    pub client_limiter_cleanup_interval: Duration,
+    pub client_limiter_max_idle: Duration,
 }
 
 impl Default for CoordinatorConfig {
@@ -62,6 +65,9 @@ impl Default for CoordinatorConfig {
             global_registrations_per_sec: 100,
             global_heartbeats_per_sec: 10_000,
             global_topology_reads_per_sec: 50_000,
+
+            client_limiter_cleanup_interval: Duration::from_secs(60),
+            client_limiter_max_idle: Duration::from_secs(600),
         }
     }
 }
@@ -123,6 +129,11 @@ mod tests {
         assert_eq!(config.global_registrations_per_sec, 100);
         assert_eq!(config.global_heartbeats_per_sec, 10_000);
         assert_eq!(config.global_topology_reads_per_sec, 50_000);
+        assert_eq!(
+            config.client_limiter_cleanup_interval,
+            Duration::from_secs(60)
+        );
+        assert_eq!(config.client_limiter_max_idle, Duration::from_secs(600));
     }
 
     #[test]

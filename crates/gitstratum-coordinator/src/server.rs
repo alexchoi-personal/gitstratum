@@ -27,10 +27,22 @@ use k8s_operator::raft::{KeyValueStateMachine, RaftNodeManager, RaftRequest};
 use crate::commands::ClusterCommand;
 use crate::config::CoordinatorConfig;
 use crate::error::CoordinatorError;
-use crate::heartbeat_batcher::HeartbeatBatcher;
-use crate::rate_limit::{GlobalRateLimiter, RateLimitError};
+use crate::heartbeat_batcher::{HeartbeatBatcher, HeartbeatInfo};
+use crate::rate_limit::{ClientRateLimiter, GlobalRateLimiter, RateLimitError};
 use crate::state_machine::{apply_command, deserialize_topology, serialize_topology, topology_key};
 use crate::topology::{ClusterTopology, NodeEntry};
+
+struct ClientLimiterEntry {
+    limiter: ClientRateLimiter,
+}
+
+impl ClientLimiterEntry {
+    fn new() -> Self {
+        Self {
+            limiter: ClientRateLimiter::new(),
+        }
+    }
+}
 
 impl From<RateLimitError> for Status {
     fn from(err: RateLimitError) -> Self {
@@ -49,12 +61,12 @@ pub struct CoordinatorServer {
     topology_cache: RwLock<ClusterTopology>,
     topology_updates: broadcast::Sender<TopologyUpdate>,
     config: CoordinatorConfig,
-    #[allow(dead_code)]
     heartbeat_batcher: Arc<HeartbeatBatcher>,
     leader_since: RwLock<Option<Instant>>,
     last_heartbeat: RwLock<HashMap<String, Instant>>,
     node_flap_info: RwLock<HashMap<String, NodeFlap>>,
     global_limiter: Arc<GlobalRateLimiter>,
+    client_limiters: Arc<RwLock<HashMap<String, ClientLimiterEntry>>>,
 }
 
 impl CoordinatorServer {
@@ -75,7 +87,114 @@ impl CoordinatorServer {
             last_heartbeat: RwLock::new(HashMap::new()),
             node_flap_info: RwLock::new(HashMap::new()),
             global_limiter,
+            client_limiters: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    fn extract_client_id<T>(request: &Request<T>) -> String {
+        if let Some(addr) = request.remote_addr() {
+            addr.ip().to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    fn get_client_limiter(
+        &self,
+        client_id: &str,
+    ) -> Arc<RwLock<HashMap<String, ClientLimiterEntry>>> {
+        {
+            let limiters = self.client_limiters.read();
+            if limiters.contains_key(client_id) {
+                return Arc::clone(&self.client_limiters);
+            }
+        }
+        {
+            let mut limiters = self.client_limiters.write();
+            limiters
+                .entry(client_id.to_string())
+                .or_insert_with(ClientLimiterEntry::new);
+        }
+        Arc::clone(&self.client_limiters)
+    }
+
+    fn try_client_heartbeat(&self, client_id: &str) -> Result<(), RateLimitError> {
+        let _ = self.get_client_limiter(client_id);
+        let limiters = self.client_limiters.read();
+        if let Some(entry) = limiters.get(client_id) {
+            entry.limiter.try_heartbeat()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn try_client_register(&self, client_id: &str) -> Result<(), RateLimitError> {
+        let _ = self.get_client_limiter(client_id);
+        let limiters = self.client_limiters.read();
+        if let Some(entry) = limiters.get(client_id) {
+            entry.limiter.try_register()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn try_client_topology_read(&self, client_id: &str) -> Result<(), RateLimitError> {
+        let _ = self.get_client_limiter(client_id);
+        let limiters = self.client_limiters.read();
+        if let Some(entry) = limiters.get(client_id) {
+            entry.limiter.try_topology_read()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn try_client_watch(&self, client_id: &str) -> Result<(), RateLimitError> {
+        let _ = self.get_client_limiter(client_id);
+        let limiters = self.client_limiters.read();
+        if let Some(entry) = limiters.get(client_id) {
+            entry.limiter.try_increment_watch()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn decrement_client_watch(&self, client_id: &str) {
+        let limiters = self.client_limiters.read();
+        if let Some(entry) = limiters.get(client_id) {
+            entry.limiter.decrement_watch();
+        }
+    }
+
+    pub async fn run_client_limiter_cleanup(&self) {
+        loop {
+            tokio::time::sleep(self.config.client_limiter_cleanup_interval).await;
+
+            let now = Instant::now();
+            let max_idle = self.config.client_limiter_max_idle;
+
+            let to_remove: Vec<String> = {
+                let limiters = self.client_limiters.read();
+                limiters
+                    .iter()
+                    .filter(|(_, entry)| {
+                        !entry.limiter.has_active_watches()
+                            && now.duration_since(entry.limiter.last_access_time()) > max_idle
+                    })
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            };
+
+            if !to_remove.is_empty() {
+                let mut limiters = self.client_limiters.write();
+                for client_id in to_remove {
+                    limiters.remove(&client_id);
+                }
+            }
+        }
+    }
+
+    pub fn client_limiter_count(&self) -> usize {
+        self.client_limiters.read().len()
     }
 
     fn is_leader(&self) -> bool {
@@ -436,8 +555,12 @@ impl CoordinatorService for CoordinatorServer {
         &self,
         request: Request<WatchTopologyRequest>,
     ) -> Result<Response<Self::WatchTopologyStream>, Status> {
+        let client_id = Self::extract_client_id(&request);
         self.global_limiter.try_increment_watch()?;
+        self.try_client_watch(&client_id)?;
         let limiter = Arc::clone(&self.global_limiter);
+        let client_limiters = Arc::clone(&self.client_limiters);
+        let client_id_for_stream = client_id.clone();
         let req = request.into_inner();
         let since_version = req.since_version;
         let current_version = self.read_topology().await.version;
@@ -477,15 +600,28 @@ impl CoordinatorService for CoordinatorServer {
         };
 
         let rx = self.topology_updates.subscribe();
+        let raft_for_stream = Arc::clone(&self.raft);
 
         let output_stream = stream! {
-            struct WatchDropGuard(Arc<GlobalRateLimiter>);
+            struct WatchDropGuard {
+                global_limiter: Arc<GlobalRateLimiter>,
+                client_limiters: Arc<RwLock<HashMap<String, ClientLimiterEntry>>>,
+                client_id: String,
+            }
             impl Drop for WatchDropGuard {
                 fn drop(&mut self) {
-                    self.0.decrement_watch();
+                    self.global_limiter.decrement_watch();
+                    let limiters = self.client_limiters.read();
+                    if let Some(entry) = limiters.get(&self.client_id) {
+                        entry.limiter.decrement_watch();
+                    }
                 }
             }
-            let _watch_guard = WatchDropGuard(limiter);
+            let _watch_guard = WatchDropGuard {
+                global_limiter: limiter,
+                client_limiters,
+                client_id: client_id_for_stream,
+            };
 
             if let Some(topology_response) = initial_full_sync {
                 yield Ok(TopologyUpdate {
@@ -509,16 +645,22 @@ impl CoordinatorService for CoordinatorServer {
                                 yield Ok(update);
                             }
                             Some(Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(missed))) => {
-                                let server_time = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis() as u64;
+                                let current_topology_version = if let Some(store) = raft_for_stream.mem_store() {
+                                    let data = store.data().await;
+                                    if let Some(value) = data.get(topology_key()) {
+                                        deserialize_topology(value).map(|t| t.version).unwrap_or(0)
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                };
                                 yield Ok(TopologyUpdate {
-                                    version: 0,
+                                    version: current_topology_version,
                                     previous_version: 0,
                                     update: Some(gitstratum_proto::topology_update::Update::Lagged(
                                         Lagged {
-                                            current_version: server_time,
+                                            current_version: current_topology_version,
                                             missed_updates: missed,
                                             message: format!("Client lagged behind by {} updates", missed),
                                         },
@@ -553,9 +695,11 @@ impl CoordinatorService for CoordinatorServer {
 
     async fn get_topology(
         &self,
-        _request: Request<GetTopologyRequest>,
+        request: Request<GetTopologyRequest>,
     ) -> Result<Response<GetTopologyResponse>, Status> {
+        let client_id = Self::extract_client_id(&request);
         self.global_limiter.try_topology_read()?;
+        self.try_client_topology_read(&client_id)?;
         let topo = self.read_topology().await;
 
         let metadata_nodes = topo
@@ -629,7 +773,9 @@ impl CoordinatorService for CoordinatorServer {
         &self,
         request: Request<RegisterNodeRequest>,
     ) -> Result<Response<RegisterNodeResponse>, Status> {
+        let client_id = Self::extract_client_id(&request);
         self.global_limiter.try_register()?;
+        self.try_client_register(&client_id)?;
         self.ensure_leader()?;
 
         let req = request.into_inner();
@@ -666,6 +812,8 @@ impl CoordinatorService for CoordinatorServer {
         &self,
         request: Request<DeregisterNodeRequest>,
     ) -> Result<Response<DeregisterNodeResponse>, Status> {
+        let client_id = Self::extract_client_id(&request);
+        self.try_client_register(&client_id)?;
         self.ensure_leader()?;
 
         let req = request.into_inner();
@@ -692,7 +840,9 @@ impl CoordinatorService for CoordinatorServer {
         &self,
         request: Request<HeartbeatRequest>,
     ) -> Result<Response<HeartbeatResponse>, Status> {
+        let client_id = Self::extract_client_id(&request);
         self.global_limiter.try_heartbeat()?;
+        self.try_client_heartbeat(&client_id)?;
         let req = request.into_inner();
 
         if req.node_id.is_empty() {
@@ -703,9 +853,18 @@ impl CoordinatorService for CoordinatorServer {
         }
 
         let node_id = req.node_id.clone();
-        self.last_heartbeat
-            .write()
-            .insert(node_id.clone(), Instant::now());
+        let now = Instant::now();
+        self.last_heartbeat.write().insert(node_id.clone(), now);
+
+        self.heartbeat_batcher.record_heartbeat(
+            node_id.clone(),
+            HeartbeatInfo {
+                known_version: req.known_version,
+                reported_state: req.reported_state,
+                generation_id: req.generation_id.clone(),
+                received_at: now,
+            },
+        );
 
         let topo = self.read_topology().await;
 
@@ -809,5 +968,210 @@ mod tests {
         assert_eq!(flap.suspect_count, 1);
         flap.last_suspect_at = Instant::now();
         assert!(flap.last_suspect_at >= now);
+    }
+
+    #[test]
+    fn test_heartbeat_info_creation() {
+        let now = Instant::now();
+        let info = HeartbeatInfo {
+            known_version: 42,
+            reported_state: 1,
+            generation_id: "gen-123".to_string(),
+            received_at: now,
+        };
+        assert_eq!(info.known_version, 42);
+        assert_eq!(info.reported_state, 1);
+        assert_eq!(info.generation_id, "gen-123");
+        assert!(info.received_at <= Instant::now());
+    }
+
+    #[test]
+    fn test_heartbeat_batcher_records_heartbeat() {
+        let batcher = HeartbeatBatcher::new(Duration::from_secs(1));
+        let now = Instant::now();
+
+        let info = HeartbeatInfo {
+            known_version: 10,
+            reported_state: 1,
+            generation_id: "gen-456".to_string(),
+            received_at: now,
+        };
+        batcher.record_heartbeat("node-1".to_string(), info);
+
+        assert_eq!(batcher.pending_count(), 1);
+
+        let batch = batcher.take_batch();
+        assert!(batch.contains_key("node-1"));
+        let recorded = batch.get("node-1").unwrap();
+        assert_eq!(recorded.known_version, 10);
+        assert_eq!(recorded.generation_id, "gen-456");
+    }
+
+    #[test]
+    fn test_lagged_notification_uses_topology_version_not_timestamp() {
+        let topology_version: u64 = 42;
+        let missed: u64 = 5;
+
+        let lagged = Lagged {
+            current_version: topology_version,
+            missed_updates: missed,
+            message: format!("Client lagged behind by {} updates", missed),
+        };
+
+        assert_eq!(lagged.current_version, topology_version);
+        assert!(
+            lagged.current_version < 1_000_000,
+            "current_version should be a topology version (small number), not a timestamp"
+        );
+
+        let update = TopologyUpdate {
+            version: topology_version,
+            previous_version: 0,
+            update: Some(gitstratum_proto::topology_update::Update::Lagged(lagged)),
+        };
+
+        assert_eq!(update.version, topology_version);
+        if let Some(gitstratum_proto::topology_update::Update::Lagged(lagged_inner)) = update.update
+        {
+            assert_eq!(lagged_inner.current_version, topology_version);
+            assert_eq!(lagged_inner.missed_updates, 5);
+        } else {
+            panic!("Expected Lagged update variant");
+        }
+    }
+
+    #[test]
+    fn test_client_limiter_entry_creation() {
+        let entry = ClientLimiterEntry::new();
+        assert_eq!(entry.limiter.watch_count(), 0);
+    }
+
+    #[test]
+    fn test_client_limiter_heartbeat_limit() {
+        let client_limiters: Arc<RwLock<HashMap<String, ClientLimiterEntry>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        {
+            let mut limiters = client_limiters.write();
+            limiters.insert("client-1".to_string(), ClientLimiterEntry::new());
+        }
+
+        let limiters = client_limiters.read();
+        let entry = limiters.get("client-1").unwrap();
+
+        for _ in 0..100 {
+            assert!(entry.limiter.try_heartbeat().is_ok());
+        }
+        assert!(entry.limiter.try_heartbeat().is_err());
+    }
+
+    #[test]
+    fn test_client_limiter_register_limit() {
+        let client_limiters: Arc<RwLock<HashMap<String, ClientLimiterEntry>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        {
+            let mut limiters = client_limiters.write();
+            limiters.insert("client-1".to_string(), ClientLimiterEntry::new());
+        }
+
+        let limiters = client_limiters.read();
+        let entry = limiters.get("client-1").unwrap();
+
+        for _ in 0..10 {
+            assert!(entry.limiter.try_register().is_ok());
+        }
+        assert!(entry.limiter.try_register().is_err());
+    }
+
+    #[test]
+    fn test_client_limiter_topology_read_limit() {
+        let client_limiters: Arc<RwLock<HashMap<String, ClientLimiterEntry>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        {
+            let mut limiters = client_limiters.write();
+            limiters.insert("client-1".to_string(), ClientLimiterEntry::new());
+        }
+
+        let limiters = client_limiters.read();
+        let entry = limiters.get("client-1").unwrap();
+
+        for _ in 0..1_000 {
+            assert!(entry.limiter.try_topology_read().is_ok());
+        }
+        assert!(entry.limiter.try_topology_read().is_err());
+    }
+
+    #[test]
+    fn test_client_limiter_watch_limit() {
+        let client_limiters: Arc<RwLock<HashMap<String, ClientLimiterEntry>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        {
+            let mut limiters = client_limiters.write();
+            limiters.insert("client-1".to_string(), ClientLimiterEntry::new());
+        }
+
+        let limiters = client_limiters.read();
+        let entry = limiters.get("client-1").unwrap();
+
+        for _ in 0..10 {
+            assert!(entry.limiter.try_increment_watch().is_ok());
+        }
+        assert!(entry.limiter.try_increment_watch().is_err());
+
+        entry.limiter.decrement_watch();
+        assert!(entry.limiter.try_increment_watch().is_ok());
+    }
+
+    #[test]
+    fn test_client_limiter_isolation() {
+        let client_limiters: Arc<RwLock<HashMap<String, ClientLimiterEntry>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        {
+            let mut limiters = client_limiters.write();
+            limiters.insert("client-1".to_string(), ClientLimiterEntry::new());
+            limiters.insert("client-2".to_string(), ClientLimiterEntry::new());
+        }
+
+        let limiters = client_limiters.read();
+        let entry1 = limiters.get("client-1").unwrap();
+        let entry2 = limiters.get("client-2").unwrap();
+
+        for _ in 0..10 {
+            assert!(entry1.limiter.try_register().is_ok());
+        }
+        assert!(entry1.limiter.try_register().is_err());
+
+        for _ in 0..10 {
+            assert!(entry2.limiter.try_register().is_ok());
+        }
+        assert!(entry2.limiter.try_register().is_err());
+    }
+
+    #[test]
+    fn test_client_limiter_last_access_updated() {
+        let entry = ClientLimiterEntry::new();
+        let before = entry.limiter.last_access_time();
+
+        std::thread::sleep(Duration::from_millis(10));
+        entry.limiter.try_heartbeat().unwrap();
+
+        let after = entry.limiter.last_access_time();
+        assert!(after > before);
+    }
+
+    #[test]
+    fn test_client_limiter_has_active_watches() {
+        let entry = ClientLimiterEntry::new();
+        assert!(!entry.limiter.has_active_watches());
+
+        entry.limiter.try_increment_watch().unwrap();
+        assert!(entry.limiter.has_active_watches());
+
+        entry.limiter.decrement_watch();
+        assert!(!entry.limiter.has_active_watches());
     }
 }
