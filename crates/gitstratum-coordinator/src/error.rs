@@ -1,9 +1,10 @@
 use thiserror::Error;
+use tonic::metadata::MetadataValue;
 
 #[derive(Error, Debug)]
 pub enum CoordinatorError {
     #[error("Not the leader")]
-    NotLeader,
+    NotLeader(Option<String>),
 
     #[error("Node not found: {0}")]
     NodeNotFound(String),
@@ -27,7 +28,15 @@ pub enum CoordinatorError {
 impl From<CoordinatorError> for tonic::Status {
     fn from(err: CoordinatorError) -> Self {
         match err {
-            CoordinatorError::NotLeader => tonic::Status::failed_precondition(err.to_string()),
+            CoordinatorError::NotLeader(leader_addr) => {
+                let mut status = tonic::Status::failed_precondition("Not the leader");
+                if let Some(addr) = leader_addr {
+                    if let Ok(value) = MetadataValue::try_from(&addr) {
+                        status.metadata_mut().insert("leader-address", value);
+                    }
+                }
+                status
+            }
             CoordinatorError::NodeNotFound(_) => tonic::Status::not_found(err.to_string()),
             CoordinatorError::InvalidNodeType => tonic::Status::invalid_argument(err.to_string()),
             CoordinatorError::Raft(_) => tonic::Status::internal(err.to_string()),
@@ -44,11 +53,29 @@ mod tests {
     use tonic::Code;
 
     #[test]
-    fn test_not_leader_error() {
-        let err = CoordinatorError::NotLeader;
+    fn test_not_leader_error_without_address() {
+        let err = CoordinatorError::NotLeader(None);
         assert_eq!(err.to_string(), "Not the leader");
         let status: tonic::Status = err.into();
         assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(status.metadata().get("leader-address").is_none());
+    }
+
+    #[test]
+    fn test_not_leader_error_with_address() {
+        let err = CoordinatorError::NotLeader(Some("http://leader:9000".to_string()));
+        assert_eq!(err.to_string(), "Not the leader");
+        let status: tonic::Status = err.into();
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert_eq!(
+            status
+                .metadata()
+                .get("leader-address")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "http://leader:9000"
+        );
     }
 
     #[test]
@@ -101,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_error_debug() {
-        let err = CoordinatorError::NotLeader;
+        let err = CoordinatorError::NotLeader(None);
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("NotLeader"));
     }

@@ -78,9 +78,19 @@ impl TokenBucket {
         let tokens_to_add = (elapsed.as_secs_f64() * self.refill_rate as f64) as u32;
 
         if tokens_to_add > 0 {
-            let current = self.tokens.load(Ordering::Acquire);
-            let new_tokens = current.saturating_add(tokens_to_add).min(self.capacity);
-            self.tokens.store(new_tokens, Ordering::Release);
+            loop {
+                let current = self.tokens.load(Ordering::Acquire);
+                let new_tokens = current.saturating_add(tokens_to_add).min(self.capacity);
+                match self.tokens.compare_exchange(
+                    current,
+                    new_tokens,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(_) => continue,
+                }
+            }
             *last_refill = now;
         }
     }
