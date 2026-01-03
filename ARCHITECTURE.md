@@ -99,9 +99,9 @@ Runner                              GitStratum
    │◀──────── pack data ──────────────┘
 ```
 
-**Authentication** happens locally in Frontend. JWT tokens are validated against known public keys—no network call. SSH keys are cached locally and synced from Metadata periodically.
+**Authentication** is handled via pluggable validators in Frontend. The `TokenValidator` and `ControlPlaneClient` traits define the interface; actual validation logic (JWT verification, SSH key lookup) is provided by the implementing binary. This allows flexibility in deployment.
 
-**Rate limiting** is approximate. Each Frontend tracks requests independently using a sliding window. With 10 Frontends and a 1000 req/min limit, each allows roughly 100 req/min per user. Good enough for abuse prevention.
+**Rate limiting** is delegated to an external control plane via the `ControlPlaneClient` trait. The Frontend calls `check_rate_limit()` per request rather than maintaining local state. This trades some latency for globally coordinated limits.
 
 **The pack cache** is the key optimization. The cache key includes repo, ref, commit hash, and depth. Same parameters means same pack bytes. First clone builds and caches the pack; subsequent clones stream it directly. Hit rates exceed 95% for typical CI/CD workloads.
 
@@ -144,7 +144,7 @@ Developer                           GitStratum
    │◀──────── OK ─────────────────────┘
 ```
 
-Objects are written to three nodes for durability. Writes use quorum—succeed on 2 of 3 before acknowledging. One slow node doesn't block the push.
+Objects are written to three nodes for durability. **Frontend orchestrates the quorum write**—it sends the object to all three replicas in parallel and waits for 2 of 3 to acknowledge before returning success. Each Object node only writes to its local storage; replication is coordinated by the caller (Frontend), not the Object cluster itself.
 
 After refs update, cached packs for affected branches are invalidated. The next clone rebuilds them.
 
@@ -154,17 +154,19 @@ After refs update, cached packs for affected branches are invalidated. The next 
 
 Frontend nodes are stateless and interchangeable. They handle:
 
-- Git protocol (SSH and HTTPS)
-- Token validation (JWT signatures checked locally)
-- Rate limiting (local sliding window)
-- Pack assembly and streaming
+- Git protocol parsing (protocol v2, pkt-line)
+- Token/SSH key validation (via `TokenValidator` trait—implementation provided externally)
+- Rate limiting (via `ControlPlaneClient` trait—delegates to external service)
+- Pack assembly and streaming (fully implemented)
 - Request coalescing (multiple identical requests share one backend call)
+- **Quorum writes** (orchestrates parallel writes to Object replicas)
 
 A load balancer distributes connections. If a node dies, traffic routes to others. No data is lost.
 
-Frontend caches two things from other clusters:
-- **SSH keys** from Metadata (synced every few minutes)
-- **Hash ring topology** from Coordinator (watched in real-time)
+Frontend caches:
+- **Hash ring topology** from Coordinator (watched in real-time via `WatchTopology`)
+
+**Note:** The actual network transport (SSH server, TLS termination) is expected to be provided by the deployment infrastructure or binary, not the `gitstratum-frontend-cluster` crate itself.
 
 #### Request Coalescing
 
@@ -248,32 +250,36 @@ Metadata stores everything about repositories except the actual object bytes:
 
 - Refs (branches, tags)
 - Commit graph (parent relationships, for merge-base calculations)
-- Permissions (who can read/write)
-- SSH keys (synced to Frontend)
+- Repository visibility (public/private/internal enum—not full ACL enforcement)
 - Pack cache index (which packs exist, their TTLs)
-- Repository configuration and hooks
+- Repository configuration
 
 It's partitioned by repository. All data for one repo lives on the same node, so ref updates are atomic without distributed transactions.
 
 Key components:
-- **RefStorage**: Atomic ref updates with optimistic locking
-- **GraphCache**: Cached commit ancestry for fast merge-base calculations
-- **PackCacheStorage**: Tracks precomputed packs with TTL-based eviction
-- **ObjectLocationIndex**: Maps object IDs to storage locations
+- **RefStorage**: Atomic ref updates with compare-and-swap (CAS) semantics
+- **GraphCache**: LRU caches for ancestry queries, reachability, and merge-base with TTL expiration
+- **PackCacheStorage**: Tracks precomputed packs with TTL + hit-count based eviction
+- **ObjectLocationIndex**: Bidirectional mapping of OIDs to node locations
+
+**Not yet implemented:**
+- Permission enforcement (ACL checking)—only visibility enum exists
+- SSH key storage and sync
 
 ### Object
 
-Object stores Git objects (blobs, trees, commits, tags) and the pack cache.
+Object stores Git objects (blobs, trees, commits, tags) and the pack cache. Each Object node stores objects to its local storage only—**replication is orchestrated by Frontend**, not the Object cluster.
 
 Objects are distributed across nodes using consistent hashing. Each object's position on a ring is determined by its ID—since Git object IDs are already SHA-256 hashes, they're uniformly distributed across the keyspace. No additional hashing needed.
 
 Key components:
-- **ObjectStore**: Primary object storage (BucketStore or RocksDB)
+- **ObjectStore**: Primary object storage (BucketStore or RocksDB)—single-node writes only
 - **PackCache**: Precomputed pack files for hot repositories
-- **QuorumWriter**: Writes to N replicas, waits for quorum
 - **HotRepoTracker**: Identifies frequently-accessed repos for precomputation
 - **RepairCoordinator**: Central orchestrator for crash recovery, anti-entropy, and rebalancing
 - **MerkleTree**: Position-based tree for O(log N) object set comparison between nodes
+
+**Note:** The crate contains a `QuorumWriter` struct, but quorum replication is actually performed by `RoutingObjectClient` in the Frontend cluster, which sends writes to multiple Object nodes in parallel.
 
 #### The Hash Ring
 
@@ -325,13 +331,17 @@ Walk clockwise:
 Replicas: [B, A, C]
 ```
 
-**Writes** go to all replicas in parallel, wait for quorum (2 of 3) before acknowledging:
+**Writes** are orchestrated by Frontend, which sends to all replicas in parallel and waits for quorum (2 of 3) before acknowledging:
 
 ```
-Frontend ──┬──► Node B (primary)  ──┐
+Frontend (RoutingObjectClient.put_blob)
+           │
+           ├──► Node B (primary)  ──┐
            ├──► Node A (replica)  ──┼──► Wait for 2 of 3 ──► ACK
            └──► Node C (replica)  ──┘
 ```
+
+Each Object node receives the blob via gRPC and writes to its local store (BucketStore/RocksDB). The node doesn't know about other replicas—Frontend handles the coordination.
 
 **Reads** can go to any replica. Frontend picks based on load or latency.
 
@@ -466,32 +476,38 @@ BucketStoreConfig {
 BucketStore does **not** call fsync on writes. Durability comes from quorum replication at the cluster level, not local disk sync.
 
 ```
-put(oid, value)
+Frontend: put_blob(oid, value)
        │
-       ├─────────────────────────────────────────────────┐
-       │                                                 │
-       ▼                                                 ▼
-┌─────────────────┐                           ┌─────────────────┐
-│   LOCAL WRITE   │                           │    REPLICAS     │
-│                 │                           │                 │
-│  append data    │                           │   replica 1  ───┤
-│  update bucket  │                           │   replica 2  ───┼─► wait for
-│  (no fsync)     │                           │   replica 3  ───┘   2 of 3
-└─────────────────┘                           └─────────────────┘
-       │                                                 │
-       └────────────────────┬────────────────────────────┘
-                            │
-                            ▼
-                      return OK
-               (data is durable across cluster)
+       │  Orchestrates quorum write
+       │
+       ├──────────────────────────────────────────────────┐
+       │                                                  │
+       ▼                                                  ▼
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│  Object Node A   │ │  Object Node B   │ │  Object Node C   │
+│                  │ │                  │ │                  │
+│  BucketStore.put │ │  BucketStore.put │ │  BucketStore.put │
+│  (append data,   │ │  (append data,   │ │  (append data,   │
+│   update bucket, │ │   update bucket, │ │   update bucket, │
+│   no fsync)      │ │   no fsync)      │ │   no fsync)      │
+└────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
+         │                    │                    │
+         └────────────────────┼────────────────────┘
+                              │
+                              ▼
+                     Frontend waits for 2 of 3
+                              │
+                              ▼
+                        return OK
+                 (data is durable across cluster)
 ```
 
 **How it works:**
 
-1. **Write path**: Data goes to kernel page cache (not disk). Returns immediately.
-2. **Kernel writeback**: Linux flushes dirty pages based on age and memory pressure.
-3. **Quorum**: Object cluster waits for 2 of 3 replicas before acknowledging.
-4. **Recovery**: If a node crashes before kernel flush, it recovers from replicas.
+1. **Write path**: Frontend sends blob to 3 Object nodes in parallel. Each writes to kernel page cache (not disk) and returns immediately.
+2. **Quorum**: Frontend waits for 2 of 3 nodes to acknowledge before returning success.
+3. **Kernel writeback**: Linux flushes dirty pages based on age and memory pressure.
+4. **Recovery**: If a node crashes before kernel flush, it recovers from replicas via the repair system.
 
 **Kernel writeback timing** (controlled by sysctl, not the program):
 
@@ -576,8 +592,8 @@ Compaction runs when fragmentation exceeds 40% (configurable).
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                  FRONTEND                                   │
 │                                                                             │
-│  Local: JWT validation, rate limiting                                       │
-│  Cached: SSH keys (from Metadata), hash ring (from Coordinator)             │
+│  Traits: TokenValidator, ControlPlaneClient (auth/rate-limit delegation)   │
+│  Cached: hash ring (from Coordinator)                                       │
 └─────────────────────────────────────────────────────────────────────────────┘
          │                          │                          │
          │ background               │ request path             │ request path
@@ -585,10 +601,12 @@ Compaction runs when fragmentation exceeds 40% (configurable).
 ┌─────────────────┐        ┌─────────────────┐        ┌─────────────────┐
 │   COORDINATOR   │        │    METADATA     │        │     OBJECT      │
 │                 │        │                 │        │                 │
-│  WatchTopology  │        │  GetRefs        │        │  GetObjects     │
-│  GetTopology    │        │  UpdateRefs     │        │  PutObjects     │
-│  RegisterNode   │        │  CheckPermission│        │  GetPackCache   │
-│  Heartbeat      │        │  SyncSSHKeys    │        │  StreamBlobs    │
+│  WatchTopology  │        │  GetRef         │        │  GetBlob        │
+│  GetTopology    │        │  ListRefs       │        │  GetBlobs       │
+│  RegisterNode   │        │  UpdateRef      │        │  PutBlob        │
+│  Heartbeat      │        │  GetCommit      │        │  PutBlobs       │
+│  HealthCheck    │        │  WalkCommits    │        │  StreamBlobs    │
+│                 │        │  FindMergeBase  │        │  HasBlob        │
 └─────────────────┘        └─────────────────┘        └─────────────────┘
 ```
 
@@ -596,9 +614,14 @@ All communication uses gRPC. Frontend maintains connection pools to each cluster
 
 **Coordinator calls are background only.** Frontend subscribes to topology changes and updates its local cache. No request ever waits on Coordinator.
 
-**Metadata calls happen per-request** for ref resolution and permission checks. SSH key sync is periodic, not per-request.
+**Metadata calls happen per-request** for ref resolution and graph traversal.
 
-**Object calls happen per-request** for cache lookups and object fetches. Frontend batches object requests by destination node—instead of 1000 individual calls, it makes 10 batch calls (one per relevant node).
+**Object calls happen per-request** for blob fetches and writes. Frontend batches object requests by destination node—instead of 1000 individual calls, it makes 10 batch calls (one per relevant node).
+
+**Not yet in proto:**
+- `CheckPermission` — permission enforcement is not implemented
+- `SyncSSHKeys` — SSH key storage/sync is not implemented
+- `GetPackCache` — pack cache lookup RPC is not defined (pack assembly happens in Frontend)
 
 ## Failure Modes
 
@@ -615,7 +638,7 @@ All communication uses gRPC. Frontend maintains connection pools to each cluster
 
 **Metadata failure:** Partitioned by repo. If one partition is down, those repos are affected but others continue. Cached packs in Object cluster can still stream (cache key includes commit hash, so it's still valid).
 
-**Object node failure:** Objects are on 3 nodes. One down means 2 remain. Reads succeed. Writes need 2 of 3, so they succeed too. A background repairer copies data to restore the third replica when the node recovers.
+**Object node failure:** Objects are on 3 nodes. One down means 2 remain. Reads succeed. Writes (coordinated by Frontend) need 2 of 3, so they succeed too. A background repairer copies data to restore the third replica when the node recovers.
 
 ## Object Cluster Repair System
 
@@ -824,7 +847,7 @@ Repairs consume bandwidth. The RepairCoordinator enforces limits:
 
 ### gRPC APIs
 
-The ObjectRepairService provides:
+The ObjectRepairService is defined in the proto file:
 
 ```protobuf
 service ObjectRepairService {
@@ -844,6 +867,8 @@ service ObjectRepairService {
     rpc CancelRepairSession(CancelRepairSessionRequest) returns (CancelRepairSessionResponse);
 }
 ```
+
+**Note:** These RPC definitions exist in the proto file, but the server-side implementation is not yet complete. The internal repair infrastructure (RepairCoordinator, Merkle trees, etc.) is fully implemented, but the gRPC service handlers that would expose these operations to external callers are not wired up.
 
 ### Stale Ring Handling
 
@@ -874,6 +899,6 @@ This architecture optimizes for CI/CD workloads:
 
 **io_uring for I/O parallelism.** BucketStore uses a unified io_uring instance for all I/O (buckets and data files), enabling parallel NVMe access without blocking tokio threads.
 
-**Quorum over fsync.** Local writes don't wait for disk sync. Durability comes from replication—2 of 3 nodes must ACK before the write returns. This trades single-node durability (up to 30 second window, kernel-controlled) for 10-100x better write latency.
+**Quorum over fsync.** Local writes don't wait for disk sync. Durability comes from Frontend-orchestrated replication—Frontend waits for 2 of 3 Object nodes to ACK before returning success. This trades single-node durability (up to 30 second window, kernel-controlled) for 10-100x better write latency.
 
 For workloads where every clone is unique, or writes dominate reads, this design would be overkill. But for CI/CD—where the same repo is cloned thousands of times daily, always at the same ref, always shallow—it fits well.

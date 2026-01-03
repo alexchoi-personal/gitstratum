@@ -4,3 +4,5 @@
 /vendor/
 /.cargo/
 /.idea/
+/.claude-review/
+/.claude-modularize/
