@@ -389,21 +389,19 @@ impl CoordinatorServer {
             entry.last_suspect_at = now;
         }
 
-        let cmd = ClusterCommand::SetNodeState {
-            node_id: node_id.to_string(),
-            state: NodeState::Suspect as i32,
-        };
-        if let Err(e) = self.apply_and_write(cmd).await {
+        if let Err(e) = self
+            .set_node_state_and_broadcast(node_id, NodeState::Suspect as i32)
+            .await
+        {
             tracing::warn!(node_id = %node_id, error = %e, "Failed to mark node as SUSPECT via Raft");
         }
     }
 
     async fn mark_node_down(&self, node_id: &str) {
-        let cmd = ClusterCommand::SetNodeState {
-            node_id: node_id.to_string(),
-            state: NodeState::Down as i32,
-        };
-        if let Err(e) = self.apply_and_write(cmd).await {
+        if let Err(e) = self
+            .set_node_state_and_broadcast(node_id, NodeState::Down as i32)
+            .await
+        {
             tracing::warn!(node_id = %node_id, error = %e, "Failed to mark node as DOWN via Raft");
         }
     }
@@ -429,6 +427,43 @@ impl CoordinatorServer {
     fn cleanup_node_state(&self, node_id: &str) {
         self.last_heartbeat.write().remove(node_id);
         self.node_flap_info.write().remove(node_id);
+    }
+
+    async fn set_node_state_and_broadcast(
+        &self,
+        node_id: &str,
+        state: i32,
+    ) -> Result<crate::commands::ClusterResponse, CoordinatorError> {
+        let previous_version = self.topology_cache.read().version;
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: node_id.to_string(),
+            state,
+        };
+        let resp = self.apply_and_write(cmd).await?;
+
+        if resp.is_success() {
+            let cache = self.topology_cache.read();
+            let node_info = cache
+                .object_nodes
+                .get(node_id)
+                .map(|n| n.to_proto(NodeType::Object))
+                .or_else(|| {
+                    cache
+                        .metadata_nodes
+                        .get(node_id)
+                        .map(|n| n.to_proto(NodeType::Metadata))
+                });
+
+            if let Some(info) = node_info {
+                let _ = self.topology_updates.send(TopologyUpdate {
+                    version: resp.version().unwrap_or(0),
+                    previous_version,
+                    update: Some(gitstratum_proto::topology_update::Update::NodeUpdated(info)),
+                });
+            }
+        }
+
+        Ok(resp)
     }
 }
 
@@ -553,12 +588,10 @@ impl CoordinatorService for CoordinatorServer {
                 "Invalid state value: must be 0-5 (Unknown, Active, Joining, Draining, Down, Suspect)",
             ));
         }
-        let cmd = ClusterCommand::SetNodeState {
-            node_id: req.node_id,
-            state: req.state,
-        };
 
-        let resp = self.apply_and_write(cmd).await?;
+        let resp = self
+            .set_node_state_and_broadcast(&req.node_id, req.state)
+            .await?;
 
         let (success, error) = resp.to_result();
         Ok(Response::new(SetNodeStateResponse { success, error }))
@@ -939,11 +972,10 @@ impl CoordinatorService for CoordinatorServer {
                     if current_state == NodeState::Suspect {
                         self.reset_flap_on_recovery(&node_id);
                     }
-                    let cmd = ClusterCommand::SetNodeState {
-                        node_id: node_id.clone(),
-                        state: NodeState::Active as i32,
-                    };
-                    if let Err(e) = self.apply_and_write(cmd).await {
+                    if let Err(e) = self
+                        .set_node_state_and_broadcast(&node_id, NodeState::Active as i32)
+                        .await
+                    {
                         tracing::warn!(node_id = %node_id, error = %e, "Failed to transition node to ACTIVE via Raft");
                     }
                 }
