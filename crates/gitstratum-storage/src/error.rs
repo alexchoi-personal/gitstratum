@@ -38,6 +38,12 @@ pub enum BucketStoreError {
     #[error("object too large: {size} bytes exceeds maximum 16MB")]
     ObjectTooLarge { size: usize },
 
+    #[error("entry offset {offset} exceeds maximum {max}")]
+    EntryOffsetTooLarge { offset: u64, max: u64 },
+
+    #[error("entry size {size} exceeds maximum {max}")]
+    EntrySizeTooLarge { size: u32, max: u32 },
+
     #[error("store is closed")]
     StoreClosed,
 

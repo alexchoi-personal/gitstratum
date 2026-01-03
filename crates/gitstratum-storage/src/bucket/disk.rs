@@ -171,7 +171,7 @@ mod tests {
     fn test_bucket_insert() {
         let mut bucket = DiskBucket::new();
         let oid = create_test_oid(0x01);
-        let entry = CompactEntry::new(&oid, 1, 0, 100, 0);
+        let entry = CompactEntry::new(&oid, 1, 0, 100, 0).unwrap();
 
         bucket.insert(entry).unwrap();
         let count = { bucket.header.count };
@@ -188,7 +188,7 @@ mod tests {
 
         for i in 0..10 {
             let oid = create_test_oid(i);
-            let entry = CompactEntry::new(&oid, i as u16, 0, 100, 0);
+            let entry = CompactEntry::new(&oid, i as u16, 0, 100, 0).unwrap();
             bucket.insert(entry).unwrap();
         }
 
@@ -207,7 +207,8 @@ mod tests {
 
         for i in 0..5 {
             let oid = create_test_oid(i);
-            let entry = CompactEntry::new(&oid, i as u16, i as u64 * 1000, (i as u32 + 1) * 100, 0);
+            let entry = CompactEntry::new(&oid, i as u16, i as u64 * 1000, (i as u32 + 1) * 100, 0)
+                .unwrap();
             bucket.insert(entry).unwrap();
         }
 
@@ -232,14 +233,14 @@ mod tests {
 
         for i in 0..MAX_ENTRIES {
             let oid = create_test_oid(i as u8);
-            let entry = CompactEntry::new(&oid, 1, 0, 100, 0);
+            let entry = CompactEntry::new(&oid, 1, 0, 100, 0).unwrap();
             bucket.insert(entry).unwrap();
         }
 
         assert!(bucket.is_full());
 
         let oid = create_test_oid(0xFF);
-        let entry = CompactEntry::new(&oid, 1, 0, 100, 0);
+        let entry = CompactEntry::new(&oid, 1, 0, 100, 0).unwrap();
         assert!(bucket.insert(entry).is_err());
     }
 

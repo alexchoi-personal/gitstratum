@@ -251,7 +251,7 @@ mod tests {
     fn test_verify_entry_missing_data_file() {
         let tmp = TempDir::new().unwrap();
         let oid = create_test_oid(0x42);
-        let entry = crate::bucket::CompactEntry::new(&oid, 99, 0, 4096, 0);
+        let entry = crate::bucket::CompactEntry::new(&oid, 99, 0, 4096, 0).unwrap();
 
         let result = RecoveryScanner::verify_entry(&entry, 0, 0, tmp.path());
 

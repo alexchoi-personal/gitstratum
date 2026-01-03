@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -27,9 +27,30 @@ impl Default for WriteBufferConfig {
     }
 }
 
+struct BufferInner {
+    entries: VecDeque<BufferEntry>,
+    index: HashMap<Oid, usize>,
+}
+
+impl BufferInner {
+    fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            index: HashMap::new(),
+        }
+    }
+
+    fn rebuild_index(&mut self) {
+        self.index.clear();
+        for (i, entry) in self.entries.iter().enumerate() {
+            self.index.insert(entry.blob.oid, i);
+        }
+    }
+}
+
 pub struct WriteBuffer {
     config: WriteBufferConfig,
-    entries: RwLock<VecDeque<BufferEntry>>,
+    inner: RwLock<BufferInner>,
     current_size: AtomicU64,
 }
 
@@ -37,13 +58,14 @@ impl WriteBuffer {
     pub fn new(config: WriteBufferConfig) -> Self {
         Self {
             config,
-            entries: RwLock::new(VecDeque::new()),
+            inner: RwLock::new(BufferInner::new()),
             current_size: AtomicU64::new(0),
         }
     }
 
     pub fn add(&self, blob: Blob) {
         let size = blob.data.len();
+        let oid = blob.oid;
 
         self.evict_old_entries();
         self.evict_if_needed(size);
@@ -53,73 +75,92 @@ impl WriteBuffer {
             timestamp: Instant::now(),
         };
 
-        let mut entries = self.entries.write();
-        entries.push_back(entry);
+        let mut inner = self.inner.write();
+
+        if inner.index.contains_key(&oid) {
+            return;
+        }
+
+        let new_index = inner.entries.len();
+        inner.entries.push_back(entry);
+        inner.index.insert(oid, new_index);
         self.current_size.fetch_add(size as u64, Ordering::Relaxed);
     }
 
     pub fn get(&self, oid: &Oid) -> Option<Blob> {
-        let entries = self.entries.read();
-        for entry in entries.iter().rev() {
-            if entry.blob.oid == *oid {
-                return Some(entry.blob.clone());
-            }
-        }
-        None
+        let inner = self.inner.read();
+        let &idx = inner.index.get(oid)?;
+        inner.entries.get(idx).map(|e| e.blob.clone())
     }
 
     pub fn contains(&self, oid: &Oid) -> bool {
-        let entries = self.entries.read();
-        entries.iter().any(|e| e.blob.oid == *oid)
+        let inner = self.inner.read();
+        inner.index.contains_key(oid)
     }
 
     fn evict_old_entries(&self) {
         let now = Instant::now();
-        let mut entries = self.entries.write();
+        let mut inner = self.inner.write();
+        let mut evicted = false;
 
-        while let Some(front) = entries.front() {
+        while let Some(front) = inner.entries.front() {
             if now.duration_since(front.timestamp) > self.config.max_age {
-                if let Some(removed) = entries.pop_front() {
+                if let Some(removed) = inner.entries.pop_front() {
+                    inner.index.remove(&removed.blob.oid);
                     self.current_size
                         .fetch_sub(removed.blob.data.len() as u64, Ordering::Relaxed);
+                    evicted = true;
                 }
             } else {
                 break;
             }
         }
+
+        if evicted {
+            inner.rebuild_index();
+        }
     }
 
     fn evict_if_needed(&self, incoming_size: usize) {
         let current = self.current_size.load(Ordering::Relaxed) as usize;
-        let mut entries = self.entries.write();
+        let mut inner = self.inner.write();
+        let mut evicted = false;
 
         while (current + incoming_size > self.config.max_size_bytes)
-            || entries.len() >= self.config.max_entries
+            || inner.entries.len() >= self.config.max_entries
         {
-            if let Some(removed) = entries.pop_front() {
+            if let Some(removed) = inner.entries.pop_front() {
+                inner.index.remove(&removed.blob.oid);
                 self.current_size
                     .fetch_sub(removed.blob.data.len() as u64, Ordering::Relaxed);
+                evicted = true;
             } else {
                 break;
             }
         }
+
+        if evicted {
+            inner.rebuild_index();
+        }
     }
 
     pub fn drain(&self) -> Vec<Blob> {
-        let mut entries = self.entries.write();
-        let blobs: Vec<Blob> = entries.drain(..).map(|e| e.blob).collect();
+        let mut inner = self.inner.write();
+        let blobs: Vec<Blob> = inner.entries.drain(..).map(|e| e.blob).collect();
+        inner.index.clear();
         self.current_size.store(0, Ordering::Relaxed);
         blobs
     }
 
     pub fn drain_older_than(&self, age: Duration) -> Vec<Blob> {
         let now = Instant::now();
-        let mut entries = self.entries.write();
+        let mut inner = self.inner.write();
         let mut drained = Vec::new();
 
-        while let Some(front) = entries.front() {
+        while let Some(front) = inner.entries.front() {
             if now.duration_since(front.timestamp) > age {
-                if let Some(removed) = entries.pop_front() {
+                if let Some(removed) = inner.entries.pop_front() {
+                    inner.index.remove(&removed.blob.oid);
                     self.current_size
                         .fetch_sub(removed.blob.data.len() as u64, Ordering::Relaxed);
                     drained.push(removed.blob);
@@ -129,21 +170,26 @@ impl WriteBuffer {
             }
         }
 
+        if !drained.is_empty() {
+            inner.rebuild_index();
+        }
+
         drained
     }
 
     pub fn clear(&self) {
-        let mut entries = self.entries.write();
-        entries.clear();
+        let mut inner = self.inner.write();
+        inner.entries.clear();
+        inner.index.clear();
         self.current_size.store(0, Ordering::Relaxed);
     }
 
     pub fn len(&self) -> usize {
-        self.entries.read().len()
+        self.inner.read().entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.read().is_empty()
+        self.inner.read().entries.is_empty()
     }
 
     pub fn size_bytes(&self) -> usize {
@@ -151,8 +197,8 @@ impl WriteBuffer {
     }
 
     pub fn oldest_entry_age(&self) -> Option<Duration> {
-        let entries = self.entries.read();
-        entries.front().map(|e| e.timestamp.elapsed())
+        let inner = self.inner.read();
+        inner.entries.front().map(|e| e.timestamp.elapsed())
     }
 }
 
@@ -253,7 +299,7 @@ mod tests {
         };
         let buffer = WriteBuffer::new(config);
 
-        for i in 0..3 {
+        for i in 0..3u8 {
             let blob = create_test_blob(&[i; 10]);
             buffer.add(blob);
         }
@@ -297,5 +343,41 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         let drained = buffer.drain_older_than(Duration::from_millis(10));
         assert_eq!(drained.len(), 1);
+    }
+
+    #[test]
+    fn test_buffer_duplicate_add() {
+        let buffer = WriteBuffer::default();
+        let blob = create_test_blob(b"test data");
+
+        buffer.add(blob.clone());
+        buffer.add(blob.clone());
+
+        assert_eq!(buffer.len(), 1);
+    }
+
+    #[test]
+    fn test_buffer_lookup_after_eviction() {
+        let config = WriteBufferConfig {
+            max_entries: 2,
+            max_size_bytes: 1024 * 1024,
+            max_age: Duration::from_secs(3600),
+        };
+        let buffer = WriteBuffer::new(config);
+
+        let blob1 = create_test_blob(b"first");
+        let blob2 = create_test_blob(b"second");
+        let blob3 = create_test_blob(b"third");
+
+        buffer.add(blob1.clone());
+        buffer.add(blob2.clone());
+        buffer.add(blob3.clone());
+
+        assert!(!buffer.contains(&blob1.oid));
+        assert!(buffer.contains(&blob2.oid));
+        assert!(buffer.contains(&blob3.oid));
+
+        assert!(buffer.get(&blob2.oid).is_some());
+        assert!(buffer.get(&blob3.oid).is_some());
     }
 }
