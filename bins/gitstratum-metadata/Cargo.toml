@@ -14,11 +14,14 @@ path = "src/main.rs"
 gitstratum-metadata-cluster = { path = "../../crates/gitstratum-metadata-cluster" }
 gitstratum-core = { path = "../../crates/gitstratum-core" }
 gitstratum-proto = { path = "../../crates/gitstratum-proto" }
-tokio.workspace = true
+gitstratum-metrics = { path = "../../crates/gitstratum-metrics" }
+tokio = { workspace = true, features = ["signal"] }
 clap = { version = "4.4", features = ["derive"] }
 tonic.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
