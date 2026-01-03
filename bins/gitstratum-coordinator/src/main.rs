@@ -11,6 +11,7 @@ use gitstratum_coordinator::{
 };
 use gitstratum_proto::coordinator_service_server::CoordinatorServiceServer;
 use k8s_operator::raft::{KeyValueStateMachine, RaftConfig, RaftNodeManager, RaftRequest};
+use tokio::sync::watch;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
@@ -91,9 +92,12 @@ async fn main() -> Result<()> {
     let global_limiter = Arc::new(GlobalRateLimiter::new());
     let raft = Arc::new(raft);
 
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
     let raft_for_flush = Arc::clone(&raft);
+    let raft_for_leader_check = Arc::clone(&raft);
     let batcher_for_flush = Arc::clone(&batcher);
-    tokio::spawn(async move {
+    let flush_handle = tokio::spawn(async move {
         run_heartbeat_flush_loop(
             batcher_for_flush,
             |batch: HashMap<String, HeartbeatInfo>| {
@@ -134,6 +138,8 @@ async fn main() -> Result<()> {
                     Ok::<(), String>(())
                 }
             },
+            move || raft_for_leader_check.leader_election().is_leader(),
+            shutdown_rx,
         )
         .await;
     });
@@ -152,10 +158,19 @@ async fn main() -> Result<()> {
 
     tracing::info!("Starting gRPC server on {}", args.grpc_addr);
 
-    Server::builder()
+    let grpc_result = Server::builder()
         .add_service(CoordinatorServiceServer::from_arc(server))
         .serve(args.grpc_addr)
-        .await?;
+        .await;
+
+    tracing::info!("gRPC server shutting down, signaling flush loop to stop");
+    let _ = shutdown_tx.send(true);
+
+    if let Err(e) = tokio::time::timeout(Duration::from_secs(5), flush_handle).await {
+        tracing::warn!("Heartbeat flush loop did not shut down in time: {}", e);
+    }
+
+    grpc_result?;
 
     Ok(())
 }

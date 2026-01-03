@@ -854,17 +854,6 @@ impl CoordinatorService for CoordinatorServer {
 
         let node_id = req.node_id.clone();
         let now = Instant::now();
-        self.last_heartbeat.write().insert(node_id.clone(), now);
-
-        self.heartbeat_batcher.record_heartbeat(
-            node_id.clone(),
-            HeartbeatInfo {
-                known_version: req.known_version,
-                reported_state: req.reported_state,
-                generation_id: req.generation_id.clone(),
-                received_at: now,
-            },
-        );
 
         let topo = self.read_topology().await;
 
@@ -877,8 +866,28 @@ impl CoordinatorService for CoordinatorServer {
             if !req.generation_id.is_empty() && node.generation_id != req.generation_id {
                 return Err(Status::failed_precondition("Generation ID mismatch"));
             }
+        }
+
+        self.last_heartbeat.write().insert(node_id.clone(), now);
+
+        self.heartbeat_batcher.record_heartbeat(
+            node_id.clone(),
+            HeartbeatInfo {
+                known_version: req.known_version,
+                reported_state: req.reported_state,
+                generation_id: req.generation_id.clone(),
+                received_at: now,
+            },
+        );
+
+        if let Some(node) = registered_node {
             if node.state() == NodeState::Suspect {
                 self.reset_flap_on_recovery(&node_id);
+                let cmd = ClusterCommand::SetNodeState {
+                    node_id: node_id.clone(),
+                    state: NodeState::Active as i32,
+                };
+                let _ = self.apply_and_write(cmd).await;
             }
         }
 

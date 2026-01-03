@@ -57,6 +57,10 @@ impl TopologyCache {
     pub fn staleness(&self) -> Duration {
         self.last_updated.read().elapsed()
     }
+
+    pub fn invalidate(&self) {
+        *self.topology.write() = None;
+    }
 }
 
 #[derive(Clone)]
@@ -543,7 +547,8 @@ pub async fn watch_topology_with_recovery<F>(
                             "Server sent Lagged notification"
                         );
                         on_event(WatchEvent::Lagged, lagged.current_version);
-                        current_version = lagged.current_version;
+                        cache.invalidate();
+                        current_version = 0;
                         break;
                     }
                     Some(Update::FullSync(topo)) => {
@@ -563,6 +568,7 @@ pub async fn watch_topology_with_recovery<F>(
                             break;
                         }
                         current_version = update.version;
+                        cache.invalidate();
                         on_event(WatchEvent::NodeAdded, current_version);
                         tracing::debug!(node_id = %node.id, "Node added");
                     }
@@ -578,6 +584,7 @@ pub async fn watch_topology_with_recovery<F>(
                             break;
                         }
                         current_version = update.version;
+                        cache.invalidate();
                         on_event(WatchEvent::NodeUpdated, current_version);
                         tracing::debug!(node_id = %node.id, "Node updated");
                     }
@@ -593,6 +600,7 @@ pub async fn watch_topology_with_recovery<F>(
                             break;
                         }
                         current_version = update.version;
+                        cache.invalidate();
                         on_event(WatchEvent::NodeRemoved, current_version);
                         tracing::debug!(node_id = %node_id, "Node removed");
                     }
@@ -727,5 +735,72 @@ mod tests {
         client.clear_leader_hint();
         assert!(client.current_leader.read().is_none());
         assert_eq!(client.get_endpoint(0), "http://coord-0:9000");
+    }
+
+    #[test]
+    fn test_topology_cache_invalidate_clears_cached_topology() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+
+        let topo = GetTopologyResponse {
+            version: 42,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: String::new(),
+        };
+        cache.update(topo);
+
+        assert!(cache.get().is_some());
+        assert_eq!(cache.get_version(), 42);
+
+        cache.invalidate();
+
+        assert!(cache.get().is_none());
+        assert_eq!(cache.get_version(), 0);
+    }
+
+    #[test]
+    fn test_topology_cache_invalidate_allows_reupdate() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+
+        let topo1 = GetTopologyResponse {
+            version: 10,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: "leader-1".to_string(),
+        };
+        cache.update(topo1);
+        assert_eq!(cache.get_version(), 10);
+
+        cache.invalidate();
+        assert_eq!(cache.get_version(), 0);
+
+        let topo2 = GetTopologyResponse {
+            version: 20,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: "leader-2".to_string(),
+        };
+        cache.update(topo2);
+        assert_eq!(cache.get_version(), 20);
+        assert_eq!(cache.get().unwrap().leader_id, "leader-2");
+    }
+
+    #[test]
+    fn test_topology_cache_invalidate_on_empty_is_noop() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+
+        assert!(cache.get().is_none());
+        assert_eq!(cache.get_version(), 0);
+
+        cache.invalidate();
+
+        assert!(cache.get().is_none());
+        assert_eq!(cache.get_version(), 0);
     }
 }
