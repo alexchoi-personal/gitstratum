@@ -44,7 +44,7 @@ pub fn validate_generation_id(
 }
 
 pub fn apply_command(topology: &mut ClusterTopology, cmd: &ClusterCommand) -> ClusterResponse {
-    let result = match cmd {
+    let result: Result<(), String> = match cmd {
         ClusterCommand::AddObjectNode(node) => {
             if let Some(existing) = topology.object_nodes.get(&node.id) {
                 if existing.generation_id != node.generation_id && existing.state != NODE_STATE_DOWN
@@ -76,36 +76,46 @@ pub fn apply_command(topology: &mut ClusterTopology, cmd: &ClusterCommand) -> Cl
         ClusterCommand::RemoveNode { node_id } => {
             let removed_object = topology.object_nodes.remove(node_id);
             let removed_metadata = topology.metadata_nodes.remove(node_id);
-            if removed_object.is_some() || removed_metadata.is_some() {
-                Ok(())
-            } else {
-                Err(format!("Node not found: {}", node_id))
+            let changed = removed_object.is_some() || removed_metadata.is_some();
+            if changed {
+                topology.version += 1;
             }
+            return ClusterResponse::success(topology.version);
         }
         ClusterCommand::SetNodeState { node_id, state } => {
-            if let Some(node) = topology.object_nodes.get_mut(node_id) {
+            let changed = if let Some(node) = topology.object_nodes.get_mut(node_id) {
                 node.state = *state;
-                Ok(())
+                true
             } else if let Some(node) = topology.metadata_nodes.get_mut(node_id) {
                 node.state = *state;
-                Ok(())
+                true
             } else {
-                Err(format!("Node not found: {}", node_id))
+                false
+            };
+            if changed {
+                topology.version += 1;
             }
+            return ClusterResponse::success(topology.version);
         }
         ClusterCommand::UpdateHashRingConfig(config) => {
             topology.hash_ring_config = config.clone();
             Ok(())
         }
         ClusterCommand::BatchHeartbeat(batch) => {
+            let mut updated_count = 0;
             for (node_id, info) in batch {
                 if let Some(node) = topology.object_nodes.get_mut(node_id) {
                     node.last_heartbeat_at = info.received_at_ms;
+                    updated_count += 1;
                 } else if let Some(node) = topology.metadata_nodes.get_mut(node_id) {
                     node.last_heartbeat_at = info.received_at_ms;
+                    updated_count += 1;
                 }
             }
-            Ok(())
+            if updated_count > 0 {
+                topology.version += 1;
+            }
+            return ClusterResponse::success(topology.version);
         }
     };
 
