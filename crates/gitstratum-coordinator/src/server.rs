@@ -393,7 +393,9 @@ impl CoordinatorServer {
             node_id: node_id.to_string(),
             state: NodeState::Suspect as i32,
         };
-        let _ = self.apply_and_write(cmd).await;
+        if let Err(e) = self.apply_and_write(cmd).await {
+            tracing::warn!(node_id = %node_id, error = %e, "Failed to mark node as SUSPECT via Raft");
+        }
     }
 
     async fn mark_node_down(&self, node_id: &str) {
@@ -401,7 +403,9 @@ impl CoordinatorServer {
             node_id: node_id.to_string(),
             state: NodeState::Down as i32,
         };
-        let _ = self.apply_and_write(cmd).await;
+        if let Err(e) = self.apply_and_write(cmd).await {
+            tracing::warn!(node_id = %node_id, error = %e, "Failed to mark node as DOWN via Raft");
+        }
     }
 
     fn maybe_reset_flap_count(&self, node_id: &str, now: Instant) {
@@ -500,6 +504,11 @@ impl CoordinatorService for CoordinatorServer {
         self.ensure_leader()?;
 
         let req = request.into_inner();
+        if !crate::validation::is_valid_node_id(&req.node_id) {
+            return Err(Status::invalid_argument(
+                "Node ID must be 1-63 alphanumeric characters or hyphens, without leading/trailing hyphens",
+            ));
+        }
         let cmd = ClusterCommand::RemoveNode {
             node_id: req.node_id.clone(),
         };
@@ -525,6 +534,16 @@ impl CoordinatorService for CoordinatorServer {
         self.ensure_leader()?;
 
         let req = request.into_inner();
+        if !crate::validation::is_valid_node_id(&req.node_id) {
+            return Err(Status::invalid_argument(
+                "Node ID must be 1-63 alphanumeric characters or hyphens, without leading/trailing hyphens",
+            ));
+        }
+        if !(0..=5).contains(&req.state) {
+            return Err(Status::invalid_argument(
+                "Invalid state value: must be 0-5 (Unknown, Active, Joining, Draining, Down, Suspect)",
+            ));
+        }
         let cmd = ClusterCommand::SetNodeState {
             node_id: req.node_id,
             state: req.state,
@@ -896,17 +915,21 @@ impl CoordinatorService for CoordinatorServer {
             );
         }
 
-        if let Some(node) = registered_node {
-            let current_state = node.state();
-            if current_state == NodeState::Suspect || current_state == NodeState::Joining {
-                if current_state == NodeState::Suspect {
-                    self.reset_flap_on_recovery(&node_id);
+        if self.is_leader() {
+            if let Some(node) = registered_node {
+                let current_state = node.state();
+                if current_state == NodeState::Suspect || current_state == NodeState::Joining {
+                    if current_state == NodeState::Suspect {
+                        self.reset_flap_on_recovery(&node_id);
+                    }
+                    let cmd = ClusterCommand::SetNodeState {
+                        node_id: node_id.clone(),
+                        state: NodeState::Active as i32,
+                    };
+                    if let Err(e) = self.apply_and_write(cmd).await {
+                        tracing::warn!(node_id = %node_id, error = %e, "Failed to transition node to ACTIVE via Raft");
+                    }
                 }
-                let cmd = ClusterCommand::SetNodeState {
-                    node_id: node_id.clone(),
-                    state: NodeState::Active as i32,
-                };
-                let _ = self.apply_and_write(cmd).await;
             }
         }
 

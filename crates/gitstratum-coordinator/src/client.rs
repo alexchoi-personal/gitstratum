@@ -532,6 +532,7 @@ pub async fn watch_topology_with_recovery<F>(
     cache: Arc<TopologyCache>,
     config: WatchConfig,
     mut on_event: F,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) where
     F: FnMut(WatchEvent, u64),
 {
@@ -539,6 +540,9 @@ pub async fn watch_topology_with_recovery<F>(
     let mut endpoint_index = 0usize;
 
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         let endpoint = &endpoints[endpoint_index % endpoints.len()];
         endpoint_index += 1;
 
@@ -606,7 +610,6 @@ pub async fn watch_topology_with_recovery<F>(
                             break;
                         }
                         current_version = update.version;
-                        cache.invalidate();
                         on_event(WatchEvent::NodeAdded, current_version);
                         tracing::debug!(node_id = %node.id, "Node added");
                     }
@@ -622,7 +625,6 @@ pub async fn watch_topology_with_recovery<F>(
                             break;
                         }
                         current_version = update.version;
-                        cache.invalidate();
                         on_event(WatchEvent::NodeUpdated, current_version);
                         tracing::debug!(node_id = %node.id, "Node updated");
                     }
@@ -638,7 +640,6 @@ pub async fn watch_topology_with_recovery<F>(
                             break;
                         }
                         current_version = update.version;
-                        cache.invalidate();
                         on_event(WatchEvent::NodeRemoved, current_version);
                         tracing::debug!(node_id = %node_id, "Node removed");
                     }
