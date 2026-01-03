@@ -410,3 +410,139 @@ mod failure_detection_simulation {
         assert_eq!(active_count, 15);
     }
 }
+
+mod heartbeat_recovery_tests {
+    use super::*;
+    use gitstratum_coordinator::validate_generation_id;
+
+    #[test]
+    fn test_suspect_node_can_recover_to_active_via_set_node_state() {
+        let mut topo = ClusterTopology::default();
+        let node = create_test_node("node-1", NodeState::Active);
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: NodeState::Suspect as i32,
+        };
+        apply_command(&mut topo, &cmd);
+        assert_eq!(
+            topo.object_nodes.get("node-1").unwrap().state(),
+            NodeState::Suspect,
+            "Node should be in SUSPECT state"
+        );
+
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: NodeState::Active as i32,
+        };
+        let resp = apply_command(&mut topo, &cmd);
+        assert!(resp.is_success(), "SetNodeState to ACTIVE should succeed");
+        assert_eq!(
+            topo.object_nodes.get("node-1").unwrap().state(),
+            NodeState::Active,
+            "Node should recover to ACTIVE state after SetNodeState command"
+        );
+    }
+
+    #[test]
+    fn test_generation_id_mismatch_detected_before_heartbeat_processing() {
+        let mut topo = ClusterTopology::default();
+        let node = NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.1".to_string(),
+            port: 9000,
+            state: NodeState::Active as i32,
+            last_heartbeat_at: 0,
+            suspect_count: 0,
+            generation_id: "correct-generation-id".to_string(),
+            registered_at: 0,
+        };
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let result = validate_generation_id(&topo, "node-1", "wrong-generation-id");
+        assert!(
+            result.is_err(),
+            "Generation ID mismatch should return an error"
+        );
+        assert!(
+            result.unwrap_err().contains("mismatch"),
+            "Error should indicate generation ID mismatch"
+        );
+    }
+
+    #[test]
+    fn test_generation_id_match_allows_heartbeat_processing() {
+        let mut topo = ClusterTopology::default();
+        let node = NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.1".to_string(),
+            port: 9000,
+            state: NodeState::Active as i32,
+            last_heartbeat_at: 0,
+            suspect_count: 0,
+            generation_id: "correct-generation-id".to_string(),
+            registered_at: 0,
+        };
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let result = validate_generation_id(&topo, "node-1", "correct-generation-id");
+        assert!(
+            result.is_ok(),
+            "Matching generation ID should not return an error"
+        );
+    }
+
+    #[test]
+    fn test_unregistered_node_skips_validation() {
+        let topo = ClusterTopology::default();
+
+        let result = validate_generation_id(&topo, "unknown-node", "any-generation-id");
+        assert!(
+            result.is_ok(),
+            "Unregistered node should skip validation (returns Ok)"
+        );
+    }
+
+    #[test]
+    fn test_down_node_skips_validation() {
+        let mut topo = ClusterTopology::default();
+        let node = NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.1".to_string(),
+            port: 9000,
+            state: NodeState::Down as i32,
+            last_heartbeat_at: 0,
+            suspect_count: 0,
+            generation_id: "old-generation-id".to_string(),
+            registered_at: 0,
+        };
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let result = validate_generation_id(&topo, "node-1", "new-generation-id");
+        assert!(
+            result.is_ok(),
+            "DOWN node should skip generation ID validation to allow re-registration"
+        );
+    }
+
+    #[test]
+    fn test_suspect_to_active_transition_increments_version() {
+        let mut topo = ClusterTopology::default();
+        let node = create_test_node("node-1", NodeState::Suspect);
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+        let version_after_add = topo.version;
+
+        let cmd = ClusterCommand::SetNodeState {
+            node_id: "node-1".to_string(),
+            state: NodeState::Active as i32,
+        };
+        apply_command(&mut topo, &cmd);
+
+        assert_eq!(
+            topo.version,
+            version_after_add + 1,
+            "Version should increment when state changes"
+        );
+    }
+}
