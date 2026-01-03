@@ -89,7 +89,12 @@ async fn main() -> Result<()> {
     config.heartbeat_batch_interval = Duration::from_secs(args.heartbeat_batch_interval);
 
     let batcher = Arc::new(HeartbeatBatcher::new(config.heartbeat_batch_interval));
-    let global_limiter = Arc::new(GlobalRateLimiter::new());
+    let global_limiter = Arc::new(GlobalRateLimiter::with_config(
+        config.global_registrations_per_sec,
+        config.global_heartbeats_per_sec,
+        config.global_topology_reads_per_sec,
+        config.max_watch_subscribers,
+    ));
     let raft = Arc::new(raft);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
