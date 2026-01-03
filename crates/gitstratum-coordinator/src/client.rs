@@ -607,6 +607,8 @@ pub async fn watch_topology_with_recovery<F>(
                                 got = update.previous_version,
                                 "Gap detected in watch stream"
                             );
+                            cache.invalidate();
+                            current_version = 0;
                             break;
                         }
                         current_version = update.version;
@@ -622,6 +624,8 @@ pub async fn watch_topology_with_recovery<F>(
                                 got = update.previous_version,
                                 "Gap detected in watch stream"
                             );
+                            cache.invalidate();
+                            current_version = 0;
                             break;
                         }
                         current_version = update.version;
@@ -637,6 +641,8 @@ pub async fn watch_topology_with_recovery<F>(
                                 got = update.previous_version,
                                 "Gap detected in watch stream"
                             );
+                            cache.invalidate();
+                            current_version = 0;
                             break;
                         }
                         current_version = update.version;
