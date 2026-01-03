@@ -1,9 +1,14 @@
 use gitstratum_core::Oid;
 
+use crate::error::{BucketStoreError, Result};
+
 pub const ENTRY_SIZE: usize = 32;
 pub const OID_SIZE: usize = 32;
 pub const OID_PREFIX_SIZE: usize = 16;
 pub const OID_SUFFIX_SIZE: usize = 16;
+
+pub const MAX_OFFSET: u64 = 0x0000_FFFF_FFFF_FFFF;
+pub const MAX_SIZE: u32 = 0x00FF_FFFF;
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -30,7 +35,20 @@ impl CompactEntry {
         _reserved: [0u8; 4],
     };
 
-    pub fn new(oid: &Oid, file_id: u16, offset: u64, size: u32, flags: u8) -> Self {
+    pub fn new(oid: &Oid, file_id: u16, offset: u64, size: u32, flags: u8) -> Result<Self> {
+        if offset > MAX_OFFSET {
+            return Err(BucketStoreError::EntryOffsetTooLarge {
+                offset,
+                max: MAX_OFFSET,
+            });
+        }
+        if size > MAX_SIZE {
+            return Err(BucketStoreError::EntrySizeTooLarge {
+                size,
+                max: MAX_SIZE,
+            });
+        }
+
         let mut oid_suffix = [0u8; OID_SUFFIX_SIZE];
         oid_suffix.copy_from_slice(&oid.as_bytes()[OID_PREFIX_SIZE..OID_SIZE]);
 
@@ -40,14 +58,14 @@ impl CompactEntry {
         let mut size_bytes = [0u8; 3];
         size_bytes.copy_from_slice(&size.to_be_bytes()[1..4]);
 
-        Self {
+        Ok(Self {
             oid_suffix,
             file_id,
             offset: offset_bytes,
             size: size_bytes,
             flags,
             _reserved: [0u8; 4],
-        }
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -146,7 +164,7 @@ mod tests {
     #[test]
     fn test_entry_new() {
         let oid = create_test_oid(0x42);
-        let entry = CompactEntry::new(&oid, 10, 1000, 2048, EntryFlags::NONE.bits());
+        let entry = CompactEntry::new(&oid, 10, 1000, 2048, EntryFlags::NONE.bits()).unwrap();
 
         assert!(!entry.is_empty());
         assert!(entry.matches(&oid));
@@ -161,23 +179,39 @@ mod tests {
     #[test]
     fn test_entry_large_offset() {
         let oid = create_test_oid(0x01);
-        let offset = 0x0000_FFFF_FFFF_FFFF;
-        let entry = CompactEntry::new(&oid, 1, offset, 100, 0);
+        let offset = MAX_OFFSET;
+        let entry = CompactEntry::new(&oid, 1, offset, 100, 0).unwrap();
         assert_eq!(entry.offset(), offset);
+    }
+
+    #[test]
+    fn test_entry_offset_too_large() {
+        let oid = create_test_oid(0x01);
+        let offset = MAX_OFFSET + 1;
+        let result = CompactEntry::new(&oid, 1, offset, 100, 0);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_entry_large_size() {
         let oid = create_test_oid(0x01);
-        let size = 0x00FF_FFFF;
-        let entry = CompactEntry::new(&oid, 1, 0, size, 0);
+        let size = MAX_SIZE;
+        let entry = CompactEntry::new(&oid, 1, 0, size, 0).unwrap();
         assert_eq!(entry.size(), size);
+    }
+
+    #[test]
+    fn test_entry_size_too_large() {
+        let oid = create_test_oid(0x01);
+        let size = MAX_SIZE + 1;
+        let result = CompactEntry::new(&oid, 1, 0, size, 0);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_entry_serialization() {
         let oid = create_test_oid(0x42);
-        let entry = CompactEntry::new(&oid, 10, 1000, 2048, EntryFlags::COMPRESSED.bits());
+        let entry = CompactEntry::new(&oid, 10, 1000, 2048, EntryFlags::COMPRESSED.bits()).unwrap();
 
         let bytes = entry.to_bytes();
         assert_eq!(bytes.len(), ENTRY_SIZE);
@@ -198,7 +232,7 @@ mod tests {
     fn test_entry_matches() {
         let oid1 = create_test_oid(0x01);
         let oid2 = create_test_oid(0x02);
-        let entry = CompactEntry::new(&oid1, 1, 0, 100, 0);
+        let entry = CompactEntry::new(&oid1, 1, 0, 100, 0).unwrap();
 
         assert!(entry.matches(&oid1));
         assert!(!entry.matches(&oid2));
@@ -215,10 +249,10 @@ mod tests {
     #[test]
     fn test_is_deleted() {
         let oid = create_test_oid(0x01);
-        let entry = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::DELETED.bits());
+        let entry = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::DELETED.bits()).unwrap();
         assert!(entry.is_deleted());
 
-        let entry2 = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::NONE.bits());
+        let entry2 = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::NONE.bits()).unwrap();
         assert!(!entry2.is_deleted());
 
         let entry3 = CompactEntry::new(
@@ -227,24 +261,25 @@ mod tests {
             0,
             100,
             EntryFlags::DELETED.bits() | EntryFlags::COMPRESSED.bits(),
-        );
+        )
+        .unwrap();
         assert!(entry3.is_deleted());
     }
 
     #[test]
     fn test_is_compressed() {
         let oid = create_test_oid(0x01);
-        let entry = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::COMPRESSED.bits());
+        let entry = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::COMPRESSED.bits()).unwrap();
         assert!(entry.is_compressed());
 
-        let entry2 = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::NONE.bits());
+        let entry2 = CompactEntry::new(&oid, 1, 0, 100, EntryFlags::NONE.bits()).unwrap();
         assert!(!entry2.is_compressed());
     }
 
     #[test]
     fn test_reconstruct_oid() {
         let oid = create_test_oid(0x42);
-        let entry = CompactEntry::new(&oid, 1, 0, 100, 0);
+        let entry = CompactEntry::new(&oid, 1, 0, 100, 0).unwrap();
 
         let prefix: [u8; OID_PREFIX_SIZE] = oid.as_bytes()[..OID_PREFIX_SIZE].try_into().unwrap();
         let reconstructed = entry.reconstruct_oid(&prefix);

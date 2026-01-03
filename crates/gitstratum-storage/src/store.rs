@@ -159,7 +159,7 @@ impl BucketStore {
             offset,
             record_size as u32,
             EntryFlags::NONE.bits(),
-        );
+        )?;
 
         let bucket_id = self.bucket_index.bucket_id(&oid);
         self.bucket_cache.invalidate(bucket_id);

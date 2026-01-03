@@ -40,6 +40,9 @@ pub enum MetadataStoreError {
     #[error("internal error: {0}")]
     Internal(String),
 
+    #[error("column family not found: {0}")]
+    ColumnFamilyNotFound(String),
+
     #[error("grpc error: {0}")]
     Grpc(String),
 
@@ -91,6 +94,7 @@ impl From<MetadataStoreError> for tonic::Status {
             MetadataStoreError::Deserialization(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Storage(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Internal(msg) => tonic::Status::internal(msg),
+            MetadataStoreError::ColumnFamilyNotFound(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Grpc(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Connection(msg) => tonic::Status::unavailable(msg),
         }
