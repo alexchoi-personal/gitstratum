@@ -501,6 +501,28 @@ mod heartbeat_recovery_tests {
     }
 
     #[test]
+    fn test_empty_generation_id_for_registered_node_should_be_rejected_at_handler() {
+        let mut topo = ClusterTopology::default();
+        let node = NodeEntry {
+            id: "node-1".to_string(),
+            address: "192.168.1.1".to_string(),
+            port: 9000,
+            state: NodeState::Active as i32,
+            last_heartbeat_at: 0,
+            suspect_count: 0,
+            generation_id: "valid-generation-id".to_string(),
+            registered_at: 0,
+        };
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node));
+
+        let result = validate_generation_id(&topo, "node-1", "");
+        assert!(
+            result.is_err(),
+            "Empty generation_id should fail validation for registered nodes (zombie prevention)"
+        );
+    }
+
+    #[test]
     fn test_unregistered_node_skips_validation() {
         let topo = ClusterTopology::default();
 

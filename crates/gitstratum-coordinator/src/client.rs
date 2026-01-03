@@ -299,15 +299,19 @@ impl SmartCoordinatorClient {
         if let Some(channel) = self.channels.read().get(endpoint) {
             return Ok(channel.clone());
         }
+
         let channel = Channel::from_shared(endpoint.to_string())
             .map_err(|e| CoordinatorError::Internal(format!("Invalid address: {}", e)))?
             .connect_timeout(Duration::from_secs(5))
             .connect()
             .await
             .map_err(|e| CoordinatorError::Internal(format!("Connection failed: {}", e)))?;
-        self.channels
-            .write()
-            .insert(endpoint.to_string(), channel.clone());
+
+        let mut channels = self.channels.write();
+        if let Some(existing) = channels.get(endpoint) {
+            return Ok(existing.clone());
+        }
+        channels.insert(endpoint.to_string(), channel.clone());
         Ok(channel)
     }
 
@@ -843,5 +847,34 @@ mod tests {
         let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
         let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache);
         assert!(client.channels.read().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_channel_double_checked_locking() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = Arc::new(SmartCoordinatorClient::new(
+            vec!["http://localhost:50051".to_string()],
+            cache,
+        ));
+
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let c = Arc::clone(&client);
+            let handle = tokio::spawn(async move {
+                let _ = c.get_channel("http://localhost:50051").await;
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let _ = handle.await;
+        }
+
+        let channels = client.channels.read();
+        assert!(
+            channels.len() <= 1,
+            "Expected at most 1 channel due to double-checked locking, got {}",
+            channels.len()
+        );
     }
 }

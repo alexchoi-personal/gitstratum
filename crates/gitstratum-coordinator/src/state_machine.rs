@@ -46,10 +46,28 @@ pub fn validate_generation_id(
 pub fn apply_command(topology: &mut ClusterTopology, cmd: &ClusterCommand) -> ClusterResponse {
     let result = match cmd {
         ClusterCommand::AddObjectNode(node) => {
+            if let Some(existing) = topology.object_nodes.get(&node.id) {
+                if existing.generation_id != node.generation_id && existing.state != NODE_STATE_DOWN
+                {
+                    return ClusterResponse::generation_mismatch(
+                        &existing.generation_id,
+                        &node.generation_id,
+                    );
+                }
+            }
             topology.object_nodes.insert(node.id.clone(), node.clone());
             Ok(())
         }
         ClusterCommand::AddMetadataNode(node) => {
+            if let Some(existing) = topology.metadata_nodes.get(&node.id) {
+                if existing.generation_id != node.generation_id && existing.state != NODE_STATE_DOWN
+                {
+                    return ClusterResponse::generation_mismatch(
+                        &existing.generation_id,
+                        &node.generation_id,
+                    );
+                }
+            }
             topology
                 .metadata_nodes
                 .insert(node.id.clone(), node.clone());
@@ -328,6 +346,132 @@ mod tests {
         assert_eq!(
             topo.object_nodes.get("node-1").unwrap().state,
             NODE_STATE_DOWN
+        );
+    }
+
+    #[test]
+    fn test_reregister_object_node_same_generation_succeeds() {
+        let mut topo = ClusterTopology::default();
+        let mut node = make_node("node-1");
+        node.generation_id = "gen-abc".to_string();
+        node.state = 1;
+
+        let resp = apply_command(&mut topo, &ClusterCommand::AddObjectNode(node.clone()));
+        assert!(resp.is_success());
+
+        let resp = apply_command(&mut topo, &ClusterCommand::AddObjectNode(node.clone()));
+        assert!(resp.is_success());
+        assert!(topo.object_nodes.contains_key("node-1"));
+    }
+
+    #[test]
+    fn test_reregister_object_node_different_generation_while_active_fails() {
+        let mut topo = ClusterTopology::default();
+        let mut node = make_node("node-1");
+        node.generation_id = "gen-abc".to_string();
+        node.state = 1;
+
+        let resp = apply_command(&mut topo, &ClusterCommand::AddObjectNode(node.clone()));
+        assert!(resp.is_success());
+
+        let mut zombie_node = node.clone();
+        zombie_node.generation_id = "gen-xyz".to_string();
+        let resp = apply_command(&mut topo, &ClusterCommand::AddObjectNode(zombie_node));
+        assert!(!resp.is_success());
+        assert!(matches!(resp, ClusterResponse::GenerationMismatch { .. }));
+
+        assert_eq!(
+            topo.object_nodes.get("node-1").unwrap().generation_id,
+            "gen-abc"
+        );
+    }
+
+    #[test]
+    fn test_reregister_object_node_different_generation_while_down_succeeds() {
+        let mut topo = ClusterTopology::default();
+        let mut node = make_node("node-1");
+        node.generation_id = "gen-abc".to_string();
+        node.state = 1;
+
+        apply_command(&mut topo, &ClusterCommand::AddObjectNode(node.clone()));
+        apply_command(
+            &mut topo,
+            &ClusterCommand::SetNodeState {
+                node_id: "node-1".to_string(),
+                state: NODE_STATE_DOWN,
+            },
+        );
+
+        let mut new_node = node.clone();
+        new_node.generation_id = "gen-xyz".to_string();
+        let resp = apply_command(&mut topo, &ClusterCommand::AddObjectNode(new_node));
+        assert!(resp.is_success());
+        assert_eq!(
+            topo.object_nodes.get("node-1").unwrap().generation_id,
+            "gen-xyz"
+        );
+    }
+
+    #[test]
+    fn test_reregister_metadata_node_same_generation_succeeds() {
+        let mut topo = ClusterTopology::default();
+        let mut node = make_node("meta-1");
+        node.generation_id = "gen-abc".to_string();
+        node.state = 1;
+
+        let resp = apply_command(&mut topo, &ClusterCommand::AddMetadataNode(node.clone()));
+        assert!(resp.is_success());
+
+        let resp = apply_command(&mut topo, &ClusterCommand::AddMetadataNode(node.clone()));
+        assert!(resp.is_success());
+        assert!(topo.metadata_nodes.contains_key("meta-1"));
+    }
+
+    #[test]
+    fn test_reregister_metadata_node_different_generation_while_active_fails() {
+        let mut topo = ClusterTopology::default();
+        let mut node = make_node("meta-1");
+        node.generation_id = "gen-abc".to_string();
+        node.state = 1;
+
+        let resp = apply_command(&mut topo, &ClusterCommand::AddMetadataNode(node.clone()));
+        assert!(resp.is_success());
+
+        let mut zombie_node = node.clone();
+        zombie_node.generation_id = "gen-xyz".to_string();
+        let resp = apply_command(&mut topo, &ClusterCommand::AddMetadataNode(zombie_node));
+        assert!(!resp.is_success());
+        assert!(matches!(resp, ClusterResponse::GenerationMismatch { .. }));
+
+        assert_eq!(
+            topo.metadata_nodes.get("meta-1").unwrap().generation_id,
+            "gen-abc"
+        );
+    }
+
+    #[test]
+    fn test_reregister_metadata_node_different_generation_while_down_succeeds() {
+        let mut topo = ClusterTopology::default();
+        let mut node = make_node("meta-1");
+        node.generation_id = "gen-abc".to_string();
+        node.state = 1;
+
+        apply_command(&mut topo, &ClusterCommand::AddMetadataNode(node.clone()));
+        apply_command(
+            &mut topo,
+            &ClusterCommand::SetNodeState {
+                node_id: "meta-1".to_string(),
+                state: NODE_STATE_DOWN,
+            },
+        );
+
+        let mut new_node = node.clone();
+        new_node.generation_id = "gen-xyz".to_string();
+        let resp = apply_command(&mut topo, &ClusterCommand::AddMetadataNode(new_node));
+        assert!(resp.is_success());
+        assert_eq!(
+            topo.metadata_nodes.get("meta-1").unwrap().generation_id,
+            "gen-xyz"
         );
     }
 }
