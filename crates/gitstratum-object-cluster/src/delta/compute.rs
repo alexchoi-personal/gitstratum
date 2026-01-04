@@ -72,7 +72,8 @@ impl DeltaComputer {
 
         let base_index = self.build_hash_index(base, window);
 
-        let mut instructions = Vec::new();
+        let estimated_instructions = (target.len() / self.min_match_length).max(1);
+        let mut instructions = Vec::with_capacity(estimated_instructions);
         let mut target_pos = 0;
 
         while target_pos < target.len() {

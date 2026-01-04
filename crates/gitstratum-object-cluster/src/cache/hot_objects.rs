@@ -35,8 +35,7 @@ pub struct HotObjectsCache {
 
 impl HotObjectsCache {
     pub fn new(config: HotObjectsCacheConfig) -> Self {
-        let capacity =
-            NonZeroUsize::new(config.max_entries).unwrap_or(NonZeroUsize::new(1).unwrap());
+        let capacity = NonZeroUsize::new(config.max_entries).unwrap_or(NonZeroUsize::MIN);
         Self {
             entries: Mutex::new(LruCache::new(capacity)),
             config,
