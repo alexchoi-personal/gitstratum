@@ -96,10 +96,10 @@ impl TimeoutMiddleware {
     {
         match timeout(duration, future).await {
             Ok(result) => result,
-            Err(_) => Err(FrontendError::InvalidProtocol(format!(
-                "{} timeout after {:?}",
-                kind, duration
-            ))),
+            Err(_) => Err(FrontendError::Timeout {
+                operation: kind.to_string(),
+                duration,
+            }),
         }
     }
 

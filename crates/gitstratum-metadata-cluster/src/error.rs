@@ -37,6 +37,9 @@ pub enum MetadataStoreError {
     #[error("storage error: {0}")]
     Storage(String),
 
+    #[error("rocksdb error: {0}")]
+    RocksDb(#[source] rocksdb::Error),
+
     #[error("internal error: {0}")]
     Internal(String),
 
@@ -52,7 +55,7 @@ pub enum MetadataStoreError {
 
 impl From<rocksdb::Error> for MetadataStoreError {
     fn from(err: rocksdb::Error) -> Self {
-        MetadataStoreError::Storage(err.to_string())
+        MetadataStoreError::RocksDb(err)
     }
 }
 
@@ -93,6 +96,7 @@ impl From<MetadataStoreError> for tonic::Status {
             MetadataStoreError::Serialization(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Deserialization(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Storage(msg) => tonic::Status::internal(msg),
+            MetadataStoreError::RocksDb(err) => tonic::Status::internal(err.to_string()),
             MetadataStoreError::Internal(msg) => tonic::Status::internal(msg),
             MetadataStoreError::ColumnFamilyNotFound(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Grpc(msg) => tonic::Status::internal(msg),

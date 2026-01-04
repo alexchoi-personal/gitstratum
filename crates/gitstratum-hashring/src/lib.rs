@@ -321,10 +321,7 @@ mod tests {
     fn test_nodes_for_key_empty() {
         let ring = ConsistentHashRing::new(16, 2);
         let result = ring.nodes_for_key(b"test");
-        assert!(matches!(
-            result,
-            Err(HashRingError::InsufficientNodes(_, _))
-        ));
+        assert!(matches!(result, Err(HashRingError::EmptyRing)));
     }
 
     #[test]

@@ -22,6 +22,23 @@ pub struct StorageStats {
     pub io_utilization: f32,
 }
 
+#[derive(Debug, Clone)]
+pub struct RocksDbConfig {
+    pub parallelism: i32,
+    pub max_background_jobs: i32,
+    pub write_buffer_size: usize,
+}
+
+impl Default for RocksDbConfig {
+    fn default() -> Self {
+        Self {
+            parallelism: 4,
+            max_background_jobs: 4,
+            write_buffer_size: 64 * 1024 * 1024,
+        }
+    }
+}
+
 pub struct RocksDbStore {
     db: Arc<DB>,
     blob_count: Arc<AtomicU64>,
@@ -32,7 +49,7 @@ pub struct RocksDbStore {
 impl RocksDbStore {
     #[instrument(skip_all, fields(path = %path.as_ref().display()))]
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        Self::with_compression(path, CompressionConfig::default())
+        Self::with_config(path, RocksDbConfig::default(), CompressionConfig::default())
     }
 
     const META_BLOB_COUNT_KEY: &'static [u8] = b"\x00__blob_count__";
@@ -43,12 +60,21 @@ impl RocksDbStore {
         path: impl AsRef<Path>,
         compression_config: CompressionConfig,
     ) -> Result<Self> {
+        Self::with_config(path, RocksDbConfig::default(), compression_config)
+    }
+
+    #[instrument(skip_all, fields(path = %path.as_ref().display()))]
+    pub fn with_config(
+        path: impl AsRef<Path>,
+        config: RocksDbConfig,
+        compression_config: CompressionConfig,
+    ) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.set_compression_type(rocksdb::DBCompressionType::None);
-        opts.increase_parallelism(4);
-        opts.set_max_background_jobs(4);
-        opts.set_write_buffer_size(64 * 1024 * 1024);
+        opts.increase_parallelism(config.parallelism);
+        opts.set_max_background_jobs(config.max_background_jobs);
+        opts.set_write_buffer_size(config.write_buffer_size);
 
         let db = DB::open(&opts, path)?;
         let db = Arc::new(db);
@@ -154,7 +180,13 @@ impl RocksDbStore {
         trace!("checking blob existence");
 
         let key = oid.as_bytes();
-        self.db.get(key).map(|v| v.is_some()).unwrap_or(false)
+        match self.db.get(key) {
+            Ok(v) => v.is_some(),
+            Err(e) => {
+                tracing::error!(error = %e, oid = %oid, "RocksDB error during has() check");
+                false
+            }
+        }
     }
 
     fn stats_sync(&self) -> StorageStats {

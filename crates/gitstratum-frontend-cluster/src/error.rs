@@ -70,6 +70,12 @@ pub enum FrontendError {
 
     #[error("pack too large: {size} bytes exceeds limit of {limit} bytes")]
     PackTooLarge { size: usize, limit: usize },
+
+    #[error("{operation} timeout after {duration:?}")]
+    Timeout {
+        operation: String,
+        duration: std::time::Duration,
+    },
 }
 
 impl From<gitstratum_hashring::HashRingError> for FrontendError {

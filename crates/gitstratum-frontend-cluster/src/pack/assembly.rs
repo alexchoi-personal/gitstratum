@@ -22,6 +22,8 @@ const OBJ_TAG: u8 = 4;
 const OBJ_OFS_DELTA: u8 = 6;
 const OBJ_REF_DELTA: u8 = 7;
 
+const MAX_BASE_OBJECTS: usize = 1_000_000;
+
 #[derive(Debug, Clone)]
 pub struct PackEntry {
     pub oid: Oid,
@@ -460,7 +462,9 @@ impl PackReader {
         };
 
         self.objects_read += 1;
-        self.base_objects.insert(entry.oid, entry.clone());
+        if self.base_objects.len() < MAX_BASE_OBJECTS {
+            self.base_objects.insert(entry.oid, entry.clone());
+        }
         Ok(Some(entry))
     }
 

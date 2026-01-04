@@ -541,6 +541,17 @@ impl BucketStoreStats {
     }
 }
 
+impl Drop for BucketStore {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.shutdown_notify.notify_waiters();
+        self.io.shutdown();
+        for handle in self.reaper_handles.write().drain(..) {
+            handle.abort();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

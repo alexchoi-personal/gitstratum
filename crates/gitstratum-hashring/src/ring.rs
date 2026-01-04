@@ -204,33 +204,30 @@ impl ConsistentHashRing {
     }
 
     fn nodes_at_position(&self, position: u64) -> Result<Vec<NodeInfo>> {
-        let nodes = self.nodes.read();
-        let active_count = nodes.values().filter(|n| n.state.can_serve_reads()).count();
-
-        if active_count < self.replication_factor {
-            return Err(HashRingError::InsufficientNodes(
-                self.replication_factor,
-                active_count,
-            ));
-        }
-
-        let ring = self.ring.read();
-
-        if ring.is_empty() {
-            return Err(HashRingError::EmptyRing);
-        }
-
-        let mut result = Vec::with_capacity(self.replication_factor);
-        let mut seen_nodes = std::collections::HashSet::new();
-
-        let iter = ring.range(position..).chain(ring.iter()).map(|(_, v)| v);
-
-        for vnode in iter {
-            if !seen_nodes.insert(&vnode.node_id) {
-                continue;
+        let candidate_node_ids: Vec<NodeId> = {
+            let ring = self.ring.read();
+            if ring.is_empty() {
+                return Err(HashRingError::EmptyRing);
             }
 
-            let Some(node) = nodes.get(&vnode.node_id) else {
+            let mut seen = std::collections::HashSet::new();
+            ring.range(position..)
+                .chain(ring.iter())
+                .filter_map(|(_, vnode)| {
+                    if seen.insert(vnode.node_id.clone()) {
+                        Some(vnode.node_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        let nodes = self.nodes.read();
+        let mut result = Vec::with_capacity(self.replication_factor);
+
+        for node_id in candidate_node_ids {
+            let Some(node) = nodes.get(&node_id) else {
                 continue;
             };
 
@@ -246,9 +243,10 @@ impl ConsistentHashRing {
         }
 
         if result.len() < self.replication_factor {
+            let active_count = nodes.values().filter(|n| n.state.can_serve_reads()).count();
             return Err(HashRingError::InsufficientNodes(
                 self.replication_factor,
-                result.len(),
+                active_count,
             ));
         }
 

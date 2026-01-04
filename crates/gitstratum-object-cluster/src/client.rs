@@ -14,6 +14,7 @@ use tracing::{debug, info, instrument, warn};
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 const CIRCUIT_BREAKER_RECOVERY_SECS: u64 = 30;
+const MAX_POOL_SIZE: usize = 100;
 
 use crate::error::{ObjectStoreError, Result};
 use crate::store::StorageStats;
@@ -139,6 +140,11 @@ impl ObjectClusterClient {
         let mut clients = self.clients.write();
         if let Some(existing) = clients.get(&endpoint) {
             return Ok(existing.clone());
+        }
+        if clients.len() >= MAX_POOL_SIZE {
+            if let Some(key) = clients.keys().next().cloned() {
+                clients.remove(&key);
+            }
         }
         clients.insert(endpoint, client.clone());
 
