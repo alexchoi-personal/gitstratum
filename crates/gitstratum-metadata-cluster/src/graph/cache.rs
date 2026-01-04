@@ -152,21 +152,42 @@ impl GraphCache {
             return;
         }
 
-        let mut ancestry = self.ancestry_cache.write();
-        let mut reachable = self.reachable_cache.write();
-        let mut merge_base = self.merge_base_cache.write();
+        let mut ancestry_keys = Vec::new();
+        let mut reachable_keys = Vec::new();
+        let mut merge_base_keys = Vec::new();
 
         for key_ref in keys {
             match key_ref {
                 CacheKeyRef::Ancestry(ancestor, descendant) => {
-                    ancestry.pop(&(Arc::clone(&repo_key), ancestor, descendant));
+                    ancestry_keys.push((ancestor, descendant));
                 }
                 CacheKeyRef::Reachable(from) => {
-                    reachable.pop(&(Arc::clone(&repo_key), from));
+                    reachable_keys.push(from);
                 }
                 CacheKeyRef::MergeBase(commits) => {
-                    merge_base.pop(&(Arc::clone(&repo_key), commits));
+                    merge_base_keys.push(commits);
                 }
+            }
+        }
+
+        if !ancestry_keys.is_empty() {
+            let mut cache = self.ancestry_cache.write();
+            for (ancestor, descendant) in ancestry_keys {
+                cache.pop(&(Arc::clone(&repo_key), ancestor, descendant));
+            }
+        }
+
+        if !reachable_keys.is_empty() {
+            let mut cache = self.reachable_cache.write();
+            for from in reachable_keys {
+                cache.pop(&(Arc::clone(&repo_key), from));
+            }
+        }
+
+        if !merge_base_keys.is_empty() {
+            let mut cache = self.merge_base_cache.write();
+            for commits in merge_base_keys {
+                cache.pop(&(Arc::clone(&repo_key), commits));
             }
         }
     }

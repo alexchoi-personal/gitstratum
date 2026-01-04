@@ -3,36 +3,63 @@ use gitstratum_core::{Blob as CoreBlob, Oid};
 use gitstratum_hashring::{ConsistentHashRing, NodeId, NodeInfo};
 use gitstratum_proto::object_service_client::ObjectServiceClient;
 use gitstratum_proto::{Blob, GetBlobRequest, GetStatsRequest, HasBlobRequest, PutBlobRequest};
+use lru::LruCache;
+use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 use tracing::{debug, info, instrument, warn};
 
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
-const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
-const CIRCUIT_BREAKER_RECOVERY_SECS: u64 = 30;
-const MAX_POOL_SIZE: usize = 100;
-
 use crate::error::{ObjectStoreError, Result};
 use crate::store::StorageStats;
 
-type ClientPool = HashMap<String, ObjectServiceClient<Channel>>;
+#[allow(async_fn_in_trait)]
+pub trait ClusterClient: Send + Sync {
+    async fn get(&self, oid: &Oid) -> Result<Option<CoreBlob>>;
+    async fn put(&self, blob: &CoreBlob) -> Result<()>;
+    async fn has(&self, oid: &Oid) -> Result<bool>;
+    async fn stats(&self) -> Result<StorageStats>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjectClusterClientConfig {
+    pub connection_timeout: Duration,
+    pub circuit_breaker_threshold: u32,
+    pub circuit_breaker_recovery: Duration,
+    pub max_pool_size: usize,
+}
+
+impl Default for ObjectClusterClientConfig {
+    fn default() -> Self {
+        Self {
+            connection_timeout: Duration::from_secs(5),
+            circuit_breaker_threshold: 3,
+            circuit_breaker_recovery: Duration::from_secs(30),
+            max_pool_size: 100,
+        }
+    }
+}
 
 struct CircuitBreakerState {
     failure_count: AtomicU32,
     last_failure_epoch_secs: AtomicU64,
     start_time: Instant,
+    threshold: u32,
+    recovery_secs: u64,
 }
 
 impl CircuitBreakerState {
-    fn new() -> Self {
+    fn new(threshold: u32, recovery: Duration) -> Self {
         Self {
             failure_count: AtomicU32::new(0),
             last_failure_epoch_secs: AtomicU64::new(0),
             start_time: Instant::now(),
+            threshold,
+            recovery_secs: recovery.as_secs(),
         }
     }
 
@@ -49,7 +76,7 @@ impl CircuitBreakerState {
 
     fn is_open(&self) -> bool {
         let failures = self.failure_count.load(Ordering::Relaxed);
-        if failures < CIRCUIT_BREAKER_THRESHOLD {
+        if failures < self.threshold {
             return false;
         }
 
@@ -57,7 +84,7 @@ impl CircuitBreakerState {
         let now_secs = self.start_time.elapsed().as_secs();
         let elapsed = now_secs.saturating_sub(last_failure);
 
-        if elapsed >= CIRCUIT_BREAKER_RECOVERY_SECS {
+        if elapsed >= self.recovery_secs {
             self.failure_count.store(0, Ordering::Relaxed);
             return false;
         }
@@ -70,16 +97,23 @@ type CircuitBreakers = HashMap<String, Arc<CircuitBreakerState>>;
 
 pub struct ObjectClusterClient {
     ring: Arc<ConsistentHashRing>,
-    clients: RwLock<ClientPool>,
+    clients: Mutex<LruCache<String, ObjectServiceClient<Channel>>>,
     circuit_breakers: RwLock<CircuitBreakers>,
+    config: ObjectClusterClientConfig,
 }
 
 impl ObjectClusterClient {
     pub fn new(ring: Arc<ConsistentHashRing>) -> Self {
+        Self::with_config(ring, ObjectClusterClientConfig::default())
+    }
+
+    pub fn with_config(ring: Arc<ConsistentHashRing>, config: ObjectClusterClientConfig) -> Self {
+        let cap = NonZeroUsize::new(config.max_pool_size).unwrap_or(NonZeroUsize::new(1).unwrap());
         Self {
             ring,
-            clients: RwLock::new(HashMap::new()),
+            clients: Mutex::new(LruCache::new(cap)),
             circuit_breakers: RwLock::new(HashMap::new()),
+            config,
         }
     }
 
@@ -94,7 +128,12 @@ impl ObjectClusterClient {
         let mut breakers = self.circuit_breakers.write();
         breakers
             .entry(endpoint.to_string())
-            .or_insert_with(|| Arc::new(CircuitBreakerState::new()))
+            .or_insert_with(|| {
+                Arc::new(CircuitBreakerState::new(
+                    self.config.circuit_breaker_threshold,
+                    self.config.circuit_breaker_recovery,
+                ))
+            })
             .clone()
     }
 
@@ -123,7 +162,7 @@ impl ObjectClusterClient {
         let endpoint = node.endpoint();
 
         {
-            let clients = self.clients.read();
+            let mut clients = self.clients.lock();
             if let Some(client) = clients.get(&endpoint) {
                 return Ok(client.clone());
             }
@@ -132,21 +171,16 @@ impl ObjectClusterClient {
         let addr = format!("http://{}", endpoint);
         let channel = Channel::from_shared(addr)
             .map_err(|e| ObjectStoreError::InvalidUri(e.to_string()))?
-            .connect_timeout(CONNECTION_TIMEOUT)
+            .connect_timeout(self.config.connection_timeout)
             .connect()
             .await?;
         let client = ObjectServiceClient::new(channel);
 
-        let mut clients = self.clients.write();
+        let mut clients = self.clients.lock();
         if let Some(existing) = clients.get(&endpoint) {
             return Ok(existing.clone());
         }
-        if clients.len() >= MAX_POOL_SIZE {
-            if let Some(key) = clients.keys().next().cloned() {
-                clients.remove(&key);
-            }
-        }
-        clients.insert(endpoint, client.clone());
+        clients.put(endpoint, client.clone());
 
         Ok(client)
     }
@@ -432,14 +466,8 @@ impl ObjectClusterClient {
     pub fn remove_node(&self, node_id: &NodeId) -> Result<NodeInfo> {
         let node = self.ring.remove_node(node_id)?;
         let endpoint = node.endpoint();
-        {
-            let mut clients = self.clients.write();
-            clients.remove(&endpoint);
-        }
-        {
-            let mut breakers = self.circuit_breakers.write();
-            breakers.remove(&endpoint);
-        }
+        self.clients.lock().pop(&endpoint);
+        self.circuit_breakers.write().remove(&endpoint);
         Ok(node)
     }
 
@@ -449,6 +477,24 @@ impl ObjectClusterClient {
 
     pub fn node_count(&self) -> usize {
         self.ring.node_count()
+    }
+}
+
+impl ClusterClient for ObjectClusterClient {
+    async fn get(&self, oid: &Oid) -> Result<Option<CoreBlob>> {
+        ObjectClusterClient::get(self, oid).await
+    }
+
+    async fn put(&self, blob: &CoreBlob) -> Result<()> {
+        ObjectClusterClient::put(self, blob).await
+    }
+
+    async fn has(&self, oid: &Oid) -> Result<bool> {
+        ObjectClusterClient::has(self, oid).await
+    }
+
+    async fn stats(&self) -> Result<StorageStats> {
+        ObjectClusterClient::stats(self).await
     }
 }
 
@@ -484,7 +530,7 @@ mod tests {
 
             assert_eq!(client.node_count(), node_count);
             assert_eq!(client.nodes().len(), node_count);
-            assert!(client.clients.read().is_empty());
+            assert!(client.clients.lock().is_empty());
             assert_eq!(client.node_count(), ring.node_count());
         }
 

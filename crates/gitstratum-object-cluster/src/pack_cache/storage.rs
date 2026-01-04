@@ -1,8 +1,10 @@
 use bytes::Bytes;
 use gitstratum_core::Oid;
-use parking_lot::RwLock;
+use lru::LruCache;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, instrument};
 
@@ -73,23 +75,23 @@ impl PackData {
 
 struct CacheEntry {
     pack: PackData,
-    last_accessed: Instant,
     access_count: u64,
 }
 
 pub struct PackCache {
-    cache: RwLock<HashMap<PackCacheKey, CacheEntry>>,
+    cache: Mutex<LruCache<PackCacheKey, CacheEntry>>,
     max_size_bytes: u64,
-    current_size_bytes: RwLock<u64>,
+    current_size_bytes: AtomicU64,
     default_ttl: Duration,
 }
 
 impl PackCache {
     pub fn new(max_size_bytes: u64, default_ttl: Duration) -> Self {
+        let cap = NonZeroUsize::new(10000).unwrap();
         Self {
-            cache: RwLock::new(HashMap::new()),
+            cache: Mutex::new(LruCache::new(cap)),
             max_size_bytes,
-            current_size_bytes: RwLock::new(0),
+            current_size_bytes: AtomicU64::new(0),
             default_ttl,
         }
     }
@@ -98,22 +100,23 @@ impl PackCache {
     pub fn put(&self, key: PackCacheKey, pack: PackData) -> Result<()> {
         let pack_size = pack.data.len() as u64;
 
-        self.evict_if_needed(pack_size);
+        let mut cache = self.cache.lock();
+
+        if let Some(old_entry) = cache.pop(&key) {
+            self.current_size_bytes
+                .fetch_sub(old_entry.pack.data.len() as u64, Ordering::Relaxed);
+        }
+
+        self.evict_for_size(&mut cache, pack_size);
 
         let entry = CacheEntry {
             pack,
-            last_accessed: Instant::now(),
             access_count: 0,
         };
 
-        let mut cache = self.cache.write();
-        if let Some(old_entry) = cache.insert(key.clone(), entry) {
-            let mut current = self.current_size_bytes.write();
-            *current -= old_entry.pack.data.len() as u64;
-        }
-
-        let mut current = self.current_size_bytes.write();
-        *current += pack_size;
+        cache.put(key.clone(), entry);
+        self.current_size_bytes
+            .fetch_add(pack_size, Ordering::Relaxed);
 
         debug!(key = %key.to_string_key(), size = pack_size, "cached pack");
         Ok(())
@@ -121,30 +124,30 @@ impl PackCache {
 
     #[instrument(skip(self))]
     pub fn get(&self, key: &PackCacheKey) -> Option<PackData> {
-        let mut cache = self.cache.write();
-        let entry = cache.get_mut(key)?;
+        let mut cache = self.cache.lock();
 
-        if entry.pack.is_expired(self.default_ttl) {
-            let size = entry.pack.data.len() as u64;
-            cache.remove(key);
-            let mut current = self.current_size_bytes.write();
-            *current -= size;
-            return None;
+        if let Some(entry) = cache.get_mut(key) {
+            if entry.pack.is_expired(self.default_ttl) {
+                let size = entry.pack.data.len() as u64;
+                cache.pop(key);
+                self.current_size_bytes.fetch_sub(size, Ordering::Relaxed);
+                return None;
+            }
+
+            entry.access_count += 1;
+            debug!(key = %key.to_string_key(), "cache hit");
+            return Some(entry.pack.clone());
         }
 
-        entry.last_accessed = Instant::now();
-        entry.access_count += 1;
-
-        debug!(key = %key.to_string_key(), "cache hit");
-        Some(entry.pack.clone())
+        None
     }
 
     #[instrument(skip(self))]
     pub fn remove(&self, key: &PackCacheKey) -> Option<PackData> {
-        let mut cache = self.cache.write();
-        if let Some(entry) = cache.remove(key) {
-            let mut current = self.current_size_bytes.write();
-            *current -= entry.pack.data.len() as u64;
+        let mut cache = self.cache.lock();
+        if let Some(entry) = cache.pop(key) {
+            self.current_size_bytes
+                .fetch_sub(entry.pack.data.len() as u64, Ordering::Relaxed);
             debug!(key = %key.to_string_key(), "removed pack from cache");
             Some(entry.pack)
         } else {
@@ -153,8 +156,8 @@ impl PackCache {
     }
 
     pub fn contains(&self, key: &PackCacheKey) -> bool {
-        let cache = self.cache.read();
-        if let Some(entry) = cache.get(key) {
+        let cache = self.cache.lock();
+        if let Some(entry) = cache.peek(key) {
             !entry.pack.is_expired(self.default_ttl)
         } else {
             false
@@ -162,99 +165,93 @@ impl PackCache {
     }
 
     pub fn invalidate_repo(&self, repo_id: &str) {
-        let mut cache = self.cache.write();
+        let mut cache = self.cache.lock();
         let keys_to_remove: Vec<PackCacheKey> = cache
-            .keys()
-            .filter(|k| k.repo_id == repo_id)
-            .cloned()
+            .iter()
+            .filter(|(k, _)| k.repo_id == repo_id)
+            .map(|(k, _)| k.clone())
             .collect();
 
-        let mut current = self.current_size_bytes.write();
         for key in keys_to_remove {
-            if let Some(entry) = cache.remove(&key) {
-                *current -= entry.pack.data.len() as u64;
+            if let Some(entry) = cache.pop(&key) {
+                self.current_size_bytes
+                    .fetch_sub(entry.pack.data.len() as u64, Ordering::Relaxed);
             }
         }
     }
 
     pub fn invalidate_ref(&self, repo_id: &str, ref_name: &str) {
-        let mut cache = self.cache.write();
+        let mut cache = self.cache.lock();
         let keys_to_remove: Vec<PackCacheKey> = cache
-            .keys()
-            .filter(|k| k.repo_id == repo_id && k.ref_name == ref_name)
-            .cloned()
+            .iter()
+            .filter(|(k, _)| k.repo_id == repo_id && k.ref_name == ref_name)
+            .map(|(k, _)| k.clone())
             .collect();
 
-        let mut current = self.current_size_bytes.write();
         for key in keys_to_remove {
-            if let Some(entry) = cache.remove(&key) {
-                *current -= entry.pack.data.len() as u64;
+            if let Some(entry) = cache.pop(&key) {
+                self.current_size_bytes
+                    .fetch_sub(entry.pack.data.len() as u64, Ordering::Relaxed);
             }
         }
     }
 
-    fn evict_if_needed(&self, additional_size: u64) {
-        let current = *self.current_size_bytes.read();
-        if current + additional_size <= self.max_size_bytes {
-            return;
-        }
-
-        let needed = (current + additional_size).saturating_sub(self.max_size_bytes);
-        self.evict_lru(needed);
-    }
-
-    fn evict_lru(&self, bytes_to_free: u64) {
-        let mut cache = self.cache.write();
-        let mut freed = 0u64;
-        let mut current = self.current_size_bytes.write();
-
-        while freed < bytes_to_free {
-            let oldest_key = cache
-                .iter()
-                .min_by_key(|(_, v)| v.last_accessed)
-                .map(|(k, _)| k.clone());
-
-            match oldest_key {
-                Some(key) => {
-                    if let Some(entry) = cache.remove(&key) {
-                        let size = entry.pack.data.len() as u64;
-                        *current -= size;
-                        freed += size;
+    fn evict_for_size(&self, cache: &mut LruCache<PackCacheKey, CacheEntry>, additional_size: u64) {
+        let now = Instant::now();
+        loop {
+            if let Some((_, entry)) = cache.peek_lru() {
+                if now.duration_since(entry.pack.created_at) > self.default_ttl {
+                    if let Some((_, evicted)) = cache.pop_lru() {
+                        self.current_size_bytes
+                            .fetch_sub(evicted.pack.data.len() as u64, Ordering::Relaxed);
+                        continue;
                     }
                 }
-                None => break,
+            }
+            break;
+        }
+
+        while self.current_size_bytes.load(Ordering::Relaxed) + additional_size
+            > self.max_size_bytes
+        {
+            if let Some((_, evicted)) = cache.pop_lru() {
+                self.current_size_bytes
+                    .fetch_sub(evicted.pack.data.len() as u64, Ordering::Relaxed);
+            } else {
+                break;
             }
         }
     }
 
     pub fn cleanup_expired(&self) -> u64 {
-        let mut cache = self.cache.write();
-        let keys_to_remove: Vec<PackCacheKey> = cache
-            .iter()
-            .filter(|(_, v)| v.pack.is_expired(self.default_ttl))
-            .map(|(k, _)| k.clone())
-            .collect();
-
+        let mut cache = self.cache.lock();
+        let now = Instant::now();
         let mut freed = 0u64;
-        let mut current = self.current_size_bytes.write();
-        for key in keys_to_remove {
-            if let Some(entry) = cache.remove(&key) {
-                let size = entry.pack.data.len() as u64;
-                *current -= size;
-                freed += size;
+
+        loop {
+            if let Some((_, entry)) = cache.peek_lru() {
+                if now.duration_since(entry.pack.created_at) > self.default_ttl {
+                    if let Some((_, evicted)) = cache.pop_lru() {
+                        let size = evicted.pack.data.len() as u64;
+                        self.current_size_bytes.fetch_sub(size, Ordering::Relaxed);
+                        freed += size;
+                        continue;
+                    }
+                }
             }
+            break;
         }
 
         freed
     }
 
     pub fn stats(&self) -> CacheStats {
-        let cache = self.cache.read();
+        let cache = self.cache.lock();
         let mut total_entries = 0;
         let mut total_objects = 0u64;
         let mut total_accesses = 0u64;
 
-        for entry in cache.values() {
+        for (_, entry) in cache.iter() {
             total_entries += 1;
             total_objects += entry.pack.object_count as u64;
             total_accesses += entry.access_count;
@@ -262,7 +259,7 @@ impl PackCache {
 
         CacheStats {
             entry_count: total_entries,
-            total_size_bytes: *self.current_size_bytes.read(),
+            total_size_bytes: self.current_size_bytes.load(Ordering::Relaxed),
             max_size_bytes: self.max_size_bytes,
             object_count: total_objects,
             total_accesses,
@@ -270,9 +267,9 @@ impl PackCache {
     }
 
     pub fn clear(&self) {
-        let mut cache = self.cache.write();
+        let mut cache = self.cache.lock();
         cache.clear();
-        *self.current_size_bytes.write() = 0;
+        self.current_size_bytes.store(0, Ordering::Relaxed);
     }
 }
 

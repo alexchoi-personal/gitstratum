@@ -312,7 +312,6 @@ impl CoordinatorServer {
                 now.duration_since(leader_start) < self.config.leader_grace_period;
 
             let topology = self.read_topology().await;
-            let last_heartbeat = self.last_heartbeat.read().clone();
 
             let all_nodes: Vec<(String, NodeState)> = topology
                 .object_nodes
@@ -322,7 +321,7 @@ impl CoordinatorServer {
                 .collect();
 
             for (node_id, current_state) in all_nodes {
-                let last_hb = last_heartbeat.get(&node_id).copied();
+                let last_hb = self.last_heartbeat.read().get(&node_id).copied();
                 let (suspect_timeout, down_timeout) = self.get_timeout_for_node(&node_id);
 
                 match current_state {

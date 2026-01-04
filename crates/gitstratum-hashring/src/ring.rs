@@ -54,30 +54,21 @@ impl ConsistentHashRing {
         hasher.update(node_id.as_str().as_bytes());
         hasher.update(virtual_index.to_le_bytes());
         let result = hasher.finalize();
-        u64::from_le_bytes(
-            result[..8]
-                .try_into()
-                .expect("SHA256 always produces 32 bytes"),
-        )
+        let bytes: [u8; 8] = result[..8].try_into().unwrap_or([0u8; 8]);
+        u64::from_le_bytes(bytes)
     }
 
     fn key_position(key: &[u8]) -> u64 {
         let mut hasher = Sha256::new();
         hasher.update(key);
         let result = hasher.finalize();
-        u64::from_le_bytes(
-            result[..8]
-                .try_into()
-                .expect("SHA256 always produces 32 bytes"),
-        )
+        let bytes: [u8; 8] = result[..8].try_into().unwrap_or([0u8; 8]);
+        u64::from_le_bytes(bytes)
     }
 
     fn oid_position(oid: &Oid) -> u64 {
-        u64::from_le_bytes(
-            oid.as_bytes()[..8]
-                .try_into()
-                .expect("OID is always 32 bytes"),
-        )
+        let bytes: [u8; 8] = oid.as_bytes()[..8].try_into().unwrap_or([0u8; 8]);
+        u64::from_le_bytes(bytes)
     }
 
     pub fn add_node(&self, node: NodeInfo) -> Result<()> {
@@ -274,12 +265,16 @@ impl ConsistentHashRing {
 
 impl Clone for ConsistentHashRing {
     fn clone(&self) -> Self {
+        let ring_guard = self.ring.read();
+        let nodes_guard = self.nodes.read();
+        let version_guard = self.version.read();
+
         Self {
-            ring: RwLock::new(self.ring.read().clone()),
-            nodes: RwLock::new(self.nodes.read().clone()),
+            ring: RwLock::new(ring_guard.clone()),
+            nodes: RwLock::new(nodes_guard.clone()),
             virtual_nodes_per_physical: self.virtual_nodes_per_physical,
             replication_factor: self.replication_factor,
-            version: RwLock::new(*self.version.read()),
+            version: RwLock::new(*version_guard),
         }
     }
 }
