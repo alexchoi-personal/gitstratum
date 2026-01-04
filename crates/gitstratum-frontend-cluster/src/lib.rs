@@ -11,6 +11,7 @@ pub mod middleware;
 pub mod pack;
 pub mod protocol;
 pub mod server;
+pub mod ssh;
 
 pub use cache::negotiation::{
     compute_common_commits, negotiate_refs, AckType, NegotiationLine, NegotiationRequest,
