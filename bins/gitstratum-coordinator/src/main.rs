@@ -90,10 +90,12 @@ async fn main() -> Result<()> {
 
     raft.start_grpc_server(args.raft_addr.port()).await?;
 
-    let mut config = CoordinatorConfig::default();
-    config.suspect_timeout = Duration::from_secs(args.suspect_timeout);
-    config.down_timeout = Duration::from_secs(args.down_timeout);
-    config.heartbeat_batch_interval = Duration::from_secs(args.heartbeat_batch_interval);
+    let config = CoordinatorConfig {
+        suspect_timeout: Duration::from_secs(args.suspect_timeout),
+        down_timeout: Duration::from_secs(args.down_timeout),
+        heartbeat_batch_interval: Duration::from_secs(args.heartbeat_batch_interval),
+        ..CoordinatorConfig::default()
+    };
 
     let batcher = Arc::new(HeartbeatBatcher::new(config.heartbeat_batch_interval));
     let global_limiter = Arc::new(GlobalRateLimiter::with_config(

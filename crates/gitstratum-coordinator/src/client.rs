@@ -204,8 +204,10 @@ impl CoordinatorClient {
     pub async fn get_topology(&mut self) -> Result<ClusterTopology, CoordinatorError> {
         let state = self.get_cluster_state().await?;
 
-        let mut topology = ClusterTopology::default();
-        topology.version = state.version;
+        let mut topology = ClusterTopology {
+            version: state.version,
+            ..ClusterTopology::default()
+        };
 
         for node in state.object_nodes {
             let entry = crate::topology::NodeEntry::from_proto(&node);
@@ -979,6 +981,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_watch_event_copy_clone() {
         let event = WatchEvent::NodeAdded;
         let copied = event;

@@ -80,6 +80,7 @@ dashmap = "5.5"
 flate2 = "1.0"
 lru = "0.12"
 rand = "0.8"
+rayon = "1.10"
 uuid = { version = "1.6", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 siphasher = "1.0"
@@ -116,19 +117,6 @@ unused_variables = "allow"
 
 [workspace.lints.clippy]
 result_large_err = "allow"
-too_many_arguments = "allow"
-enum_variant_names = "allow"
-new_without_default = "allow"
-len_without_is_empty = "allow"
-type_complexity = "allow"
-needless_range_loop = "allow"
-should_implement_trait = "allow"
-if_same_then_else = "allow"
-field_reassign_with_default = "allow"
-clone_on_copy = "allow"
-redundant_pattern_matching = "allow"
-needless_borrows_for_generic_args = "allow"
-vec_init_then_push = "allow"
 
 [profile.release]
 lto = true

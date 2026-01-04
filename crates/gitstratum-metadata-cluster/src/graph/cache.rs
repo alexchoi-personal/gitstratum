@@ -11,10 +11,11 @@ use gitstratum_core::{Oid, RepoId};
 type AncestryKey = (RepoId, Oid, Oid);
 type ReachableKey = (RepoId, Oid);
 type MergeBaseKey = (RepoId, Vec<Oid>);
+type ReachableCacheValue = (Arc<HashSet<Oid>>, Instant);
 
 pub struct GraphCache {
     ancestry_cache: RwLock<LruCache<AncestryKey, (bool, Instant)>>,
-    reachable_cache: RwLock<LruCache<ReachableKey, (Arc<HashSet<Oid>>, Instant)>>,
+    reachable_cache: RwLock<LruCache<ReachableKey, ReachableCacheValue>>,
     merge_base_cache: RwLock<LruCache<MergeBaseKey, (Option<Oid>, Instant)>>,
     entry_ttl: Duration,
     repo_index: RwLock<HashMap<RepoId, Vec<CacheKeyRef>>>,

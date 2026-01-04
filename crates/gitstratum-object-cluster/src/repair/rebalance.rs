@@ -442,6 +442,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_rebalance_state_clone() {
         let state = RebalanceState::Transferring;
         let cloned = state.clone();
@@ -468,9 +469,11 @@ mod tests {
 
     #[test]
     fn test_rebalance_stats_clone() {
-        let mut stats = RebalanceStats::default();
-        stats.rebalances_started = 5;
-        stats.objects_transferred = 100;
+        let stats = RebalanceStats {
+            rebalances_started: 5,
+            objects_transferred: 100,
+            ..RebalanceStats::default()
+        };
         let cloned = stats.clone();
         assert_eq!(stats.rebalances_started, cloned.rebalances_started);
         assert_eq!(stats.objects_transferred, cloned.objects_transferred);

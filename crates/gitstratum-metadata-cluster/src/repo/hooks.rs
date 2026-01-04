@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -24,15 +25,19 @@ impl HookType {
             HookType::PostUpdate => "post-update",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for HookType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "pre-receive" => Some(HookType::PreReceive),
-            "post-receive" => Some(HookType::PostReceive),
-            "update" => Some(HookType::Update),
-            "pre-push" => Some(HookType::PrePush),
-            "post-update" => Some(HookType::PostUpdate),
-            _ => None,
+            "pre-receive" => Ok(HookType::PreReceive),
+            "post-receive" => Ok(HookType::PostReceive),
+            "update" => Ok(HookType::Update),
+            "pre-push" => Ok(HookType::PrePush),
+            "post-update" => Ok(HookType::PostUpdate),
+            _ => Err(()),
         }
     }
 }
@@ -168,21 +173,15 @@ mod tests {
 
     #[test]
     fn test_hook_type_from_str() {
+        assert_eq!("pre-receive".parse::<HookType>(), Ok(HookType::PreReceive));
         assert_eq!(
-            HookType::from_str("pre-receive"),
-            Some(HookType::PreReceive)
+            "post-receive".parse::<HookType>(),
+            Ok(HookType::PostReceive)
         );
-        assert_eq!(
-            HookType::from_str("post-receive"),
-            Some(HookType::PostReceive)
-        );
-        assert_eq!(HookType::from_str("update"), Some(HookType::Update));
-        assert_eq!(HookType::from_str("pre-push"), Some(HookType::PrePush));
-        assert_eq!(
-            HookType::from_str("post-update"),
-            Some(HookType::PostUpdate)
-        );
-        assert_eq!(HookType::from_str("unknown"), None);
+        assert_eq!("update".parse::<HookType>(), Ok(HookType::Update));
+        assert_eq!("pre-push".parse::<HookType>(), Ok(HookType::PrePush));
+        assert_eq!("post-update".parse::<HookType>(), Ok(HookType::PostUpdate));
+        assert!("unknown".parse::<HookType>().is_err());
     }
 
     #[test]

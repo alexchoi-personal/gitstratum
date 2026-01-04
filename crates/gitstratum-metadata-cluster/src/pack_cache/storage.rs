@@ -92,16 +92,24 @@ impl PackCacheStorage {
     }
 
     pub fn get(&self, key: &PackCacheKey) -> Option<Arc<PackCacheEntry>> {
+        {
+            let entries = self.entries.read();
+            if let Some(entry) = entries.get(key) {
+                if !entry.is_expired() {
+                    entry.record_hit();
+                    return Some(Arc::clone(entry));
+                }
+            } else {
+                return None;
+            }
+        }
         let mut entries = self.entries.write();
         if let Some(entry) = entries.get(key) {
             if entry.is_expired() {
                 let size = entry.size_bytes;
                 entries.remove(key);
                 self.current_size_bytes.fetch_sub(size, Ordering::Relaxed);
-                return None;
             }
-            entry.record_hit();
-            return Some(Arc::clone(entry));
         }
         None
     }

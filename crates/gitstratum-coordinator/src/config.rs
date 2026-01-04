@@ -167,9 +167,11 @@ mod tests {
 
     #[test]
     fn test_tls_config_clone() {
-        let mut config = TlsConfig::default();
-        config.enabled = false;
-        config.cert_path = PathBuf::from("/etc/certs/server.crt");
+        let config = TlsConfig {
+            enabled: false,
+            cert_path: PathBuf::from("/etc/certs/server.crt"),
+            ..TlsConfig::default()
+        };
         let cloned = config.clone();
         assert!(!cloned.enabled);
         assert_eq!(cloned.cert_path, PathBuf::from("/etc/certs/server.crt"));

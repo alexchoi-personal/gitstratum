@@ -1438,8 +1438,10 @@ mod tests {
 
     #[test]
     fn test_timeout_calculation_outside_flap_window() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_window = Duration::from_millis(10);
+        let config = CoordinatorConfig {
+            flap_window: Duration::from_millis(10),
+            ..CoordinatorConfig::default()
+        };
 
         let old_time = Instant::now() - Duration::from_millis(100);
         let flap = NodeFlap {
@@ -1454,8 +1456,10 @@ mod tests {
 
     #[test]
     fn test_timeout_calculation_custom_multiplier() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_multiplier = 3.0;
+        let config = CoordinatorConfig {
+            flap_multiplier: 3.0,
+            ..CoordinatorConfig::default()
+        };
 
         let now = Instant::now();
         let flap = NodeFlap {
@@ -1559,11 +1563,13 @@ mod tests {
 
     #[test]
     fn test_flap_tracking_workflow() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_threshold = 3;
-        config.flap_window = Duration::from_secs(600);
-        config.flap_multiplier = 2.0;
-        config.stability_window = Duration::from_secs(300);
+        let config = CoordinatorConfig {
+            flap_threshold: 3,
+            flap_window: Duration::from_secs(600),
+            flap_multiplier: 2.0,
+            stability_window: Duration::from_secs(300),
+            ..CoordinatorConfig::default()
+        };
 
         let now = Instant::now();
         let mut flap = NodeFlap {
@@ -1845,8 +1851,10 @@ mod tests {
 
     #[test]
     fn test_flap_threshold_boundary_values() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_threshold = 1;
+        let config = CoordinatorConfig {
+            flap_threshold: 1,
+            ..CoordinatorConfig::default()
+        };
 
         let now = Instant::now();
         let flap = NodeFlap {
@@ -1865,8 +1873,10 @@ mod tests {
 
     #[test]
     fn test_flap_multiplier_one() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_multiplier = 1.0;
+        let config = CoordinatorConfig {
+            flap_multiplier: 1.0,
+            ..CoordinatorConfig::default()
+        };
 
         let now = Instant::now();
         let flap = NodeFlap {

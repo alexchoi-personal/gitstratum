@@ -29,9 +29,7 @@ pub fn validate_generation_id(
     match node {
         None => Ok(()),
         Some(entry) => {
-            if entry.generation_id == generation_id {
-                Ok(())
-            } else if entry.state == NODE_STATE_DOWN {
+            if entry.generation_id == generation_id || entry.state == NODE_STATE_DOWN {
                 Ok(())
             } else {
                 Err(format!(

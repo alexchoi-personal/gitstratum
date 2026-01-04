@@ -115,8 +115,10 @@ mod tests {
 
     #[test]
     fn test_cluster_topology_clone() {
-        let mut topo = ClusterTopology::default();
-        topo.version = 42;
+        let topo = ClusterTopology {
+            version: 42,
+            ..ClusterTopology::default()
+        };
         let cloned = topo.clone();
         assert_eq!(cloned.version, 42);
     }

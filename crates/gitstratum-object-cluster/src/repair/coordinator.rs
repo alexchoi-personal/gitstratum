@@ -384,9 +384,11 @@ mod tests {
 
     #[test]
     fn test_repair_stats_clone() {
-        let mut stats = RepairStats::default();
-        stats.sessions_created = 10;
-        stats.sessions_completed = 5;
+        let stats = RepairStats {
+            sessions_created: 10,
+            sessions_completed: 5,
+            ..RepairStats::default()
+        };
         let cloned = stats.clone();
         assert_eq!(stats.sessions_created, cloned.sessions_created);
         assert_eq!(stats.sessions_completed, cloned.sessions_completed);

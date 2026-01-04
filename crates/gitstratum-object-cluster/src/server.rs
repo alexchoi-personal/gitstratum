@@ -687,7 +687,7 @@ mod tests {
         let mut stream = response.into_inner();
 
         let mut count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             count += 1;
         }
         assert_eq!(count, 0);
@@ -902,7 +902,7 @@ mod tests {
         let mut stream = response.into_inner();
 
         let mut count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             count += 1;
         }
         assert_eq!(count, 0);
@@ -1120,7 +1120,7 @@ mod tests {
         let mut stream = response.into_inner();
 
         let mut count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             count += 1;
         }
         assert_eq!(count, 0);
@@ -1147,7 +1147,7 @@ mod tests {
         let mut stream = response.into_inner();
 
         let mut count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             count += 1;
         }
         assert_eq!(count, 0);

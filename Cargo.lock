@@ -1608,6 +1608,7 @@ dependencies = [
  "hex",
  "metrics",
  "rand 0.8.5",
+ "rayon",
  "russh",
  "russh-keys",
  "serde",
@@ -1639,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "gitstratum-lfs"
-version = "0.1.0"
+version = "0.1.0-wip"
 dependencies = [
  "async-trait",
  "bytes",

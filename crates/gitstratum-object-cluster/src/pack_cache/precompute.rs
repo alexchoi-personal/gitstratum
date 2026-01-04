@@ -591,8 +591,10 @@ mod tests {
         #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
-        let mut config = PrecomputeConfig::default();
-        config.hot_repo_threshold = 5;
+        let config = PrecomputeConfig {
+            hot_repo_threshold: 5,
+            ..PrecomputeConfig::default()
+        };
 
         let tracker = Arc::new(HotRepoTracker::new(Duration::from_secs(60)));
         for _ in 0..10 {

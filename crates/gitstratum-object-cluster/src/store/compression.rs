@@ -132,6 +132,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_compression_type_debug_clone_copy() {
         let ct = CompressionType::Zlib;
         let cloned = ct.clone();

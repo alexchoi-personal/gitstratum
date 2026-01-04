@@ -159,13 +159,11 @@ pub fn find_merge_base(
                 any_progress = true;
                 let current_depth = *ancestors[i].get(&ts_oid.oid).unwrap_or(&0);
 
-                let mut is_common = true;
-                for j in 0..commits.len() {
-                    if j != i && !ancestors[j].contains_key(&ts_oid.oid) {
-                        is_common = false;
-                        break;
-                    }
-                }
+                let is_common = ancestors
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .all(|(_, anc)| anc.contains_key(&ts_oid.oid));
 
                 if is_common {
                     return Ok(Some(ts_oid.oid));

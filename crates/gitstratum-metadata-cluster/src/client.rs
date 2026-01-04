@@ -830,12 +830,12 @@ mod tests {
                 .map(|i| {
                     if i % 2 == 0 {
                         TreeEntry::file(
-                            &format!("file_{}.txt", i),
+                            format!("file_{}.txt", i),
                             Oid::hash(format!("f{}", i).as_bytes()),
                         )
                     } else {
                         TreeEntry::directory(
-                            &format!("dir_{}", i),
+                            format!("dir_{}", i),
                             Oid::hash(format!("d{}", i).as_bytes()),
                         )
                     }

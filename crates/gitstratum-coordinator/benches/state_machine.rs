@@ -17,10 +17,12 @@ use gitstratum_coordinator::{
 use gitstratum_proto::NodeState;
 
 fn create_sample_topology(num_nodes: usize) -> ClusterTopology {
-    let mut topo = ClusterTopology::default();
-    topo.hash_ring_config = HashRingConfig {
-        virtual_nodes_per_physical: 16,
-        replication_factor: 3,
+    let mut topo = ClusterTopology {
+        hash_ring_config: HashRingConfig {
+            virtual_nodes_per_physical: 16,
+            replication_factor: 3,
+        },
+        ..ClusterTopology::default()
     };
 
     for i in 0..num_nodes {

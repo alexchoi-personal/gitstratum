@@ -15,11 +15,17 @@ pub struct MockObjectStorage {
     objects: RwLock<HashMap<Oid, Blob>>,
 }
 
-impl MockObjectStorage {
-    pub fn new() -> Self {
+impl Default for MockObjectStorage {
+    fn default() -> Self {
         Self {
             objects: RwLock::new(HashMap::new()),
         }
+    }
+}
+
+impl MockObjectStorage {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
