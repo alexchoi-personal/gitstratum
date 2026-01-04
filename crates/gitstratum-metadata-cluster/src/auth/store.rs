@@ -99,7 +99,7 @@ impl AuthStore {
         perm: u8,
     ) -> Result<(), rocksdb::Error> {
         let key = format!("{}/acl/{}", repo_id, user_id);
-        self.db.put_cf(self.cf_acl(), key.as_bytes(), &[perm])
+        self.db.put_cf(self.cf_acl(), key.as_bytes(), [perm])
     }
 
     pub fn get_permission(

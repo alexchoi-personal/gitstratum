@@ -4,16 +4,11 @@ use std::time::{Duration, SystemTime};
 
 use crate::error::Result;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StorageTier {
+    #[default]
     Hot,
     Cold,
-}
-
-impl Default for StorageTier {
-    fn default() -> Self {
-        StorageTier::Hot
-    }
 }
 
 #[derive(Debug, Clone)]

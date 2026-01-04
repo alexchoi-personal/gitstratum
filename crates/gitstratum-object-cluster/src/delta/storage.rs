@@ -52,10 +52,20 @@ impl StoredDelta {
     }
 
     fn deserialize(data: &[u8], base_oid: Oid, target_oid: Oid) -> Result<Delta> {
+        const MAX_INSTRUCTIONS: usize = 1_000_000;
+        const MAX_INSERT_SIZE: u64 = 100 * 1024 * 1024;
+
         let mut instructions = Vec::new();
         let mut pos = 0;
 
         while pos < data.len() {
+            if instructions.len() >= MAX_INSTRUCTIONS {
+                return Err(ObjectStoreError::DeltaDeserializeError(format!(
+                    "too many delta instructions: exceeded {} limit",
+                    MAX_INSTRUCTIONS
+                )));
+            }
+
             let op = data[pos];
             pos += 1;
 
@@ -79,7 +89,6 @@ impl StoredDelta {
                         ));
                     }
                     let len_u64 = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
-                    const MAX_INSERT_SIZE: u64 = 100 * 1024 * 1024;
                     if len_u64 > MAX_INSERT_SIZE {
                         return Err(ObjectStoreError::DeltaDeserializeError(format!(
                             "insert data too large: {} bytes (max: {} bytes)",

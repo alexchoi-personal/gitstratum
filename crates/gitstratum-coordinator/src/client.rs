@@ -533,7 +533,7 @@ pub async fn watch_topology_with_recovery<F>(
     cache: Arc<TopologyCache>,
     config: WatchConfig,
     mut on_event: F,
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) where
     F: FnMut(WatchEvent, u64),
 {

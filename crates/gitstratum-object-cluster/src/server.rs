@@ -14,7 +14,6 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, instrument, warn};
 
-use crate::error::ObjectStoreError;
 use crate::store::ObjectStorage;
 use crate::store::ObjectStore;
 
@@ -86,7 +85,7 @@ impl ObjectService for ObjectServiceImpl {
 
         debug!(%oid, "get_blob");
 
-        match self.store.get(&oid).await.map_err(ObjectStoreError::from)? {
+        match self.store.get(&oid).await? {
             Some(blob) => Ok(Response::new(GetBlobResponse {
                 blob: Some(Self::core_blob_to_proto(&blob, false)),
                 found: true,
@@ -154,10 +153,7 @@ impl ObjectService for ObjectServiceImpl {
 
         debug!(oid = %core_blob.oid, "put_blob");
 
-        self.store
-            .put(&core_blob)
-            .await
-            .map_err(ObjectStoreError::from)?;
+        self.store.put(&core_blob).await?;
 
         Ok(Response::new(PutBlobResponse {
             success: true,
@@ -342,10 +338,7 @@ impl ObjectService for ObjectServiceImpl {
                         )));
                     }
                     let core_blob = Self::proto_blob_to_core(&blob)?;
-                    self.store
-                        .put(&core_blob)
-                        .await
-                        .map_err(ObjectStoreError::from)?;
+                    self.store.put(&core_blob).await?;
                     received_count += 1;
                 }
                 Err(e) => {

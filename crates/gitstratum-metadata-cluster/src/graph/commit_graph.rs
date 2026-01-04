@@ -194,7 +194,7 @@ pub fn find_merge_base(
 
     let mut common: Option<(Oid, usize)> = None;
 
-    for (oid, _) in &ancestors[0] {
+    for oid in ancestors[0].keys() {
         let mut is_common = true;
         let mut total_depth = 0;
 
@@ -232,10 +232,7 @@ pub async fn walk_commits_async(
     let mut commits = Vec::new();
 
     let mut walker = walker;
-    while let Some(result) = {
-        let next = walker.next_commit();
-        next
-    }? {
+    while let Some(result) = { walker.next_commit() }? {
         commits.push(result);
     }
 

@@ -38,6 +38,7 @@ where
             .ok_or_else(|| FrontendError::ObjectService(format!("no client for node {}", node_id)))
     }
 
+    #[allow(dead_code)]
     fn partition_by_node(&self, oids: Vec<Oid>) -> Result<HashMap<NodeId, Vec<Oid>>> {
         let mut by_node: HashMap<NodeId, Vec<Oid>> = HashMap::new();
 

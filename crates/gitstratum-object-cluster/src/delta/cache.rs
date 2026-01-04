@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};

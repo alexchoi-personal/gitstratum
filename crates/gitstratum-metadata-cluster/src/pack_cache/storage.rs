@@ -1,18 +1,21 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use gitstratum_core::{Oid, RepoId};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PackCacheEntry {
     pub pack_id: String,
     pub objects: Vec<Oid>,
     pub size_bytes: u64,
     pub created_at: i64,
     pub expires_at: i64,
-    pub hit_count: u64,
+    #[serde(skip, default)]
+    hit_count: AtomicU64,
 }
 
 impl PackCacheEntry {
@@ -24,7 +27,7 @@ impl PackCacheEntry {
             size_bytes,
             created_at: now,
             expires_at: now + ttl_secs,
-            hit_count: 0,
+            hit_count: AtomicU64::new(0),
         }
     }
 
@@ -32,8 +35,12 @@ impl PackCacheEntry {
         chrono::Utc::now().timestamp() > self.expires_at
     }
 
-    pub fn record_hit(&mut self) {
-        self.hit_count += 1;
+    pub fn record_hit(&self) {
+        self.hit_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get_hit_count(&self) -> u64 {
+        self.hit_count.load(Ordering::Relaxed)
     }
 }
 
@@ -70,9 +77,9 @@ impl PackCacheKey {
 }
 
 pub struct PackCacheStorage {
-    entries: RwLock<HashMap<PackCacheKey, PackCacheEntry>>,
+    entries: RwLock<HashMap<PackCacheKey, Arc<PackCacheEntry>>>,
     max_size_bytes: u64,
-    current_size_bytes: RwLock<u64>,
+    current_size_bytes: AtomicU64,
 }
 
 impl PackCacheStorage {
@@ -80,21 +87,21 @@ impl PackCacheStorage {
         Self {
             entries: RwLock::new(HashMap::new()),
             max_size_bytes,
-            current_size_bytes: RwLock::new(0),
+            current_size_bytes: AtomicU64::new(0),
         }
     }
 
-    pub fn get(&self, key: &PackCacheKey) -> Option<PackCacheEntry> {
+    pub fn get(&self, key: &PackCacheKey) -> Option<Arc<PackCacheEntry>> {
         let mut entries = self.entries.write();
-        if let Some(entry) = entries.get_mut(key) {
+        if let Some(entry) = entries.get(key) {
             if entry.is_expired() {
                 let size = entry.size_bytes;
                 entries.remove(key);
-                *self.current_size_bytes.write() -= size;
+                self.current_size_bytes.fetch_sub(size, Ordering::Relaxed);
                 return None;
             }
             entry.record_hit();
-            return Some(entry.clone());
+            return Some(Arc::clone(entry));
         }
         None
     }
@@ -107,13 +114,13 @@ impl PackCacheStorage {
         self.evict_if_needed(entry.size_bytes);
 
         let size = entry.size_bytes;
-        self.entries.write().insert(key, entry);
-        *self.current_size_bytes.write() += size;
+        self.entries.write().insert(key, Arc::new(entry));
+        self.current_size_bytes.fetch_add(size, Ordering::Relaxed);
         true
     }
 
     fn evict_if_needed(&self, needed_bytes: u64) {
-        let current = *self.current_size_bytes.read();
+        let current = self.current_size_bytes.load(Ordering::Relaxed);
         if current + needed_bytes <= self.max_size_bytes {
             return;
         }
@@ -121,24 +128,22 @@ impl PackCacheStorage {
         let mut entries = self.entries.write();
         let now = chrono::Utc::now().timestamp();
 
-        let expired_keys: Vec<PackCacheKey> = entries
-            .iter()
-            .filter(|(_, e)| e.expires_at < now)
-            .map(|(k, _)| k.clone())
-            .collect();
-
         let mut freed = 0u64;
-        for key in expired_keys {
-            if let Some(entry) = entries.remove(&key) {
+        entries.retain(|_, entry| {
+            if entry.expires_at < now {
                 freed += entry.size_bytes;
+                false
+            } else {
+                true
             }
-        }
-        *self.current_size_bytes.write() -= freed;
+        });
+        self.current_size_bytes.fetch_sub(freed, Ordering::Relaxed);
 
-        if *self.current_size_bytes.read() + needed_bytes > self.max_size_bytes {
+        let current_after_expired = self.current_size_bytes.load(Ordering::Relaxed);
+        if current_after_expired + needed_bytes > self.max_size_bytes {
             let mut by_hits: Vec<(PackCacheKey, u64, u64)> = entries
                 .iter()
-                .map(|(k, e)| (k.clone(), e.hit_count, e.size_bytes))
+                .map(|(k, e)| (k.clone(), e.get_hit_count(), e.size_bytes))
                 .collect();
             by_hits.sort_by_key(|(_, hits, _)| *hits);
 
@@ -146,19 +151,21 @@ impl PackCacheStorage {
             let target = (self.max_size_bytes as f64 * 0.8) as u64;
 
             for (key, _, size) in by_hits {
-                if *self.current_size_bytes.read() - additional_freed <= target {
+                if current_after_expired.saturating_sub(additional_freed) <= target {
                     break;
                 }
                 entries.remove(&key);
                 additional_freed += size;
             }
-            *self.current_size_bytes.write() -= additional_freed;
+            self.current_size_bytes
+                .fetch_sub(additional_freed, Ordering::Relaxed);
         }
     }
 
     pub fn remove(&self, key: &PackCacheKey) -> bool {
         if let Some(entry) = self.entries.write().remove(key) {
-            *self.current_size_bytes.write() -= entry.size_bytes;
+            self.current_size_bytes
+                .fetch_sub(entry.size_bytes, Ordering::Relaxed);
             true
         } else {
             false
@@ -167,23 +174,20 @@ impl PackCacheStorage {
 
     pub fn remove_by_repo(&self, repo_id: &RepoId) {
         let mut entries = self.entries.write();
-        let keys_to_remove: Vec<PackCacheKey> = entries
-            .keys()
-            .filter(|k| &k.repo_id == repo_id)
-            .cloned()
-            .collect();
-
         let mut freed = 0u64;
-        for key in keys_to_remove {
-            if let Some(entry) = entries.remove(&key) {
+        entries.retain(|k, entry| {
+            if &k.repo_id == repo_id {
                 freed += entry.size_bytes;
+                false
+            } else {
+                true
             }
-        }
-        *self.current_size_bytes.write() -= freed;
+        });
+        self.current_size_bytes.fetch_sub(freed, Ordering::Relaxed);
     }
 
     pub fn current_size(&self) -> u64 {
-        *self.current_size_bytes.read()
+        self.current_size_bytes.load(Ordering::Relaxed)
     }
 
     pub fn entry_count(&self) -> usize {
@@ -192,7 +196,7 @@ impl PackCacheStorage {
 
     pub fn clear(&self) {
         self.entries.write().clear();
-        *self.current_size_bytes.write() = 0;
+        self.current_size_bytes.store(0, Ordering::Relaxed);
     }
 }
 
@@ -212,7 +216,7 @@ mod tests {
         assert_eq!(entry.pack_id, "pack-123");
         assert_eq!(entry.objects.len(), 2);
         assert_eq!(entry.size_bytes, 1024);
-        assert_eq!(entry.hit_count, 0);
+        assert_eq!(entry.get_hit_count(), 0);
         assert!(!entry.is_expired());
     }
 
@@ -225,14 +229,14 @@ mod tests {
 
     #[test]
     fn test_pack_cache_entry_record_hit() {
-        let mut entry = PackCacheEntry::new("pack-123".to_string(), vec![], 1024, 3600);
-        assert_eq!(entry.hit_count, 0);
+        let entry = PackCacheEntry::new("pack-123".to_string(), vec![], 1024, 3600);
+        assert_eq!(entry.get_hit_count(), 0);
 
         entry.record_hit();
-        assert_eq!(entry.hit_count, 1);
+        assert_eq!(entry.get_hit_count(), 1);
 
         entry.record_hit();
-        assert_eq!(entry.hit_count, 2);
+        assert_eq!(entry.get_hit_count(), 2);
     }
 
     #[test]
@@ -270,7 +274,7 @@ mod tests {
 
         let retrieved = storage.get(&key).unwrap();
         assert_eq!(retrieved.pack_id, "pack-123");
-        assert_eq!(retrieved.hit_count, 1);
+        assert_eq!(retrieved.get_hit_count(), 1);
     }
 
     #[test]
@@ -441,13 +445,9 @@ mod tests {
     }
 
     #[test]
-    fn test_pack_cache_entry_debug_clone() {
+    fn test_pack_cache_entry_debug() {
         let entry =
             PackCacheEntry::new("pack-123".to_string(), vec![Oid::hash(b"obj")], 1024, 3600);
-        let cloned = entry.clone();
-        assert_eq!(cloned.pack_id, entry.pack_id);
-        assert_eq!(cloned.size_bytes, entry.size_bytes);
-        assert_eq!(cloned.objects.len(), entry.objects.len());
         assert!(format!("{:?}", entry).contains("pack-123"));
     }
 

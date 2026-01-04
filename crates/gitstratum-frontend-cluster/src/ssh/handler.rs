@@ -46,9 +46,10 @@ pub fn parse_git_command(cmd: &str) -> Option<GitCommand> {
 
     let rest = rest.trim();
 
-    let repo_path = if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2 {
-        &rest[1..rest.len() - 1]
-    } else if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
+    let repo_path = if ((rest.starts_with('\'') && rest.ends_with('\''))
+        || (rest.starts_with('"') && rest.ends_with('"')))
+        && rest.len() >= 2
+    {
         &rest[1..rest.len() - 1]
     } else {
         rest

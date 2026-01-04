@@ -87,7 +87,7 @@ impl Compactor {
             });
         }
 
-        let mut target_file = file_manager.create_data_file()?;
+        let target_file = file_manager.create_data_file()?;
         let target_file_id = target_file.file_id();
 
         let mut bucket_updates: HashMap<u32, Vec<(usize, CompactEntry)>> = HashMap::new();

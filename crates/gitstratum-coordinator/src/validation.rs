@@ -116,7 +116,8 @@ pub fn is_valid_uuid(uuid: &str) -> bool {
     true
 }
 
-pub fn is_loopback(address: &str) -> bool {
+#[allow(dead_code)]
+pub(crate) fn is_loopback(address: &str) -> bool {
     if let Ok(ipv4) = address.parse::<Ipv4Addr>() {
         return ipv4.is_loopback();
     }

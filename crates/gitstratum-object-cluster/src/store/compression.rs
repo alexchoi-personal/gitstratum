@@ -5,16 +5,11 @@ use std::io::{Read, Write};
 
 use crate::error::{ObjectStoreError, Result};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompressionType {
     None,
+    #[default]
     Zlib,
-}
-
-impl Default for CompressionType {
-    fn default() -> Self {
-        CompressionType::Zlib
-    }
 }
 
 #[derive(Debug, Clone)]

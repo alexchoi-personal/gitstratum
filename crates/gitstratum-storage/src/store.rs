@@ -443,7 +443,7 @@ impl BucketStoreIterator {
         None
     }
 
-    fn read_entry(&mut self, entry: &CompactEntry) -> Option<(Oid, Bytes)> {
+    fn read_entry(&self, entry: &CompactEntry) -> Option<(Oid, Bytes)> {
         let file_id = entry.file_id;
         let offset = entry.offset();
         let size = entry.size() as usize;

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 
 use gitstratum_core::Oid;
@@ -81,7 +83,7 @@ impl MerkleNode {
             let mut hasher = Sha256::new();
             let mut total_count = 0u64;
             for child in children.iter() {
-                hasher.update(&child.hash);
+                hasher.update(child.hash);
                 total_count += child.object_count;
             }
             let result = hasher.finalize();

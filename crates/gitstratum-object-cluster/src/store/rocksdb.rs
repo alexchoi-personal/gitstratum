@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use gitstratum_core::{Blob, Oid};
@@ -117,9 +119,9 @@ impl RocksDbStore {
                 .fetch_add(compressed.len() as u64, Ordering::Relaxed)
                 + compressed.len() as u64;
             self.db
-                .put(Self::META_BLOB_COUNT_KEY, &new_count.to_le_bytes())?;
+                .put(Self::META_BLOB_COUNT_KEY, new_count.to_le_bytes())?;
             self.db
-                .put(Self::META_TOTAL_BYTES_KEY, &new_bytes.to_le_bytes())?;
+                .put(Self::META_TOTAL_BYTES_KEY, new_bytes.to_le_bytes())?;
         }
 
         Ok(())
@@ -138,9 +140,9 @@ impl RocksDbStore {
                 .fetch_sub(existing.len() as u64, Ordering::Relaxed)
                 - existing.len() as u64;
             self.db
-                .put(Self::META_BLOB_COUNT_KEY, &new_count.to_le_bytes())?;
+                .put(Self::META_BLOB_COUNT_KEY, new_count.to_le_bytes())?;
             self.db
-                .put(Self::META_TOTAL_BYTES_KEY, &new_bytes.to_le_bytes())?;
+                .put(Self::META_TOTAL_BYTES_KEY, new_bytes.to_le_bytes())?;
             Ok(true)
         } else {
             Ok(false)
@@ -249,7 +251,7 @@ impl ObjectStorage for RocksDbStore {
             }
         })
         .await
-        .map_err(|e| ObjectStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+        .map_err(|e| ObjectStoreError::Io(std::io::Error::other(e)))?
     }
 
     async fn put(&self, blob: &Blob) -> Result<()> {
@@ -268,13 +270,13 @@ impl ObjectStorage for RocksDbStore {
                 let new_count = blob_count.fetch_add(1, Ordering::Relaxed) + 1;
                 let new_bytes = total_bytes.fetch_add(compressed.len() as u64, Ordering::Relaxed)
                     + compressed.len() as u64;
-                db.put(RocksDbStore::META_BLOB_COUNT_KEY, &new_count.to_le_bytes())?;
-                db.put(RocksDbStore::META_TOTAL_BYTES_KEY, &new_bytes.to_le_bytes())?;
+                db.put(RocksDbStore::META_BLOB_COUNT_KEY, new_count.to_le_bytes())?;
+                db.put(RocksDbStore::META_TOTAL_BYTES_KEY, new_bytes.to_le_bytes())?;
             }
             Ok(())
         })
         .await
-        .map_err(|e| ObjectStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+        .map_err(|e| ObjectStoreError::Io(std::io::Error::other(e)))?
     }
 
     async fn delete(&self, oid: &Oid) -> Result<bool> {
@@ -289,15 +291,15 @@ impl ObjectStorage for RocksDbStore {
                 let new_count = blob_count.fetch_sub(1, Ordering::Relaxed) - 1;
                 let new_bytes = total_bytes.fetch_sub(existing.len() as u64, Ordering::Relaxed)
                     - existing.len() as u64;
-                db.put(RocksDbStore::META_BLOB_COUNT_KEY, &new_count.to_le_bytes())?;
-                db.put(RocksDbStore::META_TOTAL_BYTES_KEY, &new_bytes.to_le_bytes())?;
+                db.put(RocksDbStore::META_BLOB_COUNT_KEY, new_count.to_le_bytes())?;
+                db.put(RocksDbStore::META_TOTAL_BYTES_KEY, new_bytes.to_le_bytes())?;
                 Ok(true)
             } else {
                 Ok(false)
             }
         })
         .await
-        .map_err(|e| ObjectStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+        .map_err(|e| ObjectStoreError::Io(std::io::Error::other(e)))?
     }
 
     fn has(&self, oid: &Oid) -> bool {
