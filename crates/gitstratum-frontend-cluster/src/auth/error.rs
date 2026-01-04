@@ -28,6 +28,9 @@ pub enum AuthError {
 
     #[error("storage error: {0}")]
     Storage(String),
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 #[cfg(test)]
@@ -70,5 +73,11 @@ mod tests {
     fn test_storage_error_with_message() {
         let err = AuthError::Storage("connection timeout".to_string());
         assert_eq!(err.to_string(), "storage error: connection timeout");
+    }
+
+    #[test]
+    fn test_internal_error() {
+        let err = AuthError::Internal("grpc error".to_string());
+        assert_eq!(err.to_string(), "internal error: grpc error");
     }
 }

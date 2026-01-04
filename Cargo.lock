@@ -1569,6 +1569,7 @@ dependencies = [
  "gitstratum-object-cluster",
  "gitstratum-proto",
  "tokio",
+ "tonic 0.10.2",
  "tracing",
  "tracing-subscriber",
  "uuid",
