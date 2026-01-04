@@ -36,9 +36,9 @@ impl BucketHeader {
 
     pub fn from_bytes(bytes: &[u8; HEADER_SIZE]) -> Self {
         Self {
-            magic: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            count: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
-            crc32: u32::from_le_bytes(bytes[6..10].try_into().unwrap()),
+            magic: u32::from_le_bytes(bytes[0..4].try_into().expect("slice is exactly 4 bytes")),
+            count: u16::from_le_bytes(bytes[4..6].try_into().expect("slice is exactly 2 bytes")),
+            crc32: u32::from_le_bytes(bytes[6..10].try_into().expect("slice is exactly 4 bytes")),
             _reserved: [0u8; 22],
         }
     }
@@ -64,7 +64,11 @@ impl DiskBucket {
     }
 
     pub fn from_bytes(bytes: &[u8; BUCKET_SIZE]) -> Result<Self> {
-        let header = BucketHeader::from_bytes(bytes[0..HEADER_SIZE].try_into().unwrap());
+        let header = BucketHeader::from_bytes(
+            bytes[0..HEADER_SIZE]
+                .try_into()
+                .expect("slice is exactly HEADER_SIZE bytes"),
+        );
 
         if { header.magic } == 0 {
             return Ok(Self::new());
@@ -81,12 +85,19 @@ impl DiskBucket {
         for (i, entry) in entries.iter_mut().enumerate() {
             let start = HEADER_SIZE + i * ENTRY_SIZE;
             let end = start + ENTRY_SIZE;
-            *entry = CompactEntry::from_bytes(bytes[start..end].try_into().unwrap());
+            *entry = CompactEntry::from_bytes(
+                bytes[start..end]
+                    .try_into()
+                    .expect("slice is exactly ENTRY_SIZE bytes"),
+            );
         }
 
         let next_offset = HEADER_SIZE + MAX_ENTRIES * ENTRY_SIZE;
-        let next_overflow =
-            u32::from_le_bytes(bytes[next_offset..next_offset + 4].try_into().unwrap());
+        let next_overflow = u32::from_le_bytes(
+            bytes[next_offset..next_offset + 4]
+                .try_into()
+                .expect("slice is exactly 4 bytes"),
+        );
 
         Ok(Self {
             header,

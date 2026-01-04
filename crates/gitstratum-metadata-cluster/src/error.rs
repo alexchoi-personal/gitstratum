@@ -34,6 +34,9 @@ pub enum MetadataStoreError {
     #[error("deserialization error: {0}")]
     Deserialization(String),
 
+    #[error("bincode error")]
+    Bincode(#[source] bincode::Error),
+
     #[error("storage error: {0}")]
     Storage(String),
 
@@ -61,7 +64,7 @@ impl From<rocksdb::Error> for MetadataStoreError {
 
 impl From<bincode::Error> for MetadataStoreError {
     fn from(err: bincode::Error) -> Self {
-        MetadataStoreError::Serialization(err.to_string())
+        MetadataStoreError::Bincode(err)
     }
 }
 
@@ -95,6 +98,7 @@ impl From<MetadataStoreError> for tonic::Status {
             MetadataStoreError::InvalidRepoId(msg) => tonic::Status::invalid_argument(msg),
             MetadataStoreError::Serialization(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Deserialization(msg) => tonic::Status::internal(msg),
+            MetadataStoreError::Bincode(err) => tonic::Status::internal(err.to_string()),
             MetadataStoreError::Storage(msg) => tonic::Status::internal(msg),
             MetadataStoreError::RocksDb(err) => tonic::Status::internal(err.to_string()),
             MetadataStoreError::Internal(msg) => tonic::Status::internal(msg),
@@ -206,7 +210,7 @@ mod tests {
             .deserialize::<String>(&[0xff, 0xff, 0xff, 0xff])
             .unwrap_err();
         let err: MetadataStoreError = bincode_err.into();
-        assert!(err.to_string().contains("serialization"));
+        assert!(err.to_string().contains("bincode"));
     }
 
     #[test]

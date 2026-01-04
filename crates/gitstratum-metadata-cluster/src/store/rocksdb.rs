@@ -19,8 +19,8 @@ type CacheKey = (Arc<str>, Oid);
 
 pub struct MetadataStore {
     db: Arc<DB>,
-    commit_cache: RwLock<LruCache<CacheKey, Commit>>,
-    tree_cache: RwLock<LruCache<CacheKey, Tree>>,
+    commit_cache: RwLock<LruCache<CacheKey, Arc<Commit>>>,
+    tree_cache: RwLock<LruCache<CacheKey, Arc<Tree>>>,
 }
 
 impl MetadataStore {
@@ -301,13 +301,13 @@ impl MetadataStore {
         Ok(())
     }
 
-    pub fn get_commit(&self, repo_id: &RepoId, oid: &Oid) -> Result<Option<Commit>> {
+    pub fn get_commit(&self, repo_id: &RepoId, oid: &Oid) -> Result<Option<Arc<Commit>>> {
         let cache_key: CacheKey = (Arc::from(repo_id.as_str()), *oid);
 
         {
             let cache = self.commit_cache.read();
             if let Some(commit) = cache.peek(&cache_key) {
-                return Ok(Some(commit.clone()));
+                return Ok(Some(Arc::clone(commit)));
             }
         }
 
@@ -315,9 +315,10 @@ impl MetadataStore {
         match self.db.get_cf(self.cf_commits()?, &key)? {
             Some(v) => {
                 let commit: Commit = bincode::deserialize(&v)?;
+                let commit = Arc::new(commit);
                 {
                     let mut cache = self.commit_cache.write();
-                    cache.put(cache_key, commit.clone());
+                    cache.put(cache_key, Arc::clone(&commit));
                 }
                 Ok(Some(commit))
             }
@@ -332,18 +333,18 @@ impl MetadataStore {
 
         let cache_key: CacheKey = (Arc::from(repo_id.as_str()), commit.oid);
         let mut cache = self.commit_cache.write();
-        cache.put(cache_key, commit.clone());
+        cache.put(cache_key, Arc::new(commit.clone()));
 
         Ok(())
     }
 
-    pub fn get_tree(&self, repo_id: &RepoId, oid: &Oid) -> Result<Option<Tree>> {
+    pub fn get_tree(&self, repo_id: &RepoId, oid: &Oid) -> Result<Option<Arc<Tree>>> {
         let cache_key: CacheKey = (Arc::from(repo_id.as_str()), *oid);
 
         {
             let cache = self.tree_cache.read();
             if let Some(tree) = cache.peek(&cache_key) {
-                return Ok(Some(tree.clone()));
+                return Ok(Some(Arc::clone(tree)));
             }
         }
 
@@ -351,9 +352,10 @@ impl MetadataStore {
         match self.db.get_cf(self.cf_trees()?, &key)? {
             Some(v) => {
                 let tree: Tree = bincode::deserialize(&v)?;
+                let tree = Arc::new(tree);
                 {
                     let mut cache = self.tree_cache.write();
-                    cache.put(cache_key, tree.clone());
+                    cache.put(cache_key, Arc::clone(&tree));
                 }
                 Ok(Some(tree))
             }
@@ -368,7 +370,7 @@ impl MetadataStore {
 
         let cache_key: CacheKey = (Arc::from(repo_id.as_str()), tree.oid);
         let mut cache = self.tree_cache.write();
-        cache.put(cache_key, tree.clone());
+        cache.put(cache_key, Arc::new(tree.clone()));
 
         Ok(())
     }

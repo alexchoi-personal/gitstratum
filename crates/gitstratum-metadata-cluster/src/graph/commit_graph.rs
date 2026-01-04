@@ -48,7 +48,7 @@ impl CommitWalker {
         }
     }
 
-    fn next_commit(&mut self) -> Result<Option<Commit>> {
+    fn next_commit(&mut self) -> Result<Option<Arc<Commit>>> {
         if let Some(limit) = self.limit {
             if self.count >= limit {
                 return Ok(None);
@@ -72,7 +72,7 @@ impl CommitWalker {
 }
 
 impl Stream for CommitWalker {
-    type Item = Result<Commit>;
+    type Item = Result<Arc<Commit>>;
 
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.next_commit() {
@@ -225,7 +225,7 @@ pub async fn walk_commits_async(
     from: Vec<Oid>,
     until: Vec<Oid>,
     limit: Option<usize>,
-) -> Result<Vec<Commit>> {
+) -> Result<Vec<Arc<Commit>>> {
     let walker = CommitWalker::new(store, repo_id, from, until, limit);
     let mut commits = Vec::new();
 

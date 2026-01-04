@@ -35,11 +35,15 @@ impl AuthStore {
     }
 
     fn cf_auth(&self) -> &ColumnFamily {
-        self.db.cf_handle("auth").unwrap()
+        self.db
+            .cf_handle("auth")
+            .expect("auth column family validated in constructor")
     }
 
     fn cf_acl(&self) -> &ColumnFamily {
-        self.db.cf_handle("acl").unwrap()
+        self.db
+            .cf_handle("acl")
+            .expect("acl column family validated in constructor")
     }
 
     pub fn create_user(&self, user_id: &str, data: &[u8]) -> Result<(), rocksdb::Error> {

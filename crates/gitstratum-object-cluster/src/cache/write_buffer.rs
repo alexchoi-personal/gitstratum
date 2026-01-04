@@ -60,13 +60,11 @@ impl WriteBuffer {
     pub fn add(&self, blob: Blob) {
         let size = blob.data.len();
         let oid = blob.oid;
-
-        self.evict_old_entries();
-        self.evict_if_needed(size);
+        let now = Instant::now();
 
         let entry = BufferEntry {
             blob: Arc::new(blob),
-            timestamp: Instant::now(),
+            timestamp: now,
         };
 
         let mut inner = self.inner.write();
@@ -74,6 +72,9 @@ impl WriteBuffer {
         if inner.blobs.contains_key(&oid) {
             return;
         }
+
+        self.evict_old_entries_locked(&mut inner, now);
+        self.evict_if_needed_locked(&mut inner, size);
 
         inner.order.push_back(oid);
         inner.blobs.insert(oid, entry);
@@ -90,10 +91,7 @@ impl WriteBuffer {
         inner.blobs.contains_key(oid)
     }
 
-    fn evict_old_entries(&self) {
-        let now = Instant::now();
-        let mut inner = self.inner.write();
-
+    fn evict_old_entries_locked(&self, inner: &mut BufferInner, now: Instant) {
         while let Some(&front_oid) = inner.order.front() {
             if let Some(entry) = inner.blobs.get(&front_oid) {
                 if now.duration_since(entry.timestamp) > self.config.max_age {
@@ -111,9 +109,8 @@ impl WriteBuffer {
         }
     }
 
-    fn evict_if_needed(&self, incoming_size: usize) {
+    fn evict_if_needed_locked(&self, inner: &mut BufferInner, incoming_size: usize) {
         let current = self.current_size.load(Ordering::Relaxed) as usize;
-        let mut inner = self.inner.write();
 
         while (current + incoming_size > self.config.max_size_bytes)
             || inner.blobs.len() >= self.config.max_entries

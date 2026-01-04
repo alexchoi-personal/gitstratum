@@ -205,28 +205,24 @@ impl PackCache {
 
     fn evict_lru(&self, bytes_to_free: u64) {
         let mut cache = self.cache.write();
-        let mut entries: Vec<(PackCacheKey, Instant, u64)> = cache
-            .iter()
-            .map(|(k, v)| (k.clone(), v.last_accessed, v.pack.data.len() as u64))
-            .collect();
-
-        entries.sort_by_key(|(_, accessed, _)| *accessed);
-
         let mut freed = 0u64;
-        let mut keys_to_remove = Vec::new();
-
-        for (key, _, size) in entries {
-            if freed >= bytes_to_free {
-                break;
-            }
-            keys_to_remove.push(key);
-            freed += size;
-        }
-
         let mut current = self.current_size_bytes.write();
-        for key in keys_to_remove {
-            if let Some(entry) = cache.remove(&key) {
-                *current -= entry.pack.data.len() as u64;
+
+        while freed < bytes_to_free {
+            let oldest_key = cache
+                .iter()
+                .min_by_key(|(_, v)| v.last_accessed)
+                .map(|(k, _)| k.clone());
+
+            match oldest_key {
+                Some(key) => {
+                    if let Some(entry) = cache.remove(&key) {
+                        let size = entry.pack.data.len() as u64;
+                        *current -= size;
+                        freed += size;
+                    }
+                }
+                None => break,
             }
         }
     }

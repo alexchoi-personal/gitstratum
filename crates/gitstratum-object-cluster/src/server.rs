@@ -8,6 +8,7 @@ use gitstratum_proto::{
 };
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -19,6 +20,7 @@ use crate::store::ObjectStore;
 
 const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024;
 const MAX_CUMULATIVE_BLOB_SIZE: usize = 500 * 1024 * 1024;
+const STREAMING_TASK_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct ObjectServiceImpl {
     store: Arc<ObjectStore>,
@@ -110,27 +112,39 @@ impl ObjectService for ObjectServiceImpl {
         let (tx, rx) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            for proto_oid in req.oids {
-                let oid = match Self::proto_oid_to_core(&proto_oid) {
-                    Ok(oid) => oid,
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
-                        continue;
-                    }
-                };
+            let task = async {
+                for proto_oid in req.oids {
+                    let oid = match Self::proto_oid_to_core(&proto_oid) {
+                        Ok(oid) => oid,
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            continue;
+                        }
+                    };
 
-                match store.get(&oid).await {
-                    Ok(Some(blob)) => {
-                        let proto_blob = Self::core_blob_to_proto(&blob, false);
-                        if tx.send(Ok(proto_blob)).await.is_err() {
-                            break;
+                    match store.get(&oid).await {
+                        Ok(Some(blob)) => {
+                            let proto_blob = Self::core_blob_to_proto(&blob, false);
+                            if tx.send(Ok(proto_blob)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            warn!(%oid, error = %e, "failed to get blob");
                         }
                     }
-                    Ok(None) => {}
-                    Err(e) => {
-                        warn!(%oid, error = %e, "failed to get blob");
-                    }
                 }
+            };
+
+            if tokio::time::timeout(STREAMING_TASK_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                warn!(
+                    "get_blobs streaming task timed out after {:?}",
+                    STREAMING_TASK_TIMEOUT
+                );
             }
         });
 
@@ -276,10 +290,29 @@ impl ObjectService for ObjectServiceImpl {
         let (tx, rx) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            #[cfg(feature = "bucketstore")]
-            {
-                if let Ok(mut stream) = store.iter_range(from_position, to_position) {
-                    while let Some(result) = std::pin::Pin::new(&mut stream).next().await {
+            let task = async {
+                #[cfg(feature = "bucketstore")]
+                {
+                    if let Ok(mut stream) = store.iter_range(from_position, to_position) {
+                        while let Some(result) = std::pin::Pin::new(&mut stream).next().await {
+                            match result {
+                                Ok((_, blob)) => {
+                                    let proto_blob = Self::core_blob_to_proto(&blob, false);
+                                    if tx.send(Ok(proto_blob)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                #[cfg(not(feature = "bucketstore"))]
+                if let Ok(iter) = store.iter_range(from_position, to_position) {
+                    for result in iter {
                         match result {
                             Ok((_, blob)) => {
                                 let proto_blob = Self::core_blob_to_proto(&blob, false);
@@ -293,23 +326,16 @@ impl ObjectService for ObjectServiceImpl {
                         }
                     }
                 }
-            }
+            };
 
-            #[cfg(not(feature = "bucketstore"))]
-            if let Ok(iter) = store.iter_range(from_position, to_position) {
-                for result in iter {
-                    match result {
-                        Ok((_, blob)) => {
-                            let proto_blob = Self::core_blob_to_proto(&blob, false);
-                            if tx.send(Ok(proto_blob)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                        }
-                    }
-                }
+            if tokio::time::timeout(STREAMING_TASK_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                warn!(
+                    "stream_blobs task timed out after {:?}",
+                    STREAMING_TASK_TIMEOUT
+                );
             }
         });
 
