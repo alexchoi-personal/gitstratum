@@ -20,6 +20,7 @@ pub enum DeltaInstruction {
 const HASH_WINDOW: usize = 16;
 const HASH_PRIME: u64 = 31;
 const HASH_MOD: u64 = 1_000_000_007;
+const MAX_COLLISION_LIST_SIZE: usize = 64;
 
 pub struct DeltaComputer {
     max_delta_size: usize,
@@ -125,7 +126,10 @@ impl DeltaComputer {
 
         for i in 0..=data.len() - window {
             let hash = Self::compute_hash(&data[i..i + window]);
-            index.entry(hash % HASH_MOD).or_default().push(i);
+            let bucket = index.entry(hash % HASH_MOD).or_default();
+            if bucket.len() < MAX_COLLISION_LIST_SIZE {
+                bucket.push(i);
+            }
         }
 
         index

@@ -87,10 +87,12 @@ impl ConsistentHashRing {
             let mut ring = self.ring.write();
             for i in 0..self.virtual_nodes_per_physical {
                 let position = Self::hash_position(&node_id, i);
-                let vnode = VirtualNode {
-                    node_id: node_id.clone(),
-                };
-                ring.insert(position, vnode);
+                ring.insert(
+                    position,
+                    VirtualNode {
+                        node_id: node_id.clone(),
+                    },
+                );
             }
         }
 

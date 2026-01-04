@@ -50,8 +50,8 @@ pub enum FrontendError {
     #[error("control plane error: {0}")]
     ControlPlane(String),
 
-    #[error("hash ring error: {0}")]
-    HashRing(String),
+    #[error("hash ring error")]
+    HashRing(#[source] gitstratum_hashring::HashRingError),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -80,7 +80,7 @@ pub enum FrontendError {
 
 impl From<gitstratum_hashring::HashRingError> for FrontendError {
     fn from(e: gitstratum_hashring::HashRingError) -> Self {
-        FrontendError::HashRing(e.to_string())
+        FrontendError::HashRing(e)
     }
 }
 
@@ -162,8 +162,8 @@ mod tests {
 
     #[test]
     fn test_hash_ring_display() {
-        let err = FrontendError::HashRing("no nodes".to_string());
-        assert!(err.to_string().contains("no nodes"));
+        let err = FrontendError::HashRing(gitstratum_hashring::HashRingError::EmptyRing);
+        assert!(err.to_string().contains("hash ring"));
     }
 
     #[test]

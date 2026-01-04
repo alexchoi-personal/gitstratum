@@ -122,18 +122,29 @@ impl Prefetcher {
     }
 
     pub fn next_batch(&self) -> Vec<Oid> {
-        let mut pending = self.pending.write();
-        let mut in_flight = self.in_flight.write();
-        let mut batch = Vec::new();
-
-        while batch.len() < self.config.batch_size {
-            if let Some(oid) = pending.pop_front() {
-                if !in_flight.contains(&oid) {
-                    in_flight.insert(oid);
-                    batch.push(oid);
+        let candidates = {
+            let mut pending = self.pending.write();
+            let mut candidates = Vec::with_capacity(self.config.batch_size);
+            while candidates.len() < self.config.batch_size {
+                if let Some(oid) = pending.pop_front() {
+                    candidates.push(oid);
+                } else {
+                    break;
                 }
-            } else {
-                break;
+            }
+            candidates
+        };
+
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let mut in_flight = self.in_flight.write();
+        let mut batch = Vec::with_capacity(candidates.len());
+        for oid in candidates {
+            if !in_flight.contains(&oid) {
+                in_flight.insert(oid);
+                batch.push(oid);
             }
         }
 

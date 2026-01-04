@@ -60,7 +60,9 @@ where
             let best_node = replicas
                 .iter()
                 .min_by_key(|n| node_load.get(&n.id).unwrap_or(&0))
-                .ok_or_else(|| FrontendError::HashRing("no replicas found".to_string()))?;
+                .ok_or(FrontendError::HashRing(
+                    gitstratum_hashring::HashRingError::EmptyRing,
+                ))?;
 
             let node_id = best_node.id.clone();
             *node_load.entry(node_id.clone()).or_insert(0) += 1;

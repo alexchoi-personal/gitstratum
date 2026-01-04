@@ -81,9 +81,9 @@ impl WriteBuffer {
         self.current_size.fetch_add(size as u64, Ordering::Relaxed);
     }
 
-    pub fn get(&self, oid: &Oid) -> Option<Blob> {
+    pub fn get(&self, oid: &Oid) -> Option<Arc<Blob>> {
         let inner = self.inner.read();
-        inner.blobs.get(oid).map(|e| (*e.blob).clone())
+        inner.blobs.get(oid).map(|e| Arc::clone(&e.blob))
     }
 
     pub fn contains(&self, oid: &Oid) -> bool {
@@ -110,9 +110,8 @@ impl WriteBuffer {
     }
 
     fn evict_if_needed_locked(&self, inner: &mut BufferInner, incoming_size: usize) {
-        let current = self.current_size.load(Ordering::Relaxed) as usize;
-
-        while (current + incoming_size > self.config.max_size_bytes)
+        while (self.current_size.load(Ordering::Relaxed) as usize + incoming_size
+            > self.config.max_size_bytes)
             || inner.blobs.len() >= self.config.max_entries
         {
             if let Some(front_oid) = inner.order.pop_front() {
@@ -126,19 +125,15 @@ impl WriteBuffer {
         }
     }
 
-    pub fn drain(&self) -> Vec<Blob> {
+    pub fn drain(&self) -> Vec<Arc<Blob>> {
         let mut inner = self.inner.write();
-        let blobs: Vec<Blob> = inner
-            .blobs
-            .drain()
-            .map(|(_, e)| (*e.blob).clone())
-            .collect();
+        let blobs: Vec<Arc<Blob>> = inner.blobs.drain().map(|(_, e)| e.blob).collect();
         inner.order.clear();
         self.current_size.store(0, Ordering::Relaxed);
         blobs
     }
 
-    pub fn drain_older_than(&self, age: Duration) -> Vec<Blob> {
+    pub fn drain_older_than(&self, age: Duration) -> Vec<Arc<Blob>> {
         let now = Instant::now();
         let mut inner = self.inner.write();
         let mut drained = Vec::new();
@@ -150,7 +145,7 @@ impl WriteBuffer {
                     if let Some(removed) = inner.blobs.remove(&front_oid) {
                         self.current_size
                             .fetch_sub(removed.blob.data.len() as u64, Ordering::Relaxed);
-                        drained.push((*removed.blob).clone());
+                        drained.push(removed.blob);
                     }
                 } else {
                     break;
@@ -221,7 +216,7 @@ mod tests {
         buffer.add(blob.clone());
         let retrieved = buffer.get(&blob.oid);
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().data.as_ref(), b"hello world");
+        assert_eq!(retrieved.as_ref().unwrap().data.as_ref(), b"hello world");
     }
 
     #[test]
