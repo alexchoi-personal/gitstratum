@@ -397,7 +397,11 @@ impl BucketStore {
 }
 
 fn compute_position(oid: &Oid) -> u64 {
-    u64::from_le_bytes(oid.as_bytes()[..8].try_into().unwrap())
+    u64::from_le_bytes(
+        oid.as_bytes()[..8]
+            .try_into()
+            .expect("Oid is always 32 bytes, first 8 bytes always valid"),
+    )
 }
 
 pub struct BucketStoreIterator {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use lru::LruCache;
 use parking_lot::RwLock;
-use rocksdb::{ColumnFamily, Options, DB};
+use rocksdb::{ColumnFamily, Options, WriteBatch, DB};
 
 use gitstratum_core::{Commit, Oid, RefName, RepoId, Tree};
 
@@ -123,61 +123,40 @@ impl MetadataStore {
         let prefix = format!("{}/", repo_id.as_str());
         let prefix_bytes = prefix.as_bytes();
 
+        let mut batch = WriteBatch::default();
+
         let cf_refs = self.cf_refs()?;
-        let refs_to_delete: Vec<_> = self
+        for (k, _) in self
             .db
             .prefix_iterator_cf(cf_refs, prefix_bytes)
-            .take_while(|item| {
-                if let Ok((k, _)) = item {
-                    k.starts_with(prefix_bytes)
-                } else {
-                    false
-                }
-            })
-            .filter_map(|item| item.ok().map(|(k, _)| k.to_vec()))
-            .collect();
-
-        for k in refs_to_delete {
-            self.db.delete_cf(cf_refs, &k)?;
+            .flatten()
+            .take_while(|(k, _)| k.starts_with(prefix_bytes))
+        {
+            batch.delete_cf(cf_refs, &k);
         }
 
         let cf_commits = self.cf_commits()?;
-        let commits_to_delete: Vec<_> = self
+        for (k, _) in self
             .db
             .prefix_iterator_cf(cf_commits, prefix_bytes)
-            .take_while(|item| {
-                if let Ok((k, _)) = item {
-                    k.starts_with(prefix_bytes)
-                } else {
-                    false
-                }
-            })
-            .filter_map(|item| item.ok().map(|(k, _)| k.to_vec()))
-            .collect();
-
-        for k in commits_to_delete {
-            self.db.delete_cf(cf_commits, &k)?;
+            .flatten()
+            .take_while(|(k, _)| k.starts_with(prefix_bytes))
+        {
+            batch.delete_cf(cf_commits, &k);
         }
 
         let cf_trees = self.cf_trees()?;
-        let trees_to_delete: Vec<_> = self
+        for (k, _) in self
             .db
             .prefix_iterator_cf(cf_trees, prefix_bytes)
-            .take_while(|item| {
-                if let Ok((k, _)) = item {
-                    k.starts_with(prefix_bytes)
-                } else {
-                    false
-                }
-            })
-            .filter_map(|item| item.ok().map(|(k, _)| k.to_vec()))
-            .collect();
-
-        for k in trees_to_delete {
-            self.db.delete_cf(cf_trees, &k)?;
+            .flatten()
+            .take_while(|(k, _)| k.starts_with(prefix_bytes))
+        {
+            batch.delete_cf(cf_trees, &k);
         }
 
-        self.db.delete_cf(self.cf_repos()?, &key)?;
+        batch.delete_cf(self.cf_repos()?, &key);
+        self.db.write(batch)?;
         Ok(())
     }
 

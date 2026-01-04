@@ -8,19 +8,23 @@ use parking_lot::RwLock;
 
 use gitstratum_core::{Oid, RepoId};
 
+type AncestryKey = (RepoId, Oid, Oid);
+type ReachableKey = (RepoId, Oid);
+type MergeBaseKey = (RepoId, Vec<Oid>);
+
 pub struct GraphCache {
-    ancestry_cache: RwLock<LruCache<(RepoId, Oid, Oid), bool>>,
-    reachable_cache: RwLock<LruCache<(RepoId, Oid), Arc<HashSet<Oid>>>>,
-    merge_base_cache: RwLock<LruCache<(RepoId, Vec<Oid>), Option<Oid>>>,
+    ancestry_cache: RwLock<LruCache<AncestryKey, (bool, Instant)>>,
+    reachable_cache: RwLock<LruCache<ReachableKey, (Arc<HashSet<Oid>>, Instant)>>,
+    merge_base_cache: RwLock<LruCache<MergeBaseKey, (Option<Oid>, Instant)>>,
     entry_ttl: Duration,
-    timestamps: RwLock<HashMap<CacheKey, Instant>>,
+    repo_index: RwLock<HashMap<RepoId, Vec<CacheKeyRef>>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum CacheKey {
-    Ancestry(RepoId, Oid, Oid),
-    Reachable(RepoId, Oid),
-    MergeBase(RepoId, Vec<Oid>),
+#[derive(Clone, Debug)]
+enum CacheKeyRef {
+    Ancestry(Oid, Oid),
+    Reachable(Oid),
+    MergeBase(Vec<Oid>),
 }
 
 impl GraphCache {
@@ -31,33 +35,19 @@ impl GraphCache {
             reachable_cache: RwLock::new(LruCache::new(cap)),
             merge_base_cache: RwLock::new(LruCache::new(cap)),
             entry_ttl: ttl,
-            timestamps: RwLock::new(HashMap::new()),
+            repo_index: RwLock::new(HashMap::new()),
         }
-    }
-
-    fn is_expired(&self, key: &CacheKey) -> bool {
-        let timestamps = self.timestamps.read();
-        if let Some(ts) = timestamps.get(key) {
-            ts.elapsed() > self.entry_ttl
-        } else {
-            true
-        }
-    }
-
-    fn record_timestamp(&self, key: CacheKey) {
-        let mut timestamps = self.timestamps.write();
-        timestamps.insert(key, Instant::now());
     }
 
     pub fn get_ancestry(&self, repo_id: &RepoId, ancestor: &Oid, descendant: &Oid) -> Option<bool> {
-        let cache_key = CacheKey::Ancestry(repo_id.clone(), *ancestor, *descendant);
-        if self.is_expired(&cache_key) {
-            return None;
-        }
-
         let key = (repo_id.clone(), *ancestor, *descendant);
-        let mut cache = self.ancestry_cache.write();
-        cache.get(&key).copied()
+        let cache = self.ancestry_cache.read();
+        if let Some((value, timestamp)) = cache.peek(&key) {
+            if timestamp.elapsed() <= self.entry_ttl {
+                return Some(*value);
+            }
+        }
+        None
     }
 
     pub fn put_ancestry(
@@ -68,97 +58,88 @@ impl GraphCache {
         is_ancestor: bool,
     ) {
         let key = (repo_id.clone(), *ancestor, *descendant);
-        let cache_key = CacheKey::Ancestry(repo_id.clone(), *ancestor, *descendant);
-
         let mut cache = self.ancestry_cache.write();
-        cache.put(key, is_ancestor);
-        self.record_timestamp(cache_key);
+        cache.put(key, (is_ancestor, Instant::now()));
+
+        let mut index = self.repo_index.write();
+        index
+            .entry(repo_id.clone())
+            .or_default()
+            .push(CacheKeyRef::Ancestry(*ancestor, *descendant));
     }
 
     pub fn get_reachable(&self, repo_id: &RepoId, from: &Oid) -> Option<Arc<HashSet<Oid>>> {
-        let cache_key = CacheKey::Reachable(repo_id.clone(), *from);
-        if self.is_expired(&cache_key) {
-            return None;
-        }
-
         let key = (repo_id.clone(), *from);
-        let mut cache = self.reachable_cache.write();
-        cache.get(&key).cloned()
+        let cache = self.reachable_cache.read();
+        if let Some((value, timestamp)) = cache.peek(&key) {
+            if timestamp.elapsed() <= self.entry_ttl {
+                return Some(Arc::clone(value));
+            }
+        }
+        None
     }
 
     pub fn put_reachable(&self, repo_id: &RepoId, from: &Oid, reachable: HashSet<Oid>) {
         let key = (repo_id.clone(), *from);
-        let cache_key = CacheKey::Reachable(repo_id.clone(), *from);
-
         let mut cache = self.reachable_cache.write();
-        cache.put(key, Arc::new(reachable));
-        self.record_timestamp(cache_key);
+        cache.put(key, (Arc::new(reachable), Instant::now()));
+
+        let mut index = self.repo_index.write();
+        index
+            .entry(repo_id.clone())
+            .or_default()
+            .push(CacheKeyRef::Reachable(*from));
     }
 
     pub fn get_merge_base(&self, repo_id: &RepoId, commits: &[Oid]) -> Option<Option<Oid>> {
-        let cache_key = CacheKey::MergeBase(repo_id.clone(), commits.to_vec());
-        if self.is_expired(&cache_key) {
-            return None;
-        }
-
         let key = (repo_id.clone(), commits.to_vec());
-        let mut cache = self.merge_base_cache.write();
-        cache.get(&key).copied()
+        let cache = self.merge_base_cache.read();
+        if let Some((value, timestamp)) = cache.peek(&key) {
+            if timestamp.elapsed() <= self.entry_ttl {
+                return Some(*value);
+            }
+        }
+        None
     }
 
     pub fn put_merge_base(&self, repo_id: &RepoId, commits: &[Oid], merge_base: Option<Oid>) {
         let key = (repo_id.clone(), commits.to_vec());
-        let cache_key = CacheKey::MergeBase(repo_id.clone(), commits.to_vec());
-
         let mut cache = self.merge_base_cache.write();
-        cache.put(key, merge_base);
-        self.record_timestamp(cache_key);
+        cache.put(key, (merge_base, Instant::now()));
+
+        let mut index = self.repo_index.write();
+        index
+            .entry(repo_id.clone())
+            .or_default()
+            .push(CacheKeyRef::MergeBase(commits.to_vec()));
     }
 
     pub fn invalidate_repo(&self, repo_id: &RepoId) {
-        {
-            let mut cache = self.ancestry_cache.write();
-            let keys_to_remove: Vec<_> = cache
-                .iter()
-                .filter(|((r, _, _), _)| r == repo_id)
-                .map(|(k, _)| k.clone())
-                .collect();
-            for key in keys_to_remove {
-                cache.pop(&key);
-            }
+        let keys = {
+            let mut index = self.repo_index.write();
+            index.remove(repo_id).unwrap_or_default()
+        };
+
+        if keys.is_empty() {
+            return;
         }
 
-        {
-            let mut cache = self.reachable_cache.write();
-            let keys_to_remove: Vec<_> = cache
-                .iter()
-                .filter(|((r, _), _)| r == repo_id)
-                .map(|(k, _)| k.clone())
-                .collect();
-            for key in keys_to_remove {
-                cache.pop(&key);
-            }
-        }
+        let mut ancestry = self.ancestry_cache.write();
+        let mut reachable = self.reachable_cache.write();
+        let mut merge_base = self.merge_base_cache.write();
 
-        {
-            let mut cache = self.merge_base_cache.write();
-            let keys_to_remove: Vec<_> = cache
-                .iter()
-                .filter(|((r, _), _)| r == repo_id)
-                .map(|(k, _)| k.clone())
-                .collect();
-            for key in keys_to_remove {
-                cache.pop(&key);
+        for key_ref in keys {
+            match key_ref {
+                CacheKeyRef::Ancestry(ancestor, descendant) => {
+                    ancestry.pop(&(repo_id.clone(), ancestor, descendant));
+                }
+                CacheKeyRef::Reachable(from) => {
+                    reachable.pop(&(repo_id.clone(), from));
+                }
+                CacheKeyRef::MergeBase(commits) => {
+                    merge_base.pop(&(repo_id.clone(), commits));
+                }
             }
-        }
-
-        {
-            let mut timestamps = self.timestamps.write();
-            timestamps.retain(|k, _| match k {
-                CacheKey::Ancestry(r, _, _) => r != repo_id,
-                CacheKey::Reachable(r, _) => r != repo_id,
-                CacheKey::MergeBase(r, _) => r != repo_id,
-            });
         }
     }
 
@@ -166,7 +147,7 @@ impl GraphCache {
         self.ancestry_cache.write().clear();
         self.reachable_cache.write().clear();
         self.merge_base_cache.write().clear();
-        self.timestamps.write().clear();
+        self.repo_index.write().clear();
     }
 }
 
@@ -338,31 +319,6 @@ mod tests {
 
         cache.put_merge_base(&repo_id, &commits, None);
         assert_eq!(cache.get_merge_base(&repo_id, &commits), Some(None));
-    }
-
-    #[test]
-    fn test_cache_key_clone_eq_hash() {
-        let repo_id = RepoId::new("test/repo").unwrap();
-        let oid1 = Oid::hash(b"oid1");
-        let oid2 = Oid::hash(b"oid2");
-
-        let key1 = CacheKey::Ancestry(repo_id.clone(), oid1, oid2);
-        let key2 = key1.clone();
-        assert_eq!(key1, key2);
-
-        let key3 = CacheKey::Reachable(repo_id.clone(), oid1);
-        let key4 = key3.clone();
-        assert_eq!(key3, key4);
-
-        let key5 = CacheKey::MergeBase(repo_id, vec![oid1, oid2]);
-        let key6 = key5.clone();
-        assert_eq!(key5, key6);
-
-        let mut set = std::collections::HashSet::new();
-        set.insert(key1);
-        set.insert(key3);
-        set.insert(key5);
-        assert_eq!(set.len(), 3);
     }
 
     #[test]
