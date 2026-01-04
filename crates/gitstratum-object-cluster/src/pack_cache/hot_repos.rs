@@ -50,10 +50,14 @@ impl HotRepoTracker {
     pub fn record_access(&self, repo_id: &str) {
         self.maybe_reset_window();
 
-        self.access_counts
-            .entry(repo_id.to_string())
-            .or_insert_with(|| AtomicU64::new(0))
-            .fetch_add(1, Ordering::Relaxed);
+        if let Some(counter) = self.access_counts.get(repo_id) {
+            counter.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.access_counts
+                .entry(repo_id.to_string())
+                .or_insert_with(|| AtomicU64::new(0))
+                .fetch_add(1, Ordering::Relaxed);
+        }
 
         debug!(repo_id = %repo_id, "recorded repo access");
     }

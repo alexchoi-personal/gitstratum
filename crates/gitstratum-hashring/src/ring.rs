@@ -206,30 +206,22 @@ impl ConsistentHashRing {
     }
 
     fn nodes_at_position(&self, position: u64) -> Result<Vec<NodeInfo>> {
-        let candidate_node_ids: Vec<NodeId> = {
-            let ring = self.ring.read();
-            if ring.is_empty() {
-                return Err(HashRingError::EmptyRing);
-            }
-
-            let mut seen = std::collections::HashSet::new();
-            ring.range(position..)
-                .chain(ring.iter())
-                .filter_map(|(_, vnode)| {
-                    if seen.insert(vnode.node_id.clone()) {
-                        Some(vnode.node_id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
+        let ring = self.ring.read();
         let nodes = self.nodes.read();
+
+        if ring.is_empty() {
+            return Err(HashRingError::EmptyRing);
+        }
+
+        let mut seen = std::collections::HashSet::new();
         let mut result = Vec::with_capacity(self.replication_factor);
 
-        for node_id in candidate_node_ids {
-            let Some(node) = nodes.get(&node_id) else {
+        for (_, vnode) in ring.range(position..).chain(ring.iter()) {
+            if !seen.insert(&vnode.node_id) {
+                continue;
+            }
+
+            let Some(node) = nodes.get(&vnode.node_id) else {
                 continue;
             };
 

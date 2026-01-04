@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{info, warn};
 
 use gitstratum_proto::coordinator_service_server::CoordinatorService;
 use gitstratum_proto::{
@@ -238,7 +238,15 @@ impl CoordinatorServer {
         if let Some(store) = self.raft.mem_store() {
             let data = store.data().await;
             if let Some(value) = data.get(topology_key()) {
-                return deserialize_topology(value).unwrap_or_default();
+                match deserialize_topology(value) {
+                    Ok(topology) => return topology,
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "failed to deserialize topology from raft store, using default"
+                        );
+                    }
+                }
             }
         }
         ClusterTopology::default()
