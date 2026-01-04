@@ -89,11 +89,8 @@ impl NodeState {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct VirtualNode {
-    position: u64,
     node_id: NodeId,
-    virtual_index: u32,
 }
 
 #[derive(Debug)]
@@ -133,7 +130,11 @@ impl ConsistentHashRing {
         hasher.update(node_id.as_str().as_bytes());
         hasher.update(virtual_index.to_le_bytes());
         let result = hasher.finalize();
-        u64::from_le_bytes(result[..8].try_into().unwrap())
+        u64::from_le_bytes(
+            result[..8]
+                .try_into()
+                .expect("SHA256 always produces 32 bytes"),
+        )
     }
 
     /// Compute position for arbitrary keys by hashing them.
@@ -142,13 +143,21 @@ impl ConsistentHashRing {
         let mut hasher = Sha256::new();
         hasher.update(key);
         let result = hasher.finalize();
-        u64::from_le_bytes(result[..8].try_into().unwrap())
+        u64::from_le_bytes(
+            result[..8]
+                .try_into()
+                .expect("SHA256 always produces 32 bytes"),
+        )
     }
 
     /// Compute position for OIDs directly from their bytes.
     /// OIDs are already SHA-256 hashes, so no additional hashing needed.
     fn oid_position(oid: &Oid) -> u64 {
-        u64::from_le_bytes(oid.as_bytes()[..8].try_into().unwrap())
+        u64::from_le_bytes(
+            oid.as_bytes()[..8]
+                .try_into()
+                .expect("OID is always 32 bytes"),
+        )
     }
 
     pub fn add_node(&self, node: NodeInfo) -> Result<()> {
@@ -164,9 +173,7 @@ impl ConsistentHashRing {
             for i in 0..self.virtual_nodes_per_physical {
                 let position = Self::hash_position(&node_id, i);
                 let vnode = VirtualNode {
-                    position,
                     node_id: node_id.clone(),
-                    virtual_index: i,
                 };
                 ring.insert(position, vnode);
             }

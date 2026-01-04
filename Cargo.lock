@@ -1735,6 +1735,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "flate2",
+ "futures",
  "gitstratum-core",
  "gitstratum-hashring",
  "gitstratum-proto",

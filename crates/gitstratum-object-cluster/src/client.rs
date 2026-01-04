@@ -1,3 +1,4 @@
+use futures::future::join_all;
 use gitstratum_core::{Blob as CoreBlob, Oid};
 use gitstratum_hashring::{ConsistentHashRing, NodeId, NodeInfo};
 use gitstratum_proto::object_service_client::ObjectServiceClient;
@@ -136,18 +137,28 @@ impl ObjectClusterClient {
             return Err(ObjectStoreError::NoAvailableNodes);
         }
 
-        let mut success_count = 0;
+        let futures: Vec<_> = nodes
+            .iter()
+            .map(|node| {
+                debug!(node_id = %node.id, "putting to node");
+                self.put_to_node(node, blob)
+            })
+            .collect();
 
-        for node in &nodes {
-            debug!(node_id = %node.id, "putting to node");
+        let results = join_all(futures).await;
 
-            match self.put_to_node(node, blob).await {
-                Ok(()) => success_count += 1,
-                Err(e) => {
-                    warn!(node_id = %node.id, error = %e, "failed to put to node");
+        let success_count = results
+            .into_iter()
+            .enumerate()
+            .filter(|(i, result)| {
+                if let Err(e) = result {
+                    warn!(node_id = %nodes[*i].id, error = %e, "failed to put to node");
+                    false
+                } else {
+                    true
                 }
-            }
-        }
+            })
+            .count();
 
         let replication_factor = self.ring.replication_factor();
         let quorum = (replication_factor / 2) + 1;

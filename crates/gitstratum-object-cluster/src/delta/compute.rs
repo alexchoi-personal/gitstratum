@@ -115,11 +115,12 @@ impl DeltaComputer {
     }
 
     fn build_hash_index(&self, data: &[u8], window: usize) -> HashMap<u64, Vec<usize>> {
-        let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
-
         if data.len() < window {
-            return index;
+            return HashMap::new();
         }
+
+        let estimated_entries = (data.len() - window + 1).min(HASH_MOD as usize);
+        let mut index: HashMap<u64, Vec<usize>> = HashMap::with_capacity(estimated_entries);
 
         for i in 0..=data.len() - window {
             let hash = Self::compute_hash(&data[i..i + window]);
