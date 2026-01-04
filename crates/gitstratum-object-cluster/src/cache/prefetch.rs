@@ -18,9 +18,68 @@ impl Default for PrefetcherConfig {
     }
 }
 
+struct PendingQueue {
+    queue: VecDeque<Oid>,
+    set: HashSet<Oid>,
+}
+
+impl PendingQueue {
+    fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            set: HashSet::new(),
+        }
+    }
+
+    fn contains(&self, oid: &Oid) -> bool {
+        self.set.contains(oid)
+    }
+
+    fn push_back(&mut self, oid: Oid) {
+        if self.set.insert(oid) {
+            self.queue.push_back(oid);
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<Oid> {
+        if let Some(oid) = self.queue.pop_front() {
+            self.set.remove(&oid);
+            Some(oid)
+        } else {
+            None
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.queue.clear();
+        self.set.clear();
+    }
+
+    fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&Oid) -> bool,
+    {
+        self.queue.retain(|oid| {
+            let keep = f(oid);
+            if !keep {
+                self.set.remove(oid);
+            }
+            keep
+        });
+    }
+}
+
 pub struct Prefetcher {
     config: PrefetcherConfig,
-    pending: RwLock<VecDeque<Oid>>,
+    pending: RwLock<PendingQueue>,
     in_flight: RwLock<HashSet<Oid>>,
     completed: AtomicU64,
     failed: AtomicU64,
@@ -30,7 +89,7 @@ impl Prefetcher {
     pub fn new(config: PrefetcherConfig) -> Self {
         Self {
             config,
-            pending: RwLock::new(VecDeque::new()),
+            pending: RwLock::new(PendingQueue::new()),
             in_flight: RwLock::new(HashSet::new()),
             completed: AtomicU64::new(0),
             failed: AtomicU64::new(0),
@@ -45,13 +104,15 @@ impl Prefetcher {
         drop(in_flight);
 
         let mut pending = self.pending.write();
+        if pending.contains(&oid) {
+            return;
+        }
+
         if pending.len() >= self.config.max_pending {
             pending.pop_front();
         }
 
-        if !pending.contains(&oid) {
-            pending.push_back(oid);
-        }
+        pending.push_back(oid);
     }
 
     pub fn schedule_batch(&self, oids: Vec<Oid>) {

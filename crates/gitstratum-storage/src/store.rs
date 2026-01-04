@@ -133,7 +133,7 @@ impl BucketStore {
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_micros() as u64;
 
         let record = DataRecord::new(oid, value.clone(), timestamp)?;

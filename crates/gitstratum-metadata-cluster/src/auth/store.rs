@@ -6,17 +6,40 @@ pub struct AuthStore {
     db: Arc<DB>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuthStoreError {
+    pub message: String,
+}
+
+impl std::fmt::Display for AuthStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for AuthStoreError {}
+
 impl AuthStore {
-    pub fn new(db: Arc<DB>) -> Self {
-        Self { db }
+    pub fn new(db: Arc<DB>) -> Result<Self, AuthStoreError> {
+        if db.cf_handle("auth").is_none() {
+            return Err(AuthStoreError {
+                message: "auth column family not found".to_string(),
+            });
+        }
+        if db.cf_handle("acl").is_none() {
+            return Err(AuthStoreError {
+                message: "acl column family not found".to_string(),
+            });
+        }
+        Ok(Self { db })
     }
 
     fn cf_auth(&self) -> &ColumnFamily {
-        self.db.cf_handle("auth").expect("auth CF not found")
+        self.db.cf_handle("auth").unwrap()
     }
 
     fn cf_acl(&self) -> &ColumnFamily {
-        self.db.cf_handle("acl").expect("acl CF not found")
+        self.db.cf_handle("acl").unwrap()
     }
 
     pub fn create_user(&self, user_id: &str, data: &[u8]) -> Result<(), rocksdb::Error> {
@@ -117,7 +140,7 @@ mod tests {
     #[test]
     fn test_user_crud() {
         let (_tmp, db) = create_test_db();
-        let store = AuthStore::new(db);
+        let store = AuthStore::new(db).unwrap();
 
         let user_data = b"user json data";
         store.create_user("user123", user_data).unwrap();
@@ -132,7 +155,7 @@ mod tests {
     #[test]
     fn test_ssh_key_crud() {
         let (_tmp, db) = create_test_db();
-        let store = AuthStore::new(db);
+        let store = AuthStore::new(db).unwrap();
 
         let key_data = b"ssh key data";
         let fingerprint = "SHA256:abc123";
@@ -150,7 +173,7 @@ mod tests {
     #[test]
     fn test_token_crud() {
         let (_tmp, db) = create_test_db();
-        let store = AuthStore::new(db);
+        let store = AuthStore::new(db).unwrap();
 
         let token_data = b"token json";
         let hash = "sha256hash123";
@@ -168,7 +191,7 @@ mod tests {
     #[test]
     fn test_permission_crud() {
         let (_tmp, db) = create_test_db();
-        let store = AuthStore::new(db);
+        let store = AuthStore::new(db).unwrap();
 
         let repo_id = "org/repo";
         let user_id = "user123";
@@ -187,7 +210,7 @@ mod tests {
     #[test]
     fn test_permission_values() {
         let (_tmp, db) = create_test_db();
-        let store = AuthStore::new(db);
+        let store = AuthStore::new(db).unwrap();
 
         store.set_permission("repo", "user1", 0x01).unwrap();
         store.set_permission("repo", "user2", 0x03).unwrap();
@@ -201,7 +224,7 @@ mod tests {
     #[test]
     fn test_multiple_repos_permissions() {
         let (_tmp, db) = create_test_db();
-        let store = AuthStore::new(db);
+        let store = AuthStore::new(db).unwrap();
 
         store.set_permission("repo1", "user1", 0x01).unwrap();
         store.set_permission("repo2", "user1", 0x07).unwrap();

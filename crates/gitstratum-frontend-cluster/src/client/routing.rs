@@ -61,8 +61,9 @@ where
                 .min_by_key(|n| node_load.get(&n.id).unwrap_or(&0))
                 .ok_or_else(|| FrontendError::HashRing("no replicas found".to_string()))?;
 
-            *node_load.entry(best_node.id.clone()).or_insert(0) += 1;
-            by_node.entry(best_node.id.clone()).or_default().push(oid);
+            let node_id = best_node.id.clone();
+            *node_load.entry(node_id.clone()).or_insert(0) += 1;
+            by_node.entry(node_id).or_default().push(oid);
         }
 
         Ok(by_node)

@@ -12,8 +12,9 @@ pub struct BucketCache {
 
 impl BucketCache {
     pub fn new(capacity: usize) -> Self {
+        let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
         Self {
-            cache: Mutex::new(LruCache::new(NonZeroUsize::new(capacity).unwrap())),
+            cache: Mutex::new(LruCache::new(cap)),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         }

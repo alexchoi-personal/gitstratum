@@ -51,21 +51,30 @@ impl DeltaCache {
 
     pub fn get(&self, base_oid: &Oid, target_oid: &Oid) -> Option<StoredDelta> {
         let key = (*base_oid, *target_oid);
-        let mut entries = self.entries.write();
 
-        if let Some(entry) = entries.get_mut(&key) {
-            if entry.last_access.elapsed() > self.config.ttl {
-                let size = entry.delta.size as u64;
-                entries.remove(&key);
-                self.current_size.fetch_sub(size, Ordering::Relaxed);
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                return None;
+        {
+            let entries = self.entries.read();
+            if let Some(entry) = entries.get(&key) {
+                if entry.last_access.elapsed() > self.config.ttl {
+                    drop(entries);
+                    let mut entries = self.entries.write();
+                    if let Some(entry) = entries.remove(&key) {
+                        self.current_size
+                            .fetch_sub(entry.delta.size as u64, Ordering::Relaxed);
+                    }
+                    self.misses.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+                let delta = entry.delta.clone();
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                drop(entries);
+                let mut entries = self.entries.write();
+                if let Some(entry) = entries.get_mut(&key) {
+                    entry.last_access = Instant::now();
+                    entry.access_count += 1;
+                }
+                return Some(delta);
             }
-
-            entry.last_access = Instant::now();
-            entry.access_count += 1;
-            self.hits.fetch_add(1, Ordering::Relaxed);
-            return Some(entry.delta.clone());
         }
 
         self.misses.fetch_add(1, Ordering::Relaxed);
