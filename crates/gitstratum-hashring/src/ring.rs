@@ -12,13 +12,28 @@ pub(crate) struct VirtualNode {
     pub(crate) node_id: NodeId,
 }
 
+#[derive(Debug, Clone)]
+struct RingState {
+    ring: BTreeMap<u64, VirtualNode>,
+    nodes: BTreeMap<NodeId, NodeInfo>,
+    version: u64,
+}
+
+impl RingState {
+    fn new() -> Self {
+        Self {
+            ring: BTreeMap::new(),
+            nodes: BTreeMap::new(),
+            version: 0,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ConsistentHashRing {
-    ring: RwLock<BTreeMap<u64, VirtualNode>>,
-    nodes: RwLock<BTreeMap<NodeId, NodeInfo>>,
+    state: RwLock<RingState>,
     virtual_nodes_per_physical: u32,
     replication_factor: usize,
-    version: RwLock<u64>,
 }
 
 impl ConsistentHashRing {
@@ -29,11 +44,9 @@ impl ConsistentHashRing {
             ));
         }
         Ok(Self {
-            ring: RwLock::new(BTreeMap::new()),
-            nodes: RwLock::new(BTreeMap::new()),
+            state: RwLock::new(RingState::new()),
             virtual_nodes_per_physical,
             replication_factor,
-            version: RwLock::new(0),
         })
     }
 
@@ -74,75 +87,69 @@ impl ConsistentHashRing {
     pub fn add_node(&self, node: NodeInfo) -> Result<()> {
         let node_id = node.id.clone();
 
-        {
-            let mut nodes = self.nodes.write();
-            nodes.insert(node_id.clone(), node);
+        let mut state = self.state.write();
+        state.nodes.insert(node_id.clone(), node);
+
+        for i in 0..self.virtual_nodes_per_physical {
+            let position = Self::hash_position(&node_id, i);
+            state.ring.insert(
+                position,
+                VirtualNode {
+                    node_id: node_id.clone(),
+                },
+            );
         }
 
-        {
-            let mut ring = self.ring.write();
-            for i in 0..self.virtual_nodes_per_physical {
-                let position = Self::hash_position(&node_id, i);
-                ring.insert(
-                    position,
-                    VirtualNode {
-                        node_id: node_id.clone(),
-                    },
-                );
-            }
-        }
-
-        self.increment_version();
+        state.version = state.version.wrapping_add(1);
         Ok(())
     }
 
     pub fn remove_node(&self, node_id: &NodeId) -> Result<NodeInfo> {
-        let node = {
-            let mut nodes = self.nodes.write();
-            nodes
-                .remove(node_id)
-                .ok_or_else(|| HashRingError::NodeNotFound(node_id.to_string()))?
-        };
+        let mut state = self.state.write();
 
-        {
-            let mut ring = self.ring.write();
-            let positions_to_remove: Vec<u64> = ring
-                .iter()
-                .filter(|(_, vnode)| &vnode.node_id == node_id)
-                .map(|(pos, _)| *pos)
-                .collect();
+        let node = state
+            .nodes
+            .remove(node_id)
+            .ok_or_else(|| HashRingError::NodeNotFound(node_id.to_string()))?;
 
-            for pos in positions_to_remove {
-                ring.remove(&pos);
-            }
+        let positions_to_remove: Vec<u64> = state
+            .ring
+            .iter()
+            .filter(|(_, vnode)| &vnode.node_id == node_id)
+            .map(|(pos, _)| *pos)
+            .collect();
+
+        for pos in positions_to_remove {
+            state.ring.remove(&pos);
         }
 
-        self.increment_version();
+        state.version = state.version.wrapping_add(1);
         Ok(node)
     }
 
-    pub fn set_node_state(&self, node_id: &NodeId, state: NodeState) -> Result<()> {
-        let mut nodes = self.nodes.write();
-        let node = nodes
+    pub fn set_node_state(&self, node_id: &NodeId, new_state: NodeState) -> Result<()> {
+        let mut state = self.state.write();
+        let node = state
+            .nodes
             .get_mut(node_id)
             .ok_or_else(|| HashRingError::NodeNotFound(node_id.to_string()))?;
-        node.state = state;
-        drop(nodes);
-        self.increment_version();
+        node.state = new_state;
+        state.version = state.version.wrapping_add(1);
         Ok(())
     }
 
     pub fn get_node(&self, node_id: &NodeId) -> Option<NodeInfo> {
-        self.nodes.read().get(node_id).cloned()
+        self.state.read().nodes.get(node_id).cloned()
     }
 
     pub fn get_nodes(&self) -> Vec<NodeInfo> {
-        self.nodes.read().values().cloned().collect()
+        self.state.read().nodes.values().cloned().collect()
     }
 
     pub fn active_nodes(&self) -> Vec<NodeInfo> {
-        self.nodes
+        self.state
             .read()
+            .nodes
             .values()
             .filter(|n| n.state.is_active())
             .cloned()
@@ -150,42 +157,39 @@ impl ConsistentHashRing {
     }
 
     pub fn node_count(&self) -> usize {
-        self.nodes.read().len()
-    }
-
-    fn increment_version(&self) {
-        let mut version = self.version.write();
-        *version = version.wrapping_add(1);
+        self.state.read().nodes.len()
     }
 
     pub fn version(&self) -> u64 {
-        *self.version.read()
+        self.state.read().version
     }
 
     pub fn get_ring_entries(&self) -> Vec<(u64, NodeId)> {
-        self.ring
+        self.state
             .read()
+            .ring
             .iter()
             .map(|(pos, vnode)| (*pos, vnode.node_id.clone()))
             .collect()
     }
 
     fn primary_node_at_position(&self, position: u64) -> Result<NodeInfo> {
-        let ring = self.ring.read();
+        let state = self.state.read();
 
-        if ring.is_empty() {
+        if state.ring.is_empty() {
             return Err(HashRingError::EmptyRing);
         }
 
-        let vnode = ring
+        let vnode = state
+            .ring
             .range(position..)
             .next()
-            .or_else(|| ring.iter().next())
+            .or_else(|| state.ring.iter().next())
             .map(|(_, v)| v)
             .ok_or(HashRingError::EmptyRing)?;
 
-        self.nodes
-            .read()
+        state
+            .nodes
             .get(&vnode.node_id)
             .cloned()
             .ok_or_else(|| HashRingError::NodeNotFound(vnode.node_id.to_string()))
@@ -202,22 +206,21 @@ impl ConsistentHashRing {
     }
 
     fn nodes_at_position(&self, position: u64) -> Result<Vec<NodeInfo>> {
-        let ring = self.ring.read();
-        let nodes = self.nodes.read();
+        let state = self.state.read();
 
-        if ring.is_empty() {
+        if state.ring.is_empty() {
             return Err(HashRingError::EmptyRing);
         }
 
         let mut seen = std::collections::HashSet::new();
         let mut result = Vec::with_capacity(self.replication_factor);
 
-        for (_, vnode) in ring.range(position..).chain(ring.iter()) {
+        for (_, vnode) in state.ring.range(position..).chain(state.ring.iter()) {
             if !seen.insert(&vnode.node_id) {
                 continue;
             }
 
-            let Some(node) = nodes.get(&vnode.node_id) else {
+            let Some(node) = state.nodes.get(&vnode.node_id) else {
                 continue;
             };
 
@@ -233,7 +236,11 @@ impl ConsistentHashRing {
         }
 
         if result.len() < self.replication_factor {
-            let active_count = nodes.values().filter(|n| n.state.can_serve_reads()).count();
+            let active_count = state
+                .nodes
+                .values()
+                .filter(|n| n.state.can_serve_reads())
+                .count();
             return Err(HashRingError::InsufficientNodes(
                 self.replication_factor,
                 active_count,
@@ -265,16 +272,12 @@ impl ConsistentHashRing {
 
 impl Clone for ConsistentHashRing {
     fn clone(&self) -> Self {
-        let ring_guard = self.ring.read();
-        let nodes_guard = self.nodes.read();
-        let version_guard = self.version.read();
+        let state_guard = self.state.read();
 
         Self {
-            ring: RwLock::new(ring_guard.clone()),
-            nodes: RwLock::new(nodes_guard.clone()),
+            state: RwLock::new(state_guard.clone()),
             virtual_nodes_per_physical: self.virtual_nodes_per_physical,
             replication_factor: self.replication_factor,
-            version: RwLock::new(*version_guard),
         }
     }
 }

@@ -30,6 +30,7 @@ gitstratum-storage = { workspace = true, optional = true }
 rocksdb = { workspace = true }
 dashmap = { workspace = true }
 lru = { workspace = true }
+moka = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

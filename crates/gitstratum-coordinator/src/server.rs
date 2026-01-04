@@ -160,6 +160,7 @@ impl CoordinatorServer {
         }
     }
 
+    #[allow(dead_code)]
     fn decrement_client_watch(&self, client_id: &str) {
         let limiters = self.client_limiters.read();
         if let Some(entry) = limiters.get(client_id) {
@@ -1095,31 +1096,20 @@ mod tests {
         assert!(flap.last_suspect_at >= now);
     }
 
+    #[test]
     fn test_heartbeat_info_creation() {
-        let now = Instant::now();
-        let info = HeartbeatInfo {
-            known_version: 42,
-            reported_state: 1,
-            generation_id: "gen-123".to_string(),
-            received_at: now,
-        };
+        let info = HeartbeatInfo::new(42, 1, "gen-123".to_string());
         assert_eq!(info.known_version, 42);
         assert_eq!(info.reported_state, 1);
         assert_eq!(info.generation_id, "gen-123");
-        assert!(info.received_at <= Instant::now());
+        assert!(info.received_at > 0);
     }
 
     #[test]
     fn test_heartbeat_batcher_records_heartbeat() {
         let batcher = HeartbeatBatcher::new(Duration::from_secs(1));
-        let now = Instant::now();
 
-        let info = HeartbeatInfo {
-            known_version: 10,
-            reported_state: 1,
-            generation_id: "gen-456".to_string(),
-            received_at: now,
-        };
+        let info = HeartbeatInfo::new(10, 1, "gen-456".to_string());
         batcher.record_heartbeat("node-1".to_string(), info);
 
         assert_eq!(batcher.pending_count(), 1);

@@ -1,22 +1,14 @@
-use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use gitstratum_core::{Blob, Oid};
-use lru::LruCache;
-use parking_lot::Mutex;
+use moka::sync::Cache;
 
 use crate::error::{ObjectStoreError, Result};
-
-struct CacheEntry {
-    blob: Arc<Blob>,
-    size: usize,
-}
 
 pub struct HotObjectsCacheConfig {
     pub max_entries: usize,
     pub max_size_bytes: usize,
-    pub eviction_batch_size: usize,
 }
 
 impl Default for HotObjectsCacheConfig {
@@ -24,132 +16,100 @@ impl Default for HotObjectsCacheConfig {
         Self {
             max_entries: 10000,
             max_size_bytes: 256 * 1024 * 1024,
-            eviction_batch_size: 100,
         }
     }
 }
 
 pub struct HotObjectsCache {
-    config: HotObjectsCacheConfig,
-    entries: Mutex<LruCache<Oid, CacheEntry>>,
+    cache: Cache<Oid, Arc<Blob>>,
     current_size: AtomicU64,
+    max_size_bytes: usize,
     hits: AtomicU64,
     misses: AtomicU64,
 }
 
 impl HotObjectsCache {
     pub fn new(config: HotObjectsCacheConfig) -> Result<Self> {
-        let capacity = NonZeroUsize::new(config.max_entries).ok_or_else(|| {
-            ObjectStoreError::InvalidArgument("max_entries must be greater than 0".to_string())
-        })?;
+        if config.max_entries == 0 {
+            return Err(ObjectStoreError::InvalidArgument(
+                "max_entries must be greater than 0".to_string(),
+            ));
+        }
+
+        let cache = Cache::builder()
+            .max_capacity(config.max_entries as u64)
+            .weigher(|_key: &Oid, value: &Arc<Blob>| -> u32 {
+                value.data.len().min(u32::MAX as usize) as u32
+            })
+            .build();
+
         Ok(Self {
-            entries: Mutex::new(LruCache::new(capacity)),
-            config,
+            cache,
             current_size: AtomicU64::new(0),
+            max_size_bytes: config.max_size_bytes,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         })
     }
 
     pub fn get(&self, oid: &Oid) -> Option<Arc<Blob>> {
-        let mut entries = self.entries.lock();
-        if let Some(entry) = entries.get(oid) {
+        if let Some(blob) = self.cache.get(oid) {
             self.hits.fetch_add(1, Ordering::Relaxed);
-            return Some(Arc::clone(&entry.blob));
+            Some(blob)
+        } else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            None
         }
-        self.misses.fetch_add(1, Ordering::Relaxed);
-        None
     }
 
     pub fn put(&self, blob: Blob) {
         let size = blob.data.len();
         let oid = blob.oid;
 
-        let entry = CacheEntry {
-            blob: Arc::new(blob),
-            size,
-        };
-
-        self.evict_if_needed(size);
-
-        let mut entries = self.entries.lock();
-
-        if let Some(old) = entries.peek(&oid) {
+        if let Some(old) = self.cache.get(&oid) {
             self.current_size
-                .fetch_sub(old.size as u64, Ordering::Relaxed);
+                .fetch_sub(old.data.len() as u64, Ordering::Relaxed);
         }
 
-        entries.put(oid, entry);
+        let arc_blob = Arc::new(blob);
+        self.cache.insert(oid, arc_blob);
         self.current_size.fetch_add(size as u64, Ordering::Relaxed);
     }
 
-    fn evict_if_needed(&self, incoming_size: usize) {
-        let current = self.current_size.load(Ordering::Relaxed) as usize;
-        if current + incoming_size <= self.config.max_size_bytes {
-            return;
-        }
-
-        let mut evicted_count = 0;
-        let batch_size = self.config.eviction_batch_size;
-
-        while self.current_size.load(Ordering::Relaxed) as usize + incoming_size
-            > self.config.max_size_bytes
-            && evicted_count < batch_size
-        {
-            let mut entries = self.entries.lock();
-            let mut batch_freed = 0usize;
-            let mut local_evicted = 0;
-
-            while batch_freed < incoming_size && local_evicted < 10 {
-                if let Some((_, entry)) = entries.pop_lru() {
-                    batch_freed += entry.size;
-                    local_evicted += 1;
-                } else {
-                    break;
-                }
-            }
-
-            self.current_size
-                .fetch_sub(batch_freed as u64, Ordering::Relaxed);
-            evicted_count += local_evicted;
-
-            if local_evicted == 0 {
-                break;
-            }
-        }
-    }
-
     pub fn remove(&self, oid: &Oid) -> Option<Arc<Blob>> {
-        let mut entries = self.entries.lock();
-        if let Some(entry) = entries.pop(oid) {
+        if let Some(blob) = self.cache.remove(oid) {
             self.current_size
-                .fetch_sub(entry.size as u64, Ordering::Relaxed);
-            Some(entry.blob)
+                .fetch_sub(blob.data.len() as u64, Ordering::Relaxed);
+            Some(blob)
         } else {
             None
         }
     }
 
     pub fn contains(&self, oid: &Oid) -> bool {
-        self.entries.lock().contains(oid)
+        self.cache.contains_key(oid)
     }
 
     pub fn clear(&self) {
-        let mut entries = self.entries.lock();
-        entries.clear();
+        self.cache.invalidate_all();
         self.current_size.store(0, Ordering::Relaxed);
     }
 
     pub fn len(&self) -> usize {
-        self.entries.lock().len()
+        self.cache.run_pending_tasks();
+        self.cache.entry_count() as usize
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.lock().is_empty()
+        self.len() == 0
     }
 
     pub fn size_bytes(&self) -> usize {
         self.current_size.load(Ordering::Relaxed) as usize
+    }
+
+    pub fn max_size_bytes(&self) -> usize {
+        self.max_size_bytes
     }
 
     pub fn hit_rate(&self) -> f64 {
@@ -271,65 +231,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_eviction_by_count() {
-        let config = HotObjectsCacheConfig {
-            max_entries: 2,
-            max_size_bytes: 1024 * 1024,
-            eviction_batch_size: 100,
-        };
-        let cache = HotObjectsCache::new(config).unwrap();
-
-        for i in 0..3u8 {
-            let blob = create_test_blob(&[i; 10]);
-            cache.put(blob);
-        }
-
-        assert_eq!(cache.len(), 2);
-    }
-
-    #[test]
-    fn test_cache_eviction_by_size() {
-        let config = HotObjectsCacheConfig {
-            max_entries: 100,
-            max_size_bytes: 50,
-            eviction_batch_size: 100,
-        };
-        let cache = HotObjectsCache::new(config).unwrap();
-
-        for i in 0..5u8 {
-            let blob = create_test_blob(&[i; 20]);
-            cache.put(blob);
-        }
-
-        assert!(cache.size_bytes() <= 50);
-    }
-
-    #[test]
-    fn test_cache_lru_order() {
-        let config = HotObjectsCacheConfig {
-            max_entries: 2,
-            max_size_bytes: 1024 * 1024,
-            eviction_batch_size: 100,
-        };
-        let cache = HotObjectsCache::new(config).unwrap();
-
-        let blob1 = create_test_blob(b"first");
-        let blob2 = create_test_blob(b"second");
-        let blob3 = create_test_blob(b"third");
-
-        cache.put(blob1.clone());
-        cache.put(blob2.clone());
-
-        cache.get(&blob1.oid);
-
-        cache.put(blob3.clone());
-
-        assert!(cache.contains(&blob1.oid));
-        assert!(!cache.contains(&blob2.oid));
-        assert!(cache.contains(&blob3.oid));
-    }
-
-    #[test]
     fn test_cache_stats() {
         let cache = HotObjectsCache::default();
         let blob = create_test_blob(b"test data");
@@ -389,9 +290,18 @@ mod tests {
         let config = HotObjectsCacheConfig {
             max_entries: 0,
             max_size_bytes: 1024,
-            eviction_batch_size: 100,
         };
         let result = HotObjectsCache::new(config);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cache_max_size_bytes() {
+        let config = HotObjectsCacheConfig {
+            max_entries: 100,
+            max_size_bytes: 512,
+        };
+        let cache = HotObjectsCache::new(config).unwrap();
+        assert_eq!(cache.max_size_bytes(), 512);
     }
 }

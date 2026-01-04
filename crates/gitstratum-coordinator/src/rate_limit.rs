@@ -313,11 +313,11 @@ impl ClientRateLimiter {
     }
 
     fn touch(&self) {
-        *self.last_access.lock().unwrap() = Instant::now();
+        *self.last_access.lock() = Instant::now();
     }
 
     pub fn last_access_time(&self) -> Instant {
-        *self.last_access.lock().unwrap()
+        *self.last_access.lock()
     }
 
     pub fn try_register(&self) -> Result<(), RateLimitError> {
