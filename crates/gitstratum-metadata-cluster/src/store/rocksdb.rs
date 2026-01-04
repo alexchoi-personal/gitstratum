@@ -15,10 +15,12 @@ use crate::store::column_families::{
 
 const DEFAULT_CACHE_SIZE: usize = 10000;
 
+type CacheKey = (Arc<str>, Oid);
+
 pub struct MetadataStore {
     db: Arc<DB>,
-    commit_cache: RwLock<LruCache<(String, Oid), Commit>>,
-    tree_cache: RwLock<LruCache<(String, Oid), Tree>>,
+    commit_cache: RwLock<LruCache<CacheKey, Commit>>,
+    tree_cache: RwLock<LruCache<CacheKey, Tree>>,
 }
 
 impl MetadataStore {
@@ -305,11 +307,11 @@ impl MetadataStore {
     }
 
     pub fn get_commit(&self, repo_id: &RepoId, oid: &Oid) -> Result<Option<Commit>> {
-        let cache_key = (repo_id.as_str().to_string(), *oid);
+        let cache_key: CacheKey = (Arc::from(repo_id.as_str()), *oid);
 
         {
-            let mut cache = self.commit_cache.write();
-            if let Some(commit) = cache.get(&cache_key) {
+            let cache = self.commit_cache.read();
+            if let Some(commit) = cache.peek(&cache_key) {
                 return Ok(Some(commit.clone()));
             }
         }
@@ -333,7 +335,7 @@ impl MetadataStore {
         let value = bincode::serialize(commit)?;
         self.db.put_cf(self.cf_commits()?, &key, &value)?;
 
-        let cache_key = (repo_id.as_str().to_string(), commit.oid);
+        let cache_key: CacheKey = (Arc::from(repo_id.as_str()), commit.oid);
         let mut cache = self.commit_cache.write();
         cache.put(cache_key, commit.clone());
 
@@ -341,11 +343,11 @@ impl MetadataStore {
     }
 
     pub fn get_tree(&self, repo_id: &RepoId, oid: &Oid) -> Result<Option<Tree>> {
-        let cache_key = (repo_id.as_str().to_string(), *oid);
+        let cache_key: CacheKey = (Arc::from(repo_id.as_str()), *oid);
 
         {
-            let mut cache = self.tree_cache.write();
-            if let Some(tree) = cache.get(&cache_key) {
+            let cache = self.tree_cache.read();
+            if let Some(tree) = cache.peek(&cache_key) {
                 return Ok(Some(tree.clone()));
             }
         }
@@ -369,7 +371,7 @@ impl MetadataStore {
         let value = bincode::serialize(tree)?;
         self.db.put_cf(self.cf_trees()?, &key, &value)?;
 
-        let cache_key = (repo_id.as_str().to_string(), tree.oid);
+        let cache_key: CacheKey = (Arc::from(repo_id.as_str()), tree.oid);
         let mut cache = self.tree_cache.write();
         cache.put(cache_key, tree.clone());
 

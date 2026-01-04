@@ -235,7 +235,7 @@ impl ConsistentHashRing {
 
     fn increment_version(&self) {
         let mut version = self.version.write();
-        *version += 1;
+        *version = version.wrapping_add(1);
     }
 
     pub fn version(&self) -> u64 {

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use gitstratum_core::{Blob, Commit, Object, Oid, Tree};
+use tracing::warn;
 
 use crate::error::{FrontendError, Result};
 use crate::pack::assembly::PackReader;
@@ -247,8 +248,10 @@ where
 
         let result = self.apply_push(&updates, objects).await;
 
-        for (_, lock_id) in locks {
-            let _ = self.control_plane.release_ref_lock(&lock_id).await;
+        for (ref_name, lock_id) in locks {
+            if let Err(e) = self.control_plane.release_ref_lock(&lock_id).await {
+                warn!(ref_name = %ref_name, lock_id = %lock_id, error = %e, "failed to release ref lock");
+            }
         }
 
         result

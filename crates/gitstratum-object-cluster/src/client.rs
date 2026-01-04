@@ -43,10 +43,11 @@ impl ObjectClusterClient {
             .await?;
         let client = ObjectServiceClient::new(channel);
 
-        {
-            let mut clients = self.clients.write();
-            clients.insert(endpoint, client.clone());
+        let mut clients = self.clients.write();
+        if let Some(existing) = clients.get(&endpoint) {
+            return Ok(existing.clone());
         }
+        clients.insert(endpoint, client.clone());
 
         Ok(client)
     }

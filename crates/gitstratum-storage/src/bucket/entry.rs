@@ -125,7 +125,7 @@ impl CompactEntry {
     /// - No invalid states possible (all fields are integers/byte arrays)
     pub fn from_bytes(bytes: &[u8; ENTRY_SIZE]) -> Self {
         // SAFETY: CompactEntry is repr(C, packed), all bit patterns valid
-        unsafe { std::ptr::read(bytes.as_ptr() as *const Self) }
+        unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const Self) }
     }
 }
 
