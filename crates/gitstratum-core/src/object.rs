@@ -101,11 +101,31 @@ impl Blob {
         Self { oid, data }
     }
 
+    /// Creates a blob with a pre-computed OID without verification.
+    ///
+    /// # Safety
+    /// The caller must ensure the OID matches the hash of the data.
+    /// Use `with_oid_verified` if verification is needed.
     pub fn with_oid(oid: Oid, data: impl Into<Bytes>) -> Self {
         Self {
             oid,
             data: data.into(),
         }
+    }
+
+    /// Creates a blob with a pre-computed OID, verifying it matches the data.
+    ///
+    /// Returns an error if the computed OID doesn't match the expected OID.
+    pub fn with_oid_verified(oid: Oid, data: impl Into<Bytes>) -> Result<Self> {
+        let data = data.into();
+        let computed = Oid::hash_object("blob", &data);
+        if computed != oid {
+            return Err(Error::OidMismatch {
+                expected: oid.to_string(),
+                computed: computed.to_string(),
+            });
+        }
+        Ok(Self { oid, data })
     }
 
     pub fn compress(&self) -> Result<Bytes> {
@@ -227,8 +247,42 @@ impl Tree {
         }
     }
 
+    /// Creates a tree with a pre-computed OID without verification.
+    ///
+    /// # Safety
+    /// The caller must ensure the OID matches the hash of the entries.
+    /// Use `with_oid_verified` if verification is needed.
     pub fn with_oid(oid: Oid, entries: Vec<TreeEntry>) -> Self {
         Self { oid, entries }
+    }
+
+    /// Creates a tree with a pre-computed OID, verifying it matches the entries.
+    ///
+    /// Returns an error if the computed OID doesn't match the expected OID.
+    pub fn with_oid_verified(oid: Oid, entries: Vec<TreeEntry>) -> Result<Self> {
+        let mut sorted = entries;
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut data = Vec::new();
+        for entry in &sorted {
+            data.extend_from_slice(entry.mode.as_str().as_bytes());
+            data.push(b' ');
+            data.extend_from_slice(entry.name.as_bytes());
+            data.push(0);
+            data.extend_from_slice(entry.oid.as_bytes());
+        }
+
+        let computed = Oid::hash_object("tree", &data);
+        if computed != oid {
+            return Err(Error::OidMismatch {
+                expected: oid.to_string(),
+                computed: computed.to_string(),
+            });
+        }
+        Ok(Self {
+            oid,
+            entries: sorted,
+        })
     }
 
     pub fn find(&self, name: &str) -> Option<&TreeEntry> {
@@ -320,6 +374,11 @@ impl Commit {
         }
     }
 
+    /// Creates a commit with a pre-computed OID without verification.
+    ///
+    /// # Safety
+    /// The caller must ensure the OID matches the hash of the commit data.
+    /// Use `with_oid_verified` if verification is needed.
     pub fn with_oid(
         oid: Oid,
         tree: Oid,
@@ -336,6 +395,47 @@ impl Commit {
             committer,
             message: message.into(),
         }
+    }
+
+    /// Creates a commit with a pre-computed OID, verifying it matches the commit data.
+    ///
+    /// Returns an error if the computed OID doesn't match the expected OID.
+    pub fn with_oid_verified(
+        oid: Oid,
+        tree: Oid,
+        parents: Vec<Oid>,
+        author: Signature,
+        committer: Signature,
+        message: impl Into<String>,
+    ) -> Result<Self> {
+        let message = message.into();
+
+        let mut data = Vec::new();
+        data.extend_from_slice(format!("tree {}\n", tree).as_bytes());
+        for parent in &parents {
+            data.extend_from_slice(format!("parent {}\n", parent).as_bytes());
+        }
+        data.extend_from_slice(format!("author {}\n", author).as_bytes());
+        data.extend_from_slice(format!("committer {}\n", committer).as_bytes());
+        data.extend_from_slice(b"\n");
+        data.extend_from_slice(message.as_bytes());
+
+        let computed = Oid::hash_object("commit", &data);
+        if computed != oid {
+            return Err(Error::OidMismatch {
+                expected: oid.to_string(),
+                computed: computed.to_string(),
+            });
+        }
+
+        Ok(Self {
+            oid,
+            tree,
+            parents,
+            author,
+            committer,
+            message,
+        })
     }
 
     pub fn is_root(&self) -> bool {
@@ -752,5 +852,82 @@ mod tests {
         assert!(!commit.is_root());
         assert!(!commit.is_merge());
         assert_eq!(commit.first_parent(), Some(&parent));
+    }
+
+    #[test]
+    fn test_blob_with_oid_verified_success() {
+        let data = b"test blob content";
+        let expected_oid = Oid::hash_object("blob", data);
+        let blob = Blob::with_oid_verified(expected_oid, data.to_vec()).unwrap();
+        assert_eq!(blob.oid, expected_oid);
+        assert_eq!(blob.data.as_ref(), data);
+    }
+
+    #[test]
+    fn test_blob_with_oid_verified_mismatch() {
+        let data = b"test blob content";
+        let wrong_oid = Oid::hash(b"wrong");
+        let result = Blob::with_oid_verified(wrong_oid, data.to_vec());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::OidMismatch { .. }));
+    }
+
+    #[test]
+    fn test_tree_with_oid_verified_success() {
+        let entries = vec![
+            TreeEntry::file("README.md", Oid::hash(b"readme")),
+            TreeEntry::directory("src", Oid::hash(b"src")),
+        ];
+        let tree_from_new = Tree::new(entries.clone());
+        let tree = Tree::with_oid_verified(tree_from_new.oid, entries).unwrap();
+        assert_eq!(tree.oid, tree_from_new.oid);
+    }
+
+    #[test]
+    fn test_tree_with_oid_verified_mismatch() {
+        let entries = vec![TreeEntry::file("test.txt", Oid::hash(b"test"))];
+        let wrong_oid = Oid::hash(b"wrong");
+        let result = Tree::with_oid_verified(wrong_oid, entries);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::OidMismatch { .. }));
+    }
+
+    #[test]
+    fn test_commit_with_oid_verified_success() {
+        let tree_oid = Oid::hash(b"tree");
+        let author = Signature::new("Author", "a@test.com", 1704067200, "+0000");
+        let committer = author.clone();
+        let commit_from_new = Commit::new(
+            tree_oid,
+            vec![],
+            author.clone(),
+            committer.clone(),
+            "Test message",
+        );
+        let commit = Commit::with_oid_verified(
+            commit_from_new.oid,
+            tree_oid,
+            vec![],
+            author,
+            committer,
+            "Test message",
+        )
+        .unwrap();
+        assert_eq!(commit.oid, commit_from_new.oid);
+    }
+
+    #[test]
+    fn test_commit_with_oid_verified_mismatch() {
+        let tree_oid = Oid::hash(b"tree");
+        let author = Signature::new("Author", "a@test.com", 1704067200, "+0000");
+        let committer = author.clone();
+        let wrong_oid = Oid::hash(b"wrong");
+        let result =
+            Commit::with_oid_verified(wrong_oid, tree_oid, vec![], author, committer, "Message");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::OidMismatch { .. }));
     }
 }

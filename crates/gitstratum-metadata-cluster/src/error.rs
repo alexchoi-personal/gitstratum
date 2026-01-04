@@ -34,6 +34,9 @@ pub enum MetadataStoreError {
     #[error("deserialization error: {0}")]
     Deserialization(String),
 
+    #[error("missing required field: {0}")]
+    MissingField(String),
+
     #[error("bincode error")]
     Bincode(#[source] bincode::Error),
 
@@ -98,6 +101,9 @@ impl From<MetadataStoreError> for tonic::Status {
             MetadataStoreError::InvalidRepoId(msg) => tonic::Status::invalid_argument(msg),
             MetadataStoreError::Serialization(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Deserialization(msg) => tonic::Status::internal(msg),
+            MetadataStoreError::MissingField(msg) => {
+                tonic::Status::invalid_argument(format!("missing required field: {}", msg))
+            }
             MetadataStoreError::Bincode(err) => tonic::Status::internal(err.to_string()),
             MetadataStoreError::Storage(msg) => tonic::Status::internal(msg),
             MetadataStoreError::RocksDb(err) => tonic::Status::internal(err.to_string()),
@@ -291,6 +297,20 @@ mod tests {
         let err = MetadataStoreError::Deserialization("err".to_string());
         let status: tonic::Status = err.into();
         assert_eq!(status.code(), tonic::Code::Internal);
+    }
+
+    #[test]
+    fn test_missing_field_display() {
+        let err = MetadataStoreError::MissingField("commit.oid".to_string());
+        assert!(err.to_string().contains("commit.oid"));
+    }
+
+    #[test]
+    fn test_missing_field_to_status() {
+        let err = MetadataStoreError::MissingField("tree.entries[0].oid".to_string());
+        let status: tonic::Status = err.into();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("tree.entries[0].oid"));
     }
 
     #[test]

@@ -6,6 +6,8 @@ use gitstratum_core::{Blob, Oid};
 use lru::LruCache;
 use parking_lot::Mutex;
 
+use crate::error::{ObjectStoreError, Result};
+
 struct CacheEntry {
     blob: Arc<Blob>,
     size: usize,
@@ -34,15 +36,17 @@ pub struct HotObjectsCache {
 }
 
 impl HotObjectsCache {
-    pub fn new(config: HotObjectsCacheConfig) -> Self {
-        let capacity = NonZeroUsize::new(config.max_entries).unwrap_or(NonZeroUsize::MIN);
-        Self {
+    pub fn new(config: HotObjectsCacheConfig) -> Result<Self> {
+        let capacity = NonZeroUsize::new(config.max_entries).ok_or_else(|| {
+            ObjectStoreError::InvalidArgument("max_entries must be greater than 0".to_string())
+        })?;
+        Ok(Self {
             entries: Mutex::new(LruCache::new(capacity)),
             config,
             current_size: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
-        }
+        })
     }
 
     pub fn get(&self, oid: &Oid) -> Option<Arc<Blob>> {
@@ -147,7 +151,7 @@ impl HotObjectsCache {
 
 impl Default for HotObjectsCache {
     fn default() -> Self {
-        Self::new(HotObjectsCacheConfig::default())
+        Self::new(HotObjectsCacheConfig::default()).expect("default config should always be valid")
     }
 }
 
@@ -247,7 +251,7 @@ mod tests {
             max_entries: 2,
             max_size_bytes: 1024 * 1024,
         };
-        let cache = HotObjectsCache::new(config);
+        let cache = HotObjectsCache::new(config).unwrap();
 
         for i in 0..3u8 {
             let blob = create_test_blob(&[i; 10]);
@@ -263,7 +267,7 @@ mod tests {
             max_entries: 100,
             max_size_bytes: 50,
         };
-        let cache = HotObjectsCache::new(config);
+        let cache = HotObjectsCache::new(config).unwrap();
 
         for i in 0..5u8 {
             let blob = create_test_blob(&[i; 20]);
@@ -279,7 +283,7 @@ mod tests {
             max_entries: 2,
             max_size_bytes: 1024 * 1024,
         };
-        let cache = HotObjectsCache::new(config);
+        let cache = HotObjectsCache::new(config).unwrap();
 
         let blob1 = create_test_blob(b"first");
         let blob2 = create_test_blob(b"second");
@@ -350,5 +354,15 @@ mod tests {
 
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.size_bytes(), 21);
+    }
+
+    #[test]
+    fn test_cache_new_zero_max_entries_fails() {
+        let config = HotObjectsCacheConfig {
+            max_entries: 0,
+            max_size_bytes: 1024,
+        };
+        let result = HotObjectsCache::new(config);
+        assert!(result.is_err());
     }
 }
