@@ -282,25 +282,26 @@ impl ObjectService for ObjectServiceImpl {
         tokio::spawn(async move {
             #[cfg(feature = "bucketstore")]
             {
-                let mut stream = store.iter_range(from_position, to_position);
-                while let Some(result) = std::pin::Pin::new(&mut stream).next().await {
-                    match result {
-                        Ok((_, blob)) => {
-                            let proto_blob = Self::core_blob_to_proto(&blob, false);
-                            if tx.send(Ok(proto_blob)).await.is_err() {
-                                break;
+                if let Ok(mut stream) = store.iter_range(from_position, to_position) {
+                    while let Some(result) = std::pin::Pin::new(&mut stream).next().await {
+                        match result {
+                            Ok((_, blob)) => {
+                                let proto_blob = Self::core_blob_to_proto(&blob, false);
+                                if tx.send(Ok(proto_blob)).await.is_err() {
+                                    break;
+                                }
                             }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                            Err(e) => {
+                                let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                            }
                         }
                     }
                 }
             }
 
             #[cfg(not(feature = "bucketstore"))]
-            {
-                for result in store.iter_range(from_position, to_position) {
+            if let Ok(iter) = store.iter_range(from_position, to_position) {
+                for result in iter {
                     match result {
                         Ok((_, blob)) => {
                             let proto_blob = Self::core_blob_to_proto(&blob, false);

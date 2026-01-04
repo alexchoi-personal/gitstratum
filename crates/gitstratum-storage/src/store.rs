@@ -376,22 +376,22 @@ impl BucketStore {
         Ok(())
     }
 
-    pub fn iter(&self) -> BucketStoreIterator {
-        BucketStoreIterator::new(
+    pub fn iter(&self) -> Result<BucketStoreIterator> {
+        Ok(BucketStoreIterator::new(
             self.config.bucket_count,
-            self.bucket_file_for_iter.read().clone(),
+            self.bucket_file_for_iter.read().try_clone()?,
             self.file_manager.clone(),
-        )
+        ))
     }
 
-    pub fn iter_by_position(&self, from: u64, to: u64) -> BucketStorePositionIterator {
-        BucketStorePositionIterator::new(
+    pub fn iter_by_position(&self, from: u64, to: u64) -> Result<BucketStorePositionIterator> {
+        Ok(BucketStorePositionIterator::new(
             self.config.bucket_count,
-            self.bucket_file_for_iter.read().clone(),
+            self.bucket_file_for_iter.read().try_clone()?,
             self.file_manager.clone(),
             from,
             to,
-        )
+        ))
     }
 }
 
@@ -898,7 +898,7 @@ mod tests {
 
         assert_eq!(store.len(), 3, "Store should have 3 entries");
 
-        let items: Vec<_> = store.iter().collect::<Vec<_>>().await;
+        let items: Vec<_> = store.iter().unwrap().collect::<Vec<_>>().await;
         assert_eq!(items.len(), 3);
     }
 
@@ -918,6 +918,7 @@ mod tests {
 
         let items: Vec<_> = store
             .iter_by_position(0, u64::MAX)
+            .unwrap()
             .collect::<Vec<_>>()
             .await;
         assert_eq!(items.len(), 2);

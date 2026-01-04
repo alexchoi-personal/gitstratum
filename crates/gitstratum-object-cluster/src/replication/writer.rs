@@ -249,13 +249,10 @@ impl QuorumWriter {
                 replication_factor,
                 ..Default::default()
             },
-            ring: Arc::new(
-                gitstratum_hashring::HashRingBuilder::new()
-                    .virtual_nodes(16)
-                    .replication_factor(replication_factor)
-                    .build()
-                    .unwrap_or_else(|_| panic!("failed to build empty ring")),
-            ),
+            ring: Arc::new(gitstratum_hashring::ConsistentHashRing::new(
+                16,
+                replication_factor,
+            )),
             writes_attempted: AtomicU64::new(0),
             writes_succeeded: AtomicU64::new(0),
             writes_failed: AtomicU64::new(0),

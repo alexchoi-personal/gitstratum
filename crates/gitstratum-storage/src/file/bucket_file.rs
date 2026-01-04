@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::bucket::{DiskBucket, BUCKET_SIZE};
-use crate::error::Result;
+use crate::error::{BucketStoreError, Result};
 
 pub struct BucketFile {
     file: File,
@@ -11,22 +11,16 @@ pub struct BucketFile {
     path: PathBuf,
 }
 
-impl Clone for BucketFile {
-    fn clone(&self) -> Self {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)
-            .expect("failed to clone bucket file");
-        Self {
+impl BucketFile {
+    pub fn try_clone(&self) -> Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        Ok(Self {
             file,
             bucket_count: self.bucket_count,
             path: self.path.clone(),
-        }
+        })
     }
-}
 
-impl BucketFile {
     pub fn create(path: &Path, bucket_count: u32) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -59,6 +53,12 @@ impl BucketFile {
     }
 
     pub fn read_bucket(&mut self, bucket_id: u32) -> Result<DiskBucket> {
+        if bucket_id >= self.bucket_count {
+            return Err(BucketStoreError::InvalidBucketId {
+                bucket_id,
+                bucket_count: self.bucket_count,
+            });
+        }
         let offset = bucket_id as u64 * BUCKET_SIZE as u64;
         self.file.seek(SeekFrom::Start(offset))?;
 
@@ -69,6 +69,12 @@ impl BucketFile {
     }
 
     pub fn write_bucket(&mut self, bucket_id: u32, bucket: &DiskBucket) -> Result<()> {
+        if bucket_id >= self.bucket_count {
+            return Err(BucketStoreError::InvalidBucketId {
+                bucket_id,
+                bucket_count: self.bucket_count,
+            });
+        }
         let offset = bucket_id as u64 * BUCKET_SIZE as u64;
         self.file.seek(SeekFrom::Start(offset))?;
 

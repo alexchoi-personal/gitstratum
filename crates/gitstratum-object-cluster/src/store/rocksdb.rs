@@ -22,8 +22,8 @@ pub struct StorageStats {
 
 pub struct RocksDbStore {
     db: Arc<DB>,
-    blob_count: AtomicU64,
-    total_bytes: AtomicU64,
+    blob_count: Arc<AtomicU64>,
+    total_bytes: Arc<AtomicU64>,
     compressor: Compressor,
 }
 
@@ -32,6 +32,9 @@ impl RocksDbStore {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         Self::with_compression(path, CompressionConfig::default())
     }
+
+    const META_BLOB_COUNT_KEY: &'static [u8] = b"\x00__blob_count__";
+    const META_TOTAL_BYTES_KEY: &'static [u8] = b"\x00__total_bytes__";
 
     #[instrument(skip_all, fields(path = %path.as_ref().display()))]
     pub fn with_compression(
@@ -48,23 +51,37 @@ impl RocksDbStore {
         let db = DB::open(&opts, path)?;
         let db = Arc::new(db);
 
-        let mut blob_count = 0u64;
-        let mut total_bytes = 0u64;
-
-        let iter = db.iterator(rocksdb::IteratorMode::Start);
-        for item in iter {
-            if let Ok((_, value)) = item {
-                blob_count += 1;
-                total_bytes += value.len() as u64;
-            }
-        }
+        let blob_count = db
+            .get(Self::META_BLOB_COUNT_KEY)?
+            .and_then(|v| {
+                if v.len() == 8 {
+                    let mut bytes = [0u8; 8];
+                    bytes.copy_from_slice(&v);
+                    Some(u64::from_le_bytes(bytes))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        let total_bytes = db
+            .get(Self::META_TOTAL_BYTES_KEY)?
+            .and_then(|v| {
+                if v.len() == 8 {
+                    let mut bytes = [0u8; 8];
+                    bytes.copy_from_slice(&v);
+                    Some(u64::from_le_bytes(bytes))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
 
         debug!(blob_count, total_bytes, "initialized object store");
 
         Ok(Self {
             db,
-            blob_count: AtomicU64::new(blob_count),
-            total_bytes: AtomicU64::new(total_bytes),
+            blob_count: Arc::new(AtomicU64::new(blob_count)),
+            total_bytes: Arc::new(AtomicU64::new(total_bytes)),
             compressor: Compressor::new(compression_config),
         })
     }
@@ -94,9 +111,15 @@ impl RocksDbStore {
         self.db.put(key, &compressed)?;
 
         if !existed {
-            self.blob_count.fetch_add(1, Ordering::Relaxed);
-            self.total_bytes
-                .fetch_add(compressed.len() as u64, Ordering::Relaxed);
+            let new_count = self.blob_count.fetch_add(1, Ordering::Relaxed) + 1;
+            let new_bytes = self
+                .total_bytes
+                .fetch_add(compressed.len() as u64, Ordering::Relaxed)
+                + compressed.len() as u64;
+            self.db
+                .put(Self::META_BLOB_COUNT_KEY, &new_count.to_le_bytes())?;
+            self.db
+                .put(Self::META_TOTAL_BYTES_KEY, &new_bytes.to_le_bytes())?;
         }
 
         Ok(())
@@ -109,9 +132,15 @@ impl RocksDbStore {
         let key = oid.as_bytes();
         if let Some(existing) = self.db.get(key)? {
             self.db.delete(key)?;
-            self.blob_count.fetch_sub(1, Ordering::Relaxed);
-            self.total_bytes
-                .fetch_sub(existing.len() as u64, Ordering::Relaxed);
+            let new_count = self.blob_count.fetch_sub(1, Ordering::Relaxed) - 1;
+            let new_bytes = self
+                .total_bytes
+                .fetch_sub(existing.len() as u64, Ordering::Relaxed)
+                - existing.len() as u64;
+            self.db
+                .put(Self::META_BLOB_COUNT_KEY, &new_count.to_le_bytes())?;
+            self.db
+                .put(Self::META_TOTAL_BYTES_KEY, &new_bytes.to_le_bytes())?;
             Ok(true)
         } else {
             Ok(false)
@@ -136,14 +165,26 @@ impl RocksDbStore {
         }
     }
 
+    fn is_metadata_key(key: &[u8]) -> bool {
+        key.first() == Some(&0x00)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = Result<(Oid, Blob)>> + '_ {
-        self.db.iterator(rocksdb::IteratorMode::Start).map(|item| {
-            let (key, value) = item?;
-            let oid =
-                Oid::from_slice(&key).map_err(|e| ObjectStoreError::InvalidOid(e.to_string()))?;
-            let blob = self.decompress(&oid, &value)?;
-            Ok((oid, blob))
-        })
+        self.db
+            .iterator(rocksdb::IteratorMode::Start)
+            .filter_map(|item| {
+                let (key, value) = item.ok()?;
+                if Self::is_metadata_key(&key) {
+                    return None;
+                }
+                Some((key, value))
+            })
+            .map(|(key, value)| {
+                let oid = Oid::from_slice(&key)
+                    .map_err(|e| ObjectStoreError::InvalidOid(e.to_string()))?;
+                let blob = self.decompress(&oid, &value)?;
+                Ok((oid, blob))
+            })
     }
 
     pub fn iter_range(
@@ -155,6 +196,9 @@ impl RocksDbStore {
             .iterator(rocksdb::IteratorMode::Start)
             .filter_map(move |item| {
                 let (key, value) = item.ok()?;
+                if Self::is_metadata_key(&key) {
+                    return None;
+                }
                 let oid = Oid::from_slice(&key).ok()?;
                 let position = self.oid_position(&oid);
                 if position >= from_position && position < to_position {
@@ -186,15 +230,70 @@ impl RocksDbStore {
 #[async_trait]
 impl ObjectStorage for RocksDbStore {
     async fn get(&self, oid: &Oid) -> Result<Option<Blob>> {
-        self.get_sync(oid)
+        let db = self.db.clone();
+        let compressor = self.compressor.clone();
+        let oid = *oid;
+        tokio::task::spawn_blocking(move || {
+            let key = oid.as_bytes();
+            match db.get(key) {
+                Ok(Some(compressed)) => {
+                    let data = compressor.decompress(&compressed)?;
+                    Ok(Some(Blob::with_oid(oid, Bytes::from(data))))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        })
+        .await
+        .map_err(|e| ObjectStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
     }
 
     async fn put(&self, blob: &Blob) -> Result<()> {
-        self.put_sync(blob)
+        let db = self.db.clone();
+        let compressor = self.compressor.clone();
+        let blob_count = self.blob_count.clone();
+        let total_bytes = self.total_bytes.clone();
+        let oid = blob.oid;
+        let data = blob.data.clone();
+        tokio::task::spawn_blocking(move || {
+            let key = oid.as_bytes();
+            let compressed = compressor.compress(&data)?;
+            let existed = db.get(key)?.is_some();
+            db.put(key, &compressed)?;
+            if !existed {
+                let new_count = blob_count.fetch_add(1, Ordering::Relaxed) + 1;
+                let new_bytes = total_bytes.fetch_add(compressed.len() as u64, Ordering::Relaxed)
+                    + compressed.len() as u64;
+                db.put(RocksDbStore::META_BLOB_COUNT_KEY, &new_count.to_le_bytes())?;
+                db.put(RocksDbStore::META_TOTAL_BYTES_KEY, &new_bytes.to_le_bytes())?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| ObjectStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
     }
 
     async fn delete(&self, oid: &Oid) -> Result<bool> {
-        self.delete_sync(oid)
+        let db = self.db.clone();
+        let blob_count = self.blob_count.clone();
+        let total_bytes = self.total_bytes.clone();
+        let oid = *oid;
+        tokio::task::spawn_blocking(move || {
+            let key = oid.as_bytes();
+            if let Some(existing) = db.get(key)? {
+                db.delete(key)?;
+                let new_count = blob_count.fetch_sub(1, Ordering::Relaxed) - 1;
+                let new_bytes = total_bytes.fetch_sub(existing.len() as u64, Ordering::Relaxed)
+                    - existing.len() as u64;
+                db.put(RocksDbStore::META_BLOB_COUNT_KEY, &new_count.to_le_bytes())?;
+                db.put(RocksDbStore::META_TOTAL_BYTES_KEY, &new_bytes.to_le_bytes())?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })
+        .await
+        .map_err(|e| ObjectStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
     }
 
     fn has(&self, oid: &Oid) -> bool {

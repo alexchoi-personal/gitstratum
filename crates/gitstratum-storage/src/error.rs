@@ -32,6 +32,9 @@ pub enum BucketStoreError {
     #[error("bucket overflow: bucket {bucket_id} is full")]
     BucketOverflow { bucket_id: u32 },
 
+    #[error("invalid bucket id: {bucket_id} >= {bucket_count}")]
+    InvalidBucketId { bucket_id: u32, bucket_count: u32 },
+
     #[error("file too large: {size} bytes exceeds maximum {max}")]
     FileTooLarge { size: u64, max: u64 },
 

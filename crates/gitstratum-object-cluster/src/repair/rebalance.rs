@@ -248,11 +248,12 @@ impl RebalanceHandler {
     pub async fn build_tree_for_range(&self, range: &PositionRange) -> ObjectMerkleTree {
         let mut builder = MerkleTreeBuilder::with_depth(0, 4);
 
-        let mut stream = self.store.iter_range(range.start, range.end);
-        while let Some(result) = stream.next().await {
-            if let Ok((oid, _blob)) = result {
-                let position = oid_to_position(&oid);
-                builder.add(position, oid);
+        if let Ok(mut stream) = self.store.iter_range(range.start, range.end) {
+            while let Some(result) = stream.next().await {
+                if let Ok((oid, _blob)) = result {
+                    let position = oid_to_position(&oid);
+                    builder.add(position, oid);
+                }
             }
         }
 
