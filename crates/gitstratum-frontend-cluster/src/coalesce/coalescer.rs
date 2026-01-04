@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use dashmap::DashMap;
 use thiserror::Error;
@@ -32,27 +31,12 @@ impl Default for CoalesceConfig {
 
 pub struct InflightRequest {
     sender: broadcast::Sender<Arc<Vec<u8>>>,
-    #[allow(dead_code)]
-    started_at: Instant,
 }
 
 impl InflightRequest {
     fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
-        Self {
-            sender,
-            started_at: Instant::now(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn sender(&self) -> &broadcast::Sender<Arc<Vec<u8>>> {
-        &self.sender
-    }
-
-    #[allow(dead_code)]
-    pub fn started_at(&self) -> Instant {
-        self.started_at
+        Self { sender }
     }
 }
 
@@ -261,13 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn test_inflight_request_started_at() {
-        let request = InflightRequest::new(16);
-        let elapsed = request.started_at().elapsed();
-        assert!(elapsed.as_millis() < 100);
-    }
-
-    #[test]
     fn test_coalesce_error_display() {
         let send_err = CoalesceError::SendError("test error".to_string());
         assert!(send_err.to_string().contains("channel send error"));
@@ -286,15 +263,6 @@ mod tests {
 
         let result2 = coalescer.try_coalesce(key);
         assert!(matches!(result2, CoalesceResult::Leader(_)));
-    }
-
-    #[test]
-    fn test_inflight_request_sender() {
-        let request = InflightRequest::new(8);
-        let sender = request.sender();
-        assert_eq!(sender.receiver_count(), 0);
-        let _receiver = sender.subscribe();
-        assert_eq!(sender.receiver_count(), 1);
     }
 
     #[test]

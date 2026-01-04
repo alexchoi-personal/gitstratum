@@ -9,6 +9,7 @@ use tracing::{debug, info, instrument, warn};
 
 use super::hot_repos::HotRepoTracker;
 use super::{PackCache, PackCacheKey, PackData};
+use crate::error::{ObjectStoreError, Result};
 use crate::store::ObjectStorage;
 use crate::store::ObjectStore;
 
@@ -202,8 +203,11 @@ impl PackPrecomputer {
         }
     }
 
-    pub async fn start(&mut self) {
-        let mut rx = self.request_rx.take().expect("start called twice");
+    pub async fn start(&mut self) -> Result<()> {
+        let mut rx = self
+            .request_rx
+            .take()
+            .ok_or(ObjectStoreError::AlreadyStarted)?;
         let mut shutdown_rx = self.shutdown_rx.clone();
 
         info!(
@@ -224,6 +228,7 @@ impl PackPrecomputer {
                 }
             }
         }
+        Ok(())
     }
 
     #[instrument(skip(self))]
@@ -475,7 +480,7 @@ mod tests {
         let mut precomputer = PackPrecomputer::new(config, cache, store);
 
         let handle = tokio::spawn(async move {
-            precomputer.start().await;
+            let _ = precomputer.start().await;
         });
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -586,8 +591,10 @@ mod tests {
         #[cfg(not(feature = "bucketstore"))]
         let (store, _dir) = create_test_store();
         let cache = Arc::new(PackCache::new(1024 * 1024, Duration::from_secs(300)));
-        let mut config = PrecomputeConfig::default();
-        config.hot_repo_threshold = 5;
+        let config = PrecomputeConfig {
+            hot_repo_threshold: 5,
+            ..PrecomputeConfig::default()
+        };
 
         let tracker = Arc::new(HotRepoTracker::new(Duration::from_secs(60)));
         for _ in 0..10 {

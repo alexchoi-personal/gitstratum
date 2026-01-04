@@ -25,6 +25,7 @@ impl BucketHeader {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_bytes(&self) -> [u8; HEADER_SIZE] {
         let mut buf = [0u8; HEADER_SIZE];
         buf[0..4].copy_from_slice(&self.magic.to_le_bytes());
@@ -35,9 +36,9 @@ impl BucketHeader {
 
     pub fn from_bytes(bytes: &[u8; HEADER_SIZE]) -> Self {
         Self {
-            magic: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            count: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
-            crc32: u32::from_le_bytes(bytes[6..10].try_into().unwrap()),
+            magic: u32::from_le_bytes(bytes[0..4].try_into().expect("slice is exactly 4 bytes")),
+            count: u16::from_le_bytes(bytes[4..6].try_into().expect("slice is exactly 2 bytes")),
+            crc32: u32::from_le_bytes(bytes[6..10].try_into().expect("slice is exactly 4 bytes")),
             _reserved: [0u8; 22],
         }
     }
@@ -63,7 +64,11 @@ impl DiskBucket {
     }
 
     pub fn from_bytes(bytes: &[u8; BUCKET_SIZE]) -> Result<Self> {
-        let header = BucketHeader::from_bytes(bytes[0..HEADER_SIZE].try_into().unwrap());
+        let header = BucketHeader::from_bytes(
+            bytes[0..HEADER_SIZE]
+                .try_into()
+                .expect("slice is exactly HEADER_SIZE bytes"),
+        );
 
         if { header.magic } == 0 {
             return Ok(Self::new());
@@ -80,12 +85,19 @@ impl DiskBucket {
         for (i, entry) in entries.iter_mut().enumerate() {
             let start = HEADER_SIZE + i * ENTRY_SIZE;
             let end = start + ENTRY_SIZE;
-            *entry = CompactEntry::from_bytes(bytes[start..end].try_into().unwrap());
+            *entry = CompactEntry::from_bytes(
+                bytes[start..end]
+                    .try_into()
+                    .expect("slice is exactly ENTRY_SIZE bytes"),
+            );
         }
 
         let next_offset = HEADER_SIZE + MAX_ENTRIES * ENTRY_SIZE;
-        let next_overflow =
-            u32::from_le_bytes(bytes[next_offset..next_offset + 4].try_into().unwrap());
+        let next_overflow = u32::from_le_bytes(
+            bytes[next_offset..next_offset + 4]
+                .try_into()
+                .expect("slice is exactly 4 bytes"),
+        );
 
         Ok(Self {
             header,
@@ -171,7 +183,7 @@ mod tests {
     fn test_bucket_insert() {
         let mut bucket = DiskBucket::new();
         let oid = create_test_oid(0x01);
-        let entry = CompactEntry::new(&oid, 1, 0, 100, 0);
+        let entry = CompactEntry::new(&oid, 1, 0, 100, 0).unwrap();
 
         bucket.insert(entry).unwrap();
         let count = { bucket.header.count };
@@ -188,7 +200,7 @@ mod tests {
 
         for i in 0..10 {
             let oid = create_test_oid(i);
-            let entry = CompactEntry::new(&oid, i as u16, 0, 100, 0);
+            let entry = CompactEntry::new(&oid, i as u16, 0, 100, 0).unwrap();
             bucket.insert(entry).unwrap();
         }
 
@@ -207,7 +219,8 @@ mod tests {
 
         for i in 0..5 {
             let oid = create_test_oid(i);
-            let entry = CompactEntry::new(&oid, i as u16, i as u64 * 1000, (i as u32 + 1) * 100, 0);
+            let entry = CompactEntry::new(&oid, i as u16, i as u64 * 1000, (i as u32 + 1) * 100, 0)
+                .unwrap();
             bucket.insert(entry).unwrap();
         }
 
@@ -232,14 +245,14 @@ mod tests {
 
         for i in 0..MAX_ENTRIES {
             let oid = create_test_oid(i as u8);
-            let entry = CompactEntry::new(&oid, 1, 0, 100, 0);
+            let entry = CompactEntry::new(&oid, 1, 0, 100, 0).unwrap();
             bucket.insert(entry).unwrap();
         }
 
         assert!(bucket.is_full());
 
         let oid = create_test_oid(0xFF);
-        let entry = CompactEntry::new(&oid, 1, 0, 100, 0);
+        let entry = CompactEntry::new(&oid, 1, 0, 100, 0).unwrap();
         assert!(bucket.insert(entry).is_err());
     }
 

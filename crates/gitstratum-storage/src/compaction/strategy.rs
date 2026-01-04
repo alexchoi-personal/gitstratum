@@ -2,10 +2,12 @@ use std::time::Duration;
 
 use crate::config::CompactionConfig;
 
-pub struct CompactionStrategy {
+#[allow(dead_code)]
+pub(crate) struct CompactionStrategy {
     config: CompactionConfig,
 }
 
+#[allow(dead_code)]
 impl CompactionStrategy {
     pub fn new(config: CompactionConfig) -> Self {
         Self { config }

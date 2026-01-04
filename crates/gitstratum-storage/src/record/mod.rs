@@ -1,7 +1,5 @@
-pub mod checksum;
-pub mod format;
-pub mod header;
+pub(crate) mod checksum;
+pub(crate) mod format;
+pub(crate) mod header;
 
-pub use checksum::compute_crc32;
-pub use format::{DataRecord, BLOCK_SIZE, RECORD_MAGIC};
-pub use header::{RecordHeader, HEADER_SIZE, KEY_SIZE};
+pub(crate) use format::{DataRecord, BLOCK_SIZE};

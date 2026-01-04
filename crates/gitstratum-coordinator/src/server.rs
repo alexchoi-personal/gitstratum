@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{info, warn};
 
 use gitstratum_proto::coordinator_service_server::CoordinatorService;
 use gitstratum_proto::{
@@ -160,6 +160,7 @@ impl CoordinatorServer {
         }
     }
 
+    #[allow(dead_code)]
     fn decrement_client_watch(&self, client_id: &str) {
         let limiters = self.client_limiters.read();
         if let Some(entry) = limiters.get(client_id) {
@@ -238,7 +239,15 @@ impl CoordinatorServer {
         if let Some(store) = self.raft.mem_store() {
             let data = store.data().await;
             if let Some(value) = data.get(topology_key()) {
-                return deserialize_topology(value).unwrap_or_default();
+                match deserialize_topology(value) {
+                    Ok(topology) => return topology,
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "failed to deserialize topology from raft store, using default"
+                        );
+                    }
+                }
             }
         }
         ClusterTopology::default()
@@ -304,7 +313,6 @@ impl CoordinatorServer {
                 now.duration_since(leader_start) < self.config.leader_grace_period;
 
             let topology = self.read_topology().await;
-            let last_heartbeat = self.last_heartbeat.read().clone();
 
             let all_nodes: Vec<(String, NodeState)> = topology
                 .object_nodes
@@ -314,7 +322,7 @@ impl CoordinatorServer {
                 .collect();
 
             for (node_id, current_state) in all_nodes {
-                let last_hb = last_heartbeat.get(&node_id).copied();
+                let last_hb = self.last_heartbeat.read().get(&node_id).copied();
                 let (suspect_timeout, down_timeout) = self.get_timeout_for_node(&node_id);
 
                 match current_state {
@@ -822,20 +830,33 @@ impl CoordinatorService for CoordinatorServer {
             (String::new(), String::new())
         };
 
-        let active_nodes = (topo.metadata_nodes.len() + topo.object_nodes.len()) as u32;
+        let (active_count, suspect_count, down_count) = topo
+            .metadata_nodes
+            .values()
+            .chain(topo.object_nodes.values())
+            .fold((0u32, 0u32, 0u32), |(a, s, d), node| match node.state() {
+                NodeState::Active | NodeState::Joining => (a + 1, s, d),
+                NodeState::Suspect => (a, s + 1, d),
+                NodeState::Down | NodeState::Draining => (a, s, d + 1),
+                _ => (a, s, d),
+            });
+
+        let healthy = metrics.current_leader.is_some();
+        let committed_index = metrics.last_log_index.unwrap_or(0);
+        let applied_index = metrics.last_applied.map(|l| l.index).unwrap_or(0);
 
         Ok(Response::new(HealthCheckResponse {
-            healthy: true,
+            healthy,
             raft_state: raft_state.into(),
             raft_term: metrics.current_term,
-            committed_index: 0,
-            applied_index: 0,
+            committed_index,
+            applied_index,
             leader_id,
             leader_address,
             topology_version: topo.version,
-            active_nodes,
-            suspect_nodes: 0,
-            down_nodes: 0,
+            active_nodes: active_count,
+            suspect_nodes: suspect_count,
+            down_nodes: down_count,
             watch_subscribers: self.topology_updates.receiver_count() as u32,
         }))
     }
@@ -1075,31 +1096,20 @@ mod tests {
         assert!(flap.last_suspect_at >= now);
     }
 
+    #[test]
     fn test_heartbeat_info_creation() {
-        let now = Instant::now();
-        let info = HeartbeatInfo {
-            known_version: 42,
-            reported_state: 1,
-            generation_id: "gen-123".to_string(),
-            received_at: now,
-        };
+        let info = HeartbeatInfo::new(42, 1, "gen-123".to_string());
         assert_eq!(info.known_version, 42);
         assert_eq!(info.reported_state, 1);
         assert_eq!(info.generation_id, "gen-123");
-        assert!(info.received_at <= Instant::now());
+        assert!(info.received_at > 0);
     }
 
     #[test]
     fn test_heartbeat_batcher_records_heartbeat() {
         let batcher = HeartbeatBatcher::new(Duration::from_secs(1));
-        let now = Instant::now();
 
-        let info = HeartbeatInfo {
-            known_version: 10,
-            reported_state: 1,
-            generation_id: "gen-456".to_string(),
-            received_at: now,
-        };
+        let info = HeartbeatInfo::new(10, 1, "gen-456".to_string());
         batcher.record_heartbeat("node-1".to_string(), info);
 
         assert_eq!(batcher.pending_count(), 1);
@@ -1425,8 +1435,10 @@ mod tests {
 
     #[test]
     fn test_timeout_calculation_outside_flap_window() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_window = Duration::from_millis(10);
+        let config = CoordinatorConfig {
+            flap_window: Duration::from_millis(10),
+            ..CoordinatorConfig::default()
+        };
 
         let old_time = Instant::now() - Duration::from_millis(100);
         let flap = NodeFlap {
@@ -1441,8 +1453,10 @@ mod tests {
 
     #[test]
     fn test_timeout_calculation_custom_multiplier() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_multiplier = 3.0;
+        let config = CoordinatorConfig {
+            flap_multiplier: 3.0,
+            ..CoordinatorConfig::default()
+        };
 
         let now = Instant::now();
         let flap = NodeFlap {
@@ -1546,11 +1560,13 @@ mod tests {
 
     #[test]
     fn test_flap_tracking_workflow() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_threshold = 3;
-        config.flap_window = Duration::from_secs(600);
-        config.flap_multiplier = 2.0;
-        config.stability_window = Duration::from_secs(300);
+        let config = CoordinatorConfig {
+            flap_threshold: 3,
+            flap_window: Duration::from_secs(600),
+            flap_multiplier: 2.0,
+            stability_window: Duration::from_secs(300),
+            ..CoordinatorConfig::default()
+        };
 
         let now = Instant::now();
         let mut flap = NodeFlap {
@@ -1832,8 +1848,10 @@ mod tests {
 
     #[test]
     fn test_flap_threshold_boundary_values() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_threshold = 1;
+        let config = CoordinatorConfig {
+            flap_threshold: 1,
+            ..CoordinatorConfig::default()
+        };
 
         let now = Instant::now();
         let flap = NodeFlap {
@@ -1852,8 +1870,10 @@ mod tests {
 
     #[test]
     fn test_flap_multiplier_one() {
-        let mut config = CoordinatorConfig::default();
-        config.flap_multiplier = 1.0;
+        let config = CoordinatorConfig {
+            flap_multiplier: 1.0,
+            ..CoordinatorConfig::default()
+        };
 
         let now = Instant::now();
         let flap = NodeFlap {

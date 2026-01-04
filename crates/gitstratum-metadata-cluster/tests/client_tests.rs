@@ -123,7 +123,7 @@ async fn test_client_list_repos() {
         .unwrap();
 
     for i in 0..3 {
-        let repo_id = RepoId::new(&format!("repo-{}", i)).unwrap();
+        let repo_id = RepoId::new(format!("repo-{}", i)).unwrap();
         client.create_repo(&repo_id).await.unwrap();
     }
 
@@ -182,7 +182,7 @@ async fn test_client_list_repos_with_cursor() {
         .unwrap();
 
     for i in 0..5 {
-        let repo_id = RepoId::new(&format!("repo-{:02}", i)).unwrap();
+        let repo_id = RepoId::new(format!("repo-{:02}", i)).unwrap();
         client.create_repo(&repo_id).await.unwrap();
     }
 

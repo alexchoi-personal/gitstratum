@@ -2,6 +2,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use tonic::transport::{Channel, Endpoint};
+use tracing::warn;
 
 use gitstratum_core::{Commit, Oid, RefName, RepoId, Signature, Tree, TreeEntry, TreeEntryMode};
 use gitstratum_proto::metadata_service_client::MetadataServiceClient;
@@ -77,16 +78,14 @@ impl MetadataClient {
         let oid = proto
             .oid
             .as_ref()
-            .map(Self::proto_to_oid)
-            .transpose()?
-            .unwrap_or(Oid::ZERO);
+            .ok_or_else(|| MetadataStoreError::MissingField("commit.oid".to_string()))?;
+        let oid = Self::proto_to_oid(oid)?;
 
         let tree = proto
             .tree
             .as_ref()
-            .map(Self::proto_to_oid)
-            .transpose()?
-            .unwrap_or(Oid::ZERO);
+            .ok_or_else(|| MetadataStoreError::MissingField("commit.tree".to_string()))?;
+        let tree = Self::proto_to_oid(tree)?;
 
         let parents: Vec<Oid> = proto
             .parents
@@ -135,22 +134,20 @@ impl MetadataClient {
         let oid = proto
             .oid
             .as_ref()
-            .map(Self::proto_to_oid)
-            .transpose()?
-            .unwrap_or(Oid::ZERO);
+            .ok_or_else(|| MetadataStoreError::MissingField("tree.oid".to_string()))?;
+        let oid = Self::proto_to_oid(oid)?;
 
         let entries: Vec<TreeEntry> = proto
             .entries
             .iter()
-            .map(|e| {
+            .enumerate()
+            .map(|(i, e)| {
                 let mode = TreeEntryMode::from_str(&e.mode)
                     .map_err(|err| MetadataStoreError::Deserialization(err.to_string()))?;
-                let entry_oid = e
-                    .oid
-                    .as_ref()
-                    .map(Self::proto_to_oid)
-                    .transpose()?
-                    .unwrap_or(Oid::ZERO);
+                let entry_oid = e.oid.as_ref().ok_or_else(|| {
+                    MetadataStoreError::MissingField(format!("tree.entries[{}].oid", i))
+                })?;
+                let entry_oid = Self::proto_to_oid(entry_oid)?;
                 Ok(TreeEntry::new(mode, &e.name, entry_oid))
             })
             .collect::<Result<_>>()?;
@@ -192,11 +189,21 @@ impl MetadataClient {
 
         let mut refs = Vec::new();
         for entry in response.refs {
-            if let Ok(ref_name) = RefName::new(&entry.name) {
-                if let Some(target) = &entry.target {
-                    if let Ok(oid) = Self::proto_to_oid(target) {
-                        refs.push((ref_name, oid));
+            match RefName::new(&entry.name) {
+                Ok(ref_name) => {
+                    if let Some(target) = &entry.target {
+                        match Self::proto_to_oid(target) {
+                            Ok(oid) => refs.push((ref_name, oid)),
+                            Err(e) => {
+                                warn!(ref_name = %entry.name, error = %e, "skipping ref with invalid OID");
+                            }
+                        }
+                    } else {
+                        warn!(ref_name = %entry.name, "skipping ref with missing target");
                     }
+                }
+                Err(e) => {
+                    warn!(ref_name = %entry.name, error = %e, "skipping ref with invalid name");
                 }
             }
         }
@@ -617,25 +624,29 @@ mod tests {
             assert_eq!(restored.message, message);
         }
 
-        let proto_missing = ProtoCommit {
+        let proto_missing_oid = ProtoCommit {
             oid: None,
+            tree: Some(ProtoOid {
+                bytes: vec![0x22; 32],
+            }),
+            parents: vec![],
+            author: None,
+            committer: None,
+            message: "Missing oid".to_string(),
+        };
+        assert!(MetadataClient::proto_to_commit(&proto_missing_oid).is_err());
+
+        let proto_missing_tree = ProtoCommit {
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
             tree: None,
             parents: vec![],
             author: None,
             committer: None,
-            message: "Empty commit".to_string(),
+            message: "Missing tree".to_string(),
         };
-        let commit = MetadataClient::proto_to_commit(&proto_missing).unwrap();
-        assert!(commit.oid.is_zero());
-        assert!(commit.tree.is_zero());
-        assert!(commit.parents.is_empty());
-        assert_eq!(commit.author.name, "");
-        assert_eq!(commit.author.email, "");
-        assert_eq!(commit.author.timestamp, 0);
-        assert_eq!(commit.author.timezone, "+0000");
-        assert_eq!(commit.committer.name, "");
-        assert_eq!(commit.committer.email, "");
-        assert_eq!(commit.committer.timezone, "+0000");
+        assert!(MetadataClient::proto_to_commit(&proto_missing_tree).is_err());
 
         let proto_author_only = ProtoCommit {
             oid: Some(ProtoOid {
@@ -819,12 +830,12 @@ mod tests {
                 .map(|i| {
                     if i % 2 == 0 {
                         TreeEntry::file(
-                            &format!("file_{}.txt", i),
+                            format!("file_{}.txt", i),
                             Oid::hash(format!("f{}", i).as_bytes()),
                         )
                     } else {
                         TreeEntry::directory(
-                            &format!("dir_{}", i),
+                            format!("dir_{}", i),
                             Oid::hash(format!("d{}", i).as_bytes()),
                         )
                     }
@@ -858,19 +869,29 @@ mod tests {
             assert_eq!(restored.entries[0].name, name);
         }
 
-        let proto = ProtoTree {
+        let proto_missing_tree_oid = ProtoTree {
             oid: None,
+            entries: vec![ProtoTreeEntry {
+                mode: "040000".to_string(),
+                name: "subdir".to_string(),
+                oid: Some(ProtoOid {
+                    bytes: vec![0x11; 32],
+                }),
+            }],
+        };
+        assert!(MetadataClient::proto_to_tree(&proto_missing_tree_oid).is_err());
+
+        let proto_missing_entry_oid = ProtoTree {
+            oid: Some(ProtoOid {
+                bytes: vec![0x11; 32],
+            }),
             entries: vec![ProtoTreeEntry {
                 mode: "040000".to_string(),
                 name: "subdir".to_string(),
                 oid: None,
             }],
         };
-        let result = MetadataClient::proto_to_tree(&proto);
-        assert!(result.is_ok());
-        let tree = result.unwrap();
-        assert!(tree.oid.is_zero());
-        assert!(tree.entries[0].oid.is_zero());
+        assert!(MetadataClient::proto_to_tree(&proto_missing_entry_oid).is_err());
 
         let entry_names: Vec<String> = vec!["z.txt", "a.txt", "m.txt", "0.txt", "Z.txt"]
             .into_iter()

@@ -3,18 +3,13 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GcState {
+    #[default]
     Idle,
     Marking,
     Sweeping,
     Paused,
-}
-
-impl Default for GcState {
-    fn default() -> Self {
-        GcState::Idle
-    }
 }
 
 pub struct GcSchedulerConfig {

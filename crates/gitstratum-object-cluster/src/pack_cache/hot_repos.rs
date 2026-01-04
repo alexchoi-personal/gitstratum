@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -50,10 +52,14 @@ impl HotRepoTracker {
     pub fn record_access(&self, repo_id: &str) {
         self.maybe_reset_window();
 
-        self.access_counts
-            .entry(repo_id.to_string())
-            .or_insert_with(|| AtomicU64::new(0))
-            .fetch_add(1, Ordering::Relaxed);
+        if let Some(counter) = self.access_counts.get(repo_id) {
+            counter.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.access_counts
+                .entry(repo_id.to_string())
+                .or_insert_with(|| AtomicU64::new(0))
+                .fetch_add(1, Ordering::Relaxed);
+        }
 
         debug!(repo_id = %repo_id, "recorded repo access");
     }
@@ -69,23 +75,27 @@ impl HotRepoTracker {
     pub fn get_hot_repos(&self, threshold: u64) -> Vec<String> {
         self.maybe_reset_window();
 
-        let mut hot_repos: Vec<(String, u64)> = self
-            .access_counts
-            .iter()
-            .filter_map(|entry| {
-                let count = entry.value().load(Ordering::Relaxed);
-                if count >= threshold {
-                    Some((entry.key().clone(), count))
-                } else {
-                    None
+        let max_repos = self.config.max_hot_repos;
+        let mut heap: BinaryHeap<Reverse<(u64, String)>> = BinaryHeap::with_capacity(max_repos + 1);
+
+        for entry in self.access_counts.iter() {
+            let count = entry.value().load(Ordering::Relaxed);
+            if count >= threshold {
+                if heap.len() < max_repos {
+                    heap.push(Reverse((count, entry.key().clone())));
+                } else if let Some(&Reverse((min_count, _))) = heap.peek() {
+                    if count > min_count {
+                        heap.pop();
+                        heap.push(Reverse((count, entry.key().clone())));
+                    }
                 }
-            })
-            .collect();
+            }
+        }
 
-        hot_repos.sort_by(|a, b| b.1.cmp(&a.1));
-        hot_repos.truncate(self.config.max_hot_repos);
+        let mut repos: Vec<(u64, String)> = heap.into_iter().map(|Reverse(item)| item).collect();
+        repos.sort_by(|a, b| b.0.cmp(&a.0));
 
-        let repos: Vec<String> = hot_repos.into_iter().map(|(repo, _)| repo).collect();
+        let repos: Vec<String> = repos.into_iter().map(|(_, repo)| repo).collect();
 
         debug!(
             count = repos.len(),
@@ -158,18 +168,18 @@ impl HotRepoTracker {
     }
 
     pub fn stats(&self) -> HotRepoStats {
-        let repos: Vec<_> = self
-            .access_counts
-            .iter()
-            .map(|entry| entry.value().load(Ordering::Relaxed))
-            .collect();
-
-        let total_accesses: u64 = repos.iter().sum();
-        let repo_count = repos.len();
-        let hot_count = repos
-            .iter()
-            .filter(|&&count| count >= self.config.default_threshold)
-            .count();
+        let threshold = self.config.default_threshold;
+        let (repo_count, hot_count, total_accesses) = self.access_counts.iter().fold(
+            (0usize, 0usize, 0u64),
+            |(repo_count, hot_count, total), entry| {
+                let count = entry.value().load(Ordering::Relaxed);
+                (
+                    repo_count + 1,
+                    hot_count + (count >= threshold) as usize,
+                    total + count,
+                )
+            },
+        );
 
         HotRepoStats {
             repo_count,

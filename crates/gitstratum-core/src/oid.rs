@@ -71,6 +71,14 @@ impl Oid {
         hex::encode(self.0)
     }
 
+    pub fn write_hex(&self, buf: &mut Vec<u8>) {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        for byte in &self.0 {
+            buf.push(HEX_CHARS[(byte >> 4) as usize]);
+            buf.push(HEX_CHARS[(byte & 0x0f) as usize]);
+        }
+    }
+
     pub fn prefix(&self) -> u8 {
         self.0[0]
     }

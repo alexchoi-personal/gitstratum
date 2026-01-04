@@ -94,7 +94,7 @@ pub struct ReplicationWriterStats {
 
 pub struct BatchWriter {
     writer: Arc<ReplicationWriter>,
-    pending: Vec<Blob>,
+    pending: Vec<Arc<Blob>>,
     max_batch_size: usize,
 }
 
@@ -107,8 +107,8 @@ impl BatchWriter {
         }
     }
 
-    pub fn add(&mut self, blob: Blob) -> Option<Vec<Blob>> {
-        self.pending.push(blob);
+    pub fn add(&mut self, blob: Blob) -> Option<Vec<Arc<Blob>>> {
+        self.pending.push(Arc::new(blob));
         if self.pending.len() >= self.max_batch_size {
             Some(self.take_batch())
         } else {
@@ -116,7 +116,7 @@ impl BatchWriter {
         }
     }
 
-    pub fn take_batch(&mut self) -> Vec<Blob> {
+    pub fn take_batch(&mut self) -> Vec<Arc<Blob>> {
         std::mem::take(&mut self.pending)
     }
 
@@ -132,9 +132,9 @@ impl BatchWriter {
         self.pending.clear();
     }
 
-    pub fn group_by_node(&self) -> Result<Vec<(NodeInfo, Vec<Blob>)>> {
+    pub fn group_by_node(&self) -> Result<Vec<(NodeInfo, Vec<Arc<Blob>>)>> {
         use std::collections::HashMap;
-        let mut groups: HashMap<String, (NodeInfo, Vec<Blob>)> = HashMap::new();
+        let mut groups: HashMap<String, (NodeInfo, Vec<Arc<Blob>>)> = HashMap::new();
 
         for blob in &self.pending {
             let nodes = self.writer.get_target_nodes(&blob.oid)?;
@@ -144,7 +144,7 @@ impl BatchWriter {
                     .entry(endpoint)
                     .or_insert_with(|| (node, Vec::new()))
                     .1
-                    .push(blob.clone());
+                    .push(Arc::clone(blob));
             }
         }
 
@@ -234,13 +234,15 @@ pub struct QuorumWriter {
     writes_succeeded: AtomicU64,
     writes_failed: AtomicU64,
     async_writes_queued: AtomicU64,
+    repairs_dropped: AtomicU64,
     repair_tx: Option<mpsc::Sender<(Oid, Vec<String>)>>,
 }
 
 impl QuorumWriter {
-    pub fn new(nodes: Vec<NodeClient>, replication_factor: usize) -> Self {
+    pub fn new(nodes: Vec<NodeClient>, replication_factor: usize) -> crate::Result<Self> {
         let quorum_size = (replication_factor / 2) + 1;
-        Self {
+        let ring = gitstratum_hashring::ConsistentHashRing::new(16, replication_factor)?;
+        Ok(Self {
             nodes,
             quorum_size,
             replication_factor,
@@ -249,19 +251,14 @@ impl QuorumWriter {
                 replication_factor,
                 ..Default::default()
             },
-            ring: Arc::new(
-                gitstratum_hashring::HashRingBuilder::new()
-                    .virtual_nodes(16)
-                    .replication_factor(replication_factor)
-                    .build()
-                    .unwrap_or_else(|_| panic!("failed to build empty ring")),
-            ),
+            ring: Arc::new(ring),
             writes_attempted: AtomicU64::new(0),
             writes_succeeded: AtomicU64::new(0),
             writes_failed: AtomicU64::new(0),
             async_writes_queued: AtomicU64::new(0),
+            repairs_dropped: AtomicU64::new(0),
             repair_tx: None,
-        }
+        })
     }
 
     pub fn with_ring(mut self, ring: Arc<ConsistentHashRing>) -> Self {
@@ -379,7 +376,15 @@ impl QuorumWriter {
 
             if !failed_nodes.is_empty() {
                 if let Some(ref tx) = self.repair_tx {
-                    let _ = tx.try_send((*oid, failed_nodes.clone()));
+                    if let Err(e) = tx.try_send((*oid, failed_nodes.clone())) {
+                        self.repairs_dropped.fetch_add(1, Ordering::Relaxed);
+                        warn!(
+                            oid = %oid,
+                            failed_nodes = ?failed_nodes,
+                            error = %e,
+                            "failed to queue repair task: channel full or closed"
+                        );
+                    }
                 }
             }
         }
@@ -422,6 +427,7 @@ impl QuorumWriter {
             writes_succeeded: self.writes_succeeded.load(Ordering::Relaxed),
             writes_failed: self.writes_failed.load(Ordering::Relaxed),
             async_writes_queued: self.async_writes_queued.load(Ordering::Relaxed),
+            repairs_dropped: self.repairs_dropped.load(Ordering::Relaxed),
         }
     }
 }
@@ -432,6 +438,7 @@ pub struct QuorumWriterStats {
     pub writes_succeeded: u64,
     pub writes_failed: u64,
     pub async_writes_queued: u64,
+    pub repairs_dropped: u64,
 }
 
 #[cfg(test)]
@@ -606,7 +613,7 @@ mod tests {
             NodeClient::new("node-2", "127.0.0.1:9002"),
             NodeClient::new("node-3", "127.0.0.1:9003"),
         ];
-        let writer = QuorumWriter::new(nodes, 3);
+        let writer = QuorumWriter::new(nodes, 3).unwrap();
         assert_eq!(writer.quorum_size(), 2);
         assert_eq!(writer.replication_factor(), 3);
         assert_eq!(writer.node_count(), 3);
@@ -624,7 +631,7 @@ mod tests {
             timeout_ms: 1000,
             async_replication: false,
         };
-        let writer = QuorumWriter::new(nodes, 2).with_config(config);
+        let writer = QuorumWriter::new(nodes, 2).unwrap().with_config(config);
         assert_eq!(writer.quorum_size(), 1);
         assert_eq!(writer.replication_factor(), 2);
     }
@@ -636,7 +643,7 @@ mod tests {
             NodeClient::new("node-2", "127.0.0.1:9002"),
             NodeClient::new("node-3", "127.0.0.1:9003"),
         ];
-        let writer = QuorumWriter::new(nodes, 3);
+        let writer = QuorumWriter::new(nodes, 3).unwrap();
         let oid = Oid::hash(b"test");
         let selected = writer.select_nodes(&oid);
         assert!(!selected.is_empty());
@@ -645,7 +652,7 @@ mod tests {
 
     #[test]
     fn test_quorum_writer_select_nodes_empty() {
-        let writer = QuorumWriter::new(vec![], 3);
+        let writer = QuorumWriter::new(vec![], 3).unwrap();
         let oid = Oid::hash(b"test");
         let selected = writer.select_nodes(&oid);
         assert!(selected.is_empty());
@@ -658,7 +665,7 @@ mod tests {
             NodeClient::new("node-2", "127.0.0.1:9002"),
             NodeClient::new("node-3", "127.0.0.1:9003"),
         ];
-        let writer = QuorumWriter::new(nodes, 3);
+        let writer = QuorumWriter::new(nodes, 3).unwrap();
         let oid = Oid::hash(b"test");
         let data = b"test data";
 
@@ -676,7 +683,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_quorum_writer_write_no_nodes() {
-        let writer = QuorumWriter::new(vec![], 3);
+        let writer = QuorumWriter::new(vec![], 3).unwrap();
         let oid = Oid::hash(b"test");
         let data = b"test data";
 
@@ -696,7 +703,7 @@ mod tests {
             NodeClient::new("node-3", "127.0.0.1:9003"),
         ];
         let ring = create_test_ring();
-        let writer = QuorumWriter::new(nodes, 3).with_ring(ring);
+        let writer = QuorumWriter::new(nodes, 3).unwrap().with_ring(ring);
         assert_eq!(writer.node_count(), 3);
     }
 
@@ -707,7 +714,7 @@ mod tests {
             NodeClient::new("node-2", "127.0.0.1:9002"),
         ];
         let (tx, _rx) = mpsc::channel(10);
-        let writer = QuorumWriter::new(nodes, 2).with_repair_channel(tx);
+        let writer = QuorumWriter::new(nodes, 2).unwrap().with_repair_channel(tx);
 
         let oid = Oid::hash(b"test");
         let result = writer.write(&oid, b"data").await;
@@ -717,7 +724,7 @@ mod tests {
     #[test]
     fn test_quorum_writer_stats_initial() {
         let nodes = vec![NodeClient::new("node-1", "127.0.0.1:9001")];
-        let writer = QuorumWriter::new(nodes, 1);
+        let writer = QuorumWriter::new(nodes, 1).unwrap();
         let stats = writer.stats();
         assert_eq!(stats.writes_attempted, 0);
         assert_eq!(stats.writes_succeeded, 0);
@@ -757,6 +764,7 @@ mod tests {
             writes_succeeded: 8,
             writes_failed: 2,
             async_writes_queued: 5,
+            repairs_dropped: 0,
         };
         let debug = format!("{:?}", stats);
         assert!(debug.contains("QuorumWriterStats"));
@@ -861,7 +869,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let writer = QuorumWriter::new(nodes, 3).with_ring(ring);
+        let writer = QuorumWriter::new(nodes, 3).unwrap().with_ring(ring);
         let oid = Oid::hash(b"test");
         let selected = writer.select_nodes(&oid);
         assert!(selected.is_empty());
@@ -882,7 +890,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let writer = QuorumWriter::new(nodes, 3).with_ring(empty_ring);
+        let writer = QuorumWriter::new(nodes, 3).unwrap().with_ring(empty_ring);
         let oid = Oid::hash(b"test");
         let selected = writer.select_nodes(&oid);
         assert_eq!(selected.len(), 3);
@@ -902,7 +910,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let writer = QuorumWriter::new(nodes, 3).with_ring(empty_ring);
+        let writer = QuorumWriter::new(nodes, 3).unwrap().with_ring(empty_ring);
         let oid = Oid::hash(b"test data");
         let selected = writer.select_nodes(&oid);
         assert_eq!(selected.len(), 2);
@@ -932,6 +940,7 @@ mod tests {
         );
 
         let writer = QuorumWriter::new(nodes, 5)
+            .unwrap()
             .with_ring(empty_ring)
             .with_config(config);
 
@@ -969,6 +978,7 @@ mod tests {
         );
 
         let writer = QuorumWriter::new(nodes, 3)
+            .unwrap()
             .with_ring(empty_ring)
             .with_config(config);
 
@@ -1006,12 +1016,14 @@ mod tests {
             writes_succeeded: 8,
             writes_failed: 2,
             async_writes_queued: 5,
+            repairs_dropped: 1,
         };
         let cloned = stats.clone();
         assert_eq!(cloned.writes_attempted, 10);
         assert_eq!(cloned.writes_succeeded, 8);
         assert_eq!(cloned.writes_failed, 2);
         assert_eq!(cloned.async_writes_queued, 5);
+        assert_eq!(cloned.repairs_dropped, 1);
     }
 
     #[test]
@@ -1062,7 +1074,7 @@ mod tests {
             NodeClient::new("node-1", "127.0.0.1:9001"),
             NodeClient::new("node-2", "127.0.0.1:9002"),
         ];
-        let writer = QuorumWriter::new(nodes, 2);
+        let writer = QuorumWriter::new(nodes, 2).unwrap();
 
         for i in 0..5 {
             let oid = Oid::hash(format!("test-{}", i).as_bytes());
@@ -1162,7 +1174,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let writer = QuorumWriter::new(nodes, 3).with_ring(ring);
+        let writer = QuorumWriter::new(nodes, 3).unwrap().with_ring(ring);
         let oid = Oid::hash(b"test");
         let selected = writer.select_nodes(&oid);
         assert!(selected.len() <= 3);

@@ -55,7 +55,9 @@ impl PktLine {
             PktLine::Data(data) => {
                 let len = data.len() + 4;
                 let mut buf = BytesMut::with_capacity(len);
-                buf.put_slice(format!("{:04x}", len).as_bytes());
+                let mut len_buf = [0u8; 4];
+                write!(&mut len_buf[..], "{:04x}", len).expect("4 hex digits fit in 4 bytes");
+                buf.put_slice(&len_buf);
                 buf.put_slice(data);
                 buf.freeze()
             }

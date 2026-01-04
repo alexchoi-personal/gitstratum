@@ -223,13 +223,14 @@ fn bench_iterator(c: &mut Criterion) {
             |(_tmp, store)| {
                 use tokio_stream::StreamExt;
                 let mut count = 0;
-                let mut iter = store.iter();
-                rt.block_on(async {
-                    while let Some(result) = iter.next().await {
-                        let _ = result.unwrap();
-                        count += 1;
-                    }
-                });
+                if let Ok(mut iter) = store.iter() {
+                    rt.block_on(async {
+                        while let Some(result) = iter.next().await {
+                            let _ = result.unwrap();
+                            count += 1;
+                        }
+                    });
+                }
                 assert_eq!(count, 100);
             },
             BatchSize::SmallInput,

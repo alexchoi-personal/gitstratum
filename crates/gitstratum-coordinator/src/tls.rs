@@ -7,8 +7,15 @@ use tonic::Status;
 
 #[derive(Debug, Error)]
 pub enum TlsError {
-    #[error("Failed to fetch CRL from {url}: {message}")]
-    CrlFetchFailed { url: String, message: String },
+    #[error("failed to fetch CRL from {url}")]
+    CrlFetchFailed {
+        url: String,
+        #[source]
+        source: reqwest::Error,
+    },
+
+    #[error("CRL fetch returned HTTP error from {url}: {status}")]
+    CrlHttpError { url: String, status: String },
 
     #[error("Failed to parse CRL: {0}")]
     CrlParseFailed(String),
@@ -18,6 +25,9 @@ pub enum TlsError {
         elapsed: Duration,
         max_age: Duration,
     },
+
+    #[error("CRL cache is empty after refresh")]
+    CrlCacheEmpty,
 }
 
 #[derive(Debug, Clone)]
@@ -68,10 +78,7 @@ impl CrlChecker {
         if let Some(cached) = cache.as_ref() {
             Ok(cached.revoked_serials.iter().any(|s| s == serial))
         } else {
-            Err(TlsError::CrlFetchFailed {
-                url: self.crl_url.clone(),
-                message: "CRL cache is empty after refresh".to_string(),
-            })
+            Err(TlsError::CrlCacheEmpty)
         }
     }
 
@@ -99,13 +106,13 @@ impl CrlChecker {
             .await
             .map_err(|e| TlsError::CrlFetchFailed {
                 url: self.crl_url.clone(),
-                message: e.to_string(),
+                source: e,
             })?;
 
         if !response.status().is_success() {
-            return Err(TlsError::CrlFetchFailed {
+            return Err(TlsError::CrlHttpError {
                 url: self.crl_url.clone(),
-                message: format!("HTTP status: {}", response.status()),
+                status: response.status().to_string(),
             });
         }
 
@@ -114,7 +121,7 @@ impl CrlChecker {
             .await
             .map_err(|e| TlsError::CrlFetchFailed {
                 url: self.crl_url.clone(),
-                message: e.to_string(),
+                source: e,
             })?;
 
         parse_crl_serials(&body)
@@ -422,7 +429,7 @@ No Revoked Certificates.
         let result = checker.is_certificate_revoked("TEST123").await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            TlsError::CrlFetchFailed { url, message: _ } => {
+            TlsError::CrlFetchFailed { url, source: _ } => {
                 assert_eq!(url, "http://127.0.0.1:1/nonexistent");
             }
             _ => panic!("Expected CrlFetchFailed error"),
@@ -528,13 +535,12 @@ No Revoked Certificates.
 
     #[test]
     fn test_tls_error_display() {
-        let fetch_error = TlsError::CrlFetchFailed {
+        let http_error = TlsError::CrlHttpError {
             url: "https://example.com/crl".to_string(),
-            message: "connection refused".to_string(),
+            status: "404 Not Found".to_string(),
         };
-        assert!(fetch_error.to_string().contains("Failed to fetch CRL"));
-        assert!(fetch_error.to_string().contains("https://example.com/crl"));
-        assert!(fetch_error.to_string().contains("connection refused"));
+        assert!(http_error.to_string().contains("https://example.com/crl"));
+        assert!(http_error.to_string().contains("404 Not Found"));
 
         let parse_error = TlsError::CrlParseFailed("invalid format".to_string());
         assert!(parse_error.to_string().contains("Failed to parse CRL"));
@@ -545,16 +551,19 @@ No Revoked Certificates.
             max_age: Duration::from_secs(3600),
         };
         assert!(stale_error.to_string().contains("CRL is stale"));
+
+        let cache_empty = TlsError::CrlCacheEmpty;
+        assert!(cache_empty.to_string().contains("empty after refresh"));
     }
 
     #[test]
     fn test_tls_error_debug() {
-        let fetch_error = TlsError::CrlFetchFailed {
+        let http_error = TlsError::CrlHttpError {
             url: "https://example.com/crl".to_string(),
-            message: "timeout".to_string(),
+            status: "500".to_string(),
         };
-        let debug_str = format!("{:?}", fetch_error);
-        assert!(debug_str.contains("CrlFetchFailed"));
+        let debug_str = format!("{:?}", http_error);
+        assert!(debug_str.contains("CrlHttpError"));
         assert!(debug_str.contains("https://example.com/crl"));
 
         let parse_error = TlsError::CrlParseFailed("bad pem".to_string());
@@ -613,14 +622,14 @@ No Revoked Certificates.
     }
 
     #[test]
-    fn test_tls_error_crl_fetch_failed_contains_details() {
-        let error = TlsError::CrlFetchFailed {
+    fn test_tls_error_crl_http_error_contains_details() {
+        let error = TlsError::CrlHttpError {
             url: "https://my-ca.internal/revoked.pem".to_string(),
-            message: "DNS resolution failed".to_string(),
+            status: "503 Service Unavailable".to_string(),
         };
         let display = error.to_string();
         assert!(display.contains("my-ca.internal"));
-        assert!(display.contains("DNS resolution failed"));
+        assert!(display.contains("503 Service Unavailable"));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use parking_lot::Mutex;
 use tokio::sync::watch;
 
 const DEFAULT_MAX_RETRIES: u32 = 3;
@@ -75,12 +76,12 @@ impl HeartbeatBatcher {
     }
 
     pub fn record_heartbeat(&self, node_id: String, info: HeartbeatInfo) {
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.pending.lock();
         pending.insert(node_id, info);
     }
 
     pub fn take_batch(&self) -> HashMap<String, HeartbeatInfo> {
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.pending.lock();
         std::mem::take(&mut *pending)
     }
 
@@ -88,7 +89,7 @@ impl HeartbeatBatcher {
         if batch.is_empty() {
             return;
         }
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.pending.lock();
         for (node_id, info) in batch {
             pending.entry(node_id).or_insert(info);
         }
@@ -103,7 +104,7 @@ impl HeartbeatBatcher {
     }
 
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        self.pending.lock().len()
     }
 }
 

@@ -21,7 +21,7 @@ pub enum LfsError {
     DownloadFailed(String),
 
     #[error("backend error: {0}")]
-    Backend(String),
+    Backend(#[source] std::io::Error),
 
     #[error("permission denied: {0}")]
     PermissionDenied(String),

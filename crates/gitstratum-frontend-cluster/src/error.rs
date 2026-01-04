@@ -7,6 +7,16 @@ pub enum FrontendError {
     #[error("object not found: {0}")]
     ObjectNotFound(String),
 
+    #[error("authentication required for repository: {0}")]
+    AuthenticationRequired(String),
+
+    #[error("permission denied: {operation} on {repo_id} by {user_id}")]
+    PermissionDenied {
+        operation: String,
+        repo_id: String,
+        user_id: String,
+    },
+
     #[error("ref not found: {0}")]
     RefNotFound(String),
 
@@ -40,8 +50,8 @@ pub enum FrontendError {
     #[error("control plane error: {0}")]
     ControlPlane(String),
 
-    #[error("hash ring error: {0}")]
-    HashRing(String),
+    #[error("hash ring error")]
+    HashRing(#[source] gitstratum_hashring::HashRingError),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -60,11 +70,17 @@ pub enum FrontendError {
 
     #[error("pack too large: {size} bytes exceeds limit of {limit} bytes")]
     PackTooLarge { size: usize, limit: usize },
+
+    #[error("{operation} timeout after {duration:?}")]
+    Timeout {
+        operation: String,
+        duration: std::time::Duration,
+    },
 }
 
 impl From<gitstratum_hashring::HashRingError> for FrontendError {
     fn from(e: gitstratum_hashring::HashRingError) -> Self {
-        FrontendError::HashRing(e.to_string())
+        FrontendError::HashRing(e)
     }
 }
 
@@ -146,8 +162,8 @@ mod tests {
 
     #[test]
     fn test_hash_ring_display() {
-        let err = FrontendError::HashRing("no nodes".to_string());
-        assert!(err.to_string().contains("no nodes"));
+        let err = FrontendError::HashRing(gitstratum_hashring::HashRingError::EmptyRing);
+        assert!(err.to_string().contains("hash ring"));
     }
 
     #[test]
@@ -211,5 +227,25 @@ mod tests {
         let err = FrontendError::ObjectNotFound("test".to_string());
         let debug = format!("{:?}", err);
         assert!(debug.contains("ObjectNotFound"));
+    }
+
+    #[test]
+    fn test_authentication_required_display() {
+        let err = FrontendError::AuthenticationRequired("org/repo".to_string());
+        assert!(err.to_string().contains("org/repo"));
+        assert!(err.to_string().contains("authentication required"));
+    }
+
+    #[test]
+    fn test_permission_denied_display() {
+        let err = FrontendError::PermissionDenied {
+            operation: "write".to_string(),
+            repo_id: "org/repo".to_string(),
+            user_id: "user123".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("write"));
+        assert!(msg.contains("org/repo"));
+        assert!(msg.contains("user123"));
     }
 }

@@ -1,17 +1,10 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::Arc;
 
 use gitstratum_core::{Blob, Oid};
-use parking_lot::RwLock;
+use moka::sync::Cache;
 
-#[derive(Clone)]
-struct CacheEntry {
-    blob: Blob,
-    last_access: Instant,
-    access_count: u64,
-    size: usize,
-}
+use crate::error::{ObjectStoreError, Result};
 
 pub struct HotObjectsCacheConfig {
     pub max_entries: usize,
@@ -28,120 +21,95 @@ impl Default for HotObjectsCacheConfig {
 }
 
 pub struct HotObjectsCache {
-    config: HotObjectsCacheConfig,
-    entries: RwLock<HashMap<Oid, CacheEntry>>,
+    cache: Cache<Oid, Arc<Blob>>,
     current_size: AtomicU64,
+    max_size_bytes: usize,
     hits: AtomicU64,
     misses: AtomicU64,
 }
 
 impl HotObjectsCache {
-    pub fn new(config: HotObjectsCacheConfig) -> Self {
-        Self {
-            config,
-            entries: RwLock::new(HashMap::new()),
+    pub fn new(config: HotObjectsCacheConfig) -> Result<Self> {
+        if config.max_entries == 0 {
+            return Err(ObjectStoreError::InvalidArgument(
+                "max_entries must be greater than 0".to_string(),
+            ));
+        }
+
+        let cache = Cache::builder()
+            .max_capacity(config.max_entries as u64)
+            .weigher(|_key: &Oid, value: &Arc<Blob>| -> u32 {
+                value.data.len().min(u32::MAX as usize) as u32
+            })
+            .build();
+
+        Ok(Self {
+            cache,
             current_size: AtomicU64::new(0),
+            max_size_bytes: config.max_size_bytes,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
-        }
+        })
     }
 
-    pub fn get(&self, oid: &Oid) -> Option<Blob> {
-        let mut entries = self.entries.write();
-        if let Some(entry) = entries.get_mut(oid) {
-            entry.last_access = Instant::now();
-            entry.access_count += 1;
+    pub fn get(&self, oid: &Oid) -> Option<Arc<Blob>> {
+        if let Some(blob) = self.cache.get(oid) {
             self.hits.fetch_add(1, Ordering::Relaxed);
-            return Some(entry.blob.clone());
+            Some(blob)
+        } else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            None
         }
-        self.misses.fetch_add(1, Ordering::Relaxed);
-        None
     }
 
     pub fn put(&self, blob: Blob) {
         let size = blob.data.len();
-
-        self.evict_if_needed(size);
-
-        let entry = CacheEntry {
-            blob: blob.clone(),
-            last_access: Instant::now(),
-            access_count: 1,
-            size,
-        };
-
         let oid = blob.oid;
-        let mut entries = self.entries.write();
-        if let Some(old) = entries.insert(oid, entry) {
+
+        if let Some(old) = self.cache.get(&oid) {
             self.current_size
-                .fetch_sub(old.size as u64, Ordering::Relaxed);
+                .fetch_sub(old.data.len() as u64, Ordering::Relaxed);
         }
+
+        let arc_blob = Arc::new(blob);
+        self.cache.insert(oid, arc_blob);
         self.current_size.fetch_add(size as u64, Ordering::Relaxed);
     }
 
-    fn evict_if_needed(&self, incoming_size: usize) {
-        let current = self.current_size.load(Ordering::Relaxed) as usize;
-        let entries_count = self.entries.read().len();
-
-        if current + incoming_size <= self.config.max_size_bytes
-            && entries_count < self.config.max_entries
-        {
-            return;
-        }
-
-        let mut entries = self.entries.write();
-
-        while (self.current_size.load(Ordering::Relaxed) as usize + incoming_size
-            > self.config.max_size_bytes)
-            || entries.len() >= self.config.max_entries
-        {
-            let lru = entries
-                .iter()
-                .min_by_key(|(_, e)| e.last_access)
-                .map(|(k, _)| *k);
-
-            if let Some(oid) = lru {
-                if let Some(entry) = entries.remove(&oid) {
-                    self.current_size
-                        .fetch_sub(entry.size as u64, Ordering::Relaxed);
-                }
-            } else {
-                break;
-            }
-        }
-    }
-
-    pub fn remove(&self, oid: &Oid) -> Option<Blob> {
-        let mut entries = self.entries.write();
-        if let Some(entry) = entries.remove(oid) {
+    pub fn remove(&self, oid: &Oid) -> Option<Arc<Blob>> {
+        if let Some(blob) = self.cache.remove(oid) {
             self.current_size
-                .fetch_sub(entry.size as u64, Ordering::Relaxed);
-            Some(entry.blob)
+                .fetch_sub(blob.data.len() as u64, Ordering::Relaxed);
+            Some(blob)
         } else {
             None
         }
     }
 
     pub fn contains(&self, oid: &Oid) -> bool {
-        self.entries.read().contains_key(oid)
+        self.cache.contains_key(oid)
     }
 
     pub fn clear(&self) {
-        let mut entries = self.entries.write();
-        entries.clear();
+        self.cache.invalidate_all();
         self.current_size.store(0, Ordering::Relaxed);
     }
 
     pub fn len(&self) -> usize {
-        self.entries.read().len()
+        self.cache.run_pending_tasks();
+        self.cache.entry_count() as usize
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.read().is_empty()
+        self.len() == 0
     }
 
     pub fn size_bytes(&self) -> usize {
         self.current_size.load(Ordering::Relaxed) as usize
+    }
+
+    pub fn max_size_bytes(&self) -> usize {
+        self.max_size_bytes
     }
 
     pub fn hit_rate(&self) -> f64 {
@@ -168,7 +136,7 @@ impl HotObjectsCache {
 
 impl Default for HotObjectsCache {
     fn default() -> Self {
-        Self::new(HotObjectsCacheConfig::default())
+        Self::new(HotObjectsCacheConfig::default()).expect("default config should always be valid")
     }
 }
 
@@ -263,22 +231,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_eviction() {
-        let config = HotObjectsCacheConfig {
-            max_entries: 2,
-            max_size_bytes: 1024 * 1024,
-        };
-        let cache = HotObjectsCache::new(config);
-
-        for i in 0..3 {
-            let blob = create_test_blob(&[i; 10]);
-            cache.put(blob);
-        }
-
-        assert_eq!(cache.len(), 2);
-    }
-
-    #[test]
     fn test_cache_stats() {
         let cache = HotObjectsCache::default();
         let blob = create_test_blob(b"test data");
@@ -312,5 +264,44 @@ mod tests {
         let blob = create_test_blob(b"12345678901234567890");
         cache.put(blob);
         assert_eq!(cache.size_bytes(), 20);
+    }
+
+    #[test]
+    fn test_cache_update_existing() {
+        let cache = HotObjectsCache::default();
+        let blob1 = create_test_blob(b"first version");
+        let oid = blob1.oid;
+
+        cache.put(blob1);
+        assert_eq!(cache.size_bytes(), 13);
+
+        let blob2 = Blob {
+            oid,
+            data: bytes::Bytes::from_static(b"second version longer"),
+        };
+        cache.put(blob2);
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.size_bytes(), 21);
+    }
+
+    #[test]
+    fn test_cache_new_zero_max_entries_fails() {
+        let config = HotObjectsCacheConfig {
+            max_entries: 0,
+            max_size_bytes: 1024,
+        };
+        let result = HotObjectsCache::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cache_max_size_bytes() {
+        let config = HotObjectsCacheConfig {
+            max_entries: 100,
+            max_size_bytes: 512,
+        };
+        let cache = HotObjectsCache::new(config).unwrap();
+        assert_eq!(cache.max_size_bytes(), 512);
     }
 }

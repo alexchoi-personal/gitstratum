@@ -1,9 +1,11 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use crate::bucket::{DiskBucket, BUCKET_SIZE};
-use crate::error::Result;
+use crate::error::{BucketStoreError, Result};
 
 pub struct BucketFile {
     file: File,
@@ -11,22 +13,16 @@ pub struct BucketFile {
     path: PathBuf,
 }
 
-impl Clone for BucketFile {
-    fn clone(&self) -> Self {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)
-            .expect("failed to clone bucket file");
-        Self {
+impl BucketFile {
+    pub fn try_clone(&self) -> Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        Ok(Self {
             file,
             bucket_count: self.bucket_count,
             path: self.path.clone(),
-        }
+        })
     }
-}
 
-impl BucketFile {
     pub fn create(path: &Path, bucket_count: u32) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -49,7 +45,13 @@ impl BucketFile {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
 
         let metadata = file.metadata()?;
-        let bucket_count = (metadata.len() / BUCKET_SIZE as u64) as u32;
+        let file_size = metadata.len();
+        let bucket_count_u64 = file_size / BUCKET_SIZE as u64;
+        let bucket_count =
+            u32::try_from(bucket_count_u64).map_err(|_| BucketStoreError::FileTooLarge {
+                size: file_size,
+                max: u32::MAX as u64 * BUCKET_SIZE as u64,
+            })?;
 
         Ok(Self {
             file,
@@ -59,6 +61,12 @@ impl BucketFile {
     }
 
     pub fn read_bucket(&mut self, bucket_id: u32) -> Result<DiskBucket> {
+        if bucket_id >= self.bucket_count {
+            return Err(BucketStoreError::InvalidBucketId {
+                bucket_id,
+                bucket_count: self.bucket_count,
+            });
+        }
         let offset = bucket_id as u64 * BUCKET_SIZE as u64;
         self.file.seek(SeekFrom::Start(offset))?;
 
@@ -68,7 +76,38 @@ impl BucketFile {
         DiskBucket::from_bytes(&buf)
     }
 
+    #[cfg(unix)]
+    pub fn read_bucket_at(&self, bucket_id: u32) -> Result<DiskBucket> {
+        if bucket_id >= self.bucket_count {
+            return Err(BucketStoreError::InvalidBucketId {
+                bucket_id,
+                bucket_count: self.bucket_count,
+            });
+        }
+        let offset = bucket_id as u64 * BUCKET_SIZE as u64;
+
+        let mut buf = [0u8; BUCKET_SIZE];
+        self.file.read_exact_at(&mut buf, offset)?;
+
+        DiskBucket::from_bytes(&buf)
+    }
+
+    #[cfg(not(unix))]
+    pub fn read_bucket_at(&self, bucket_id: u32) -> Result<DiskBucket> {
+        Err(BucketStoreError::CorruptedBucket {
+            offset: bucket_id as u64 * BUCKET_SIZE as u64,
+            reason: "read_bucket_at not supported on non-Unix platforms".into(),
+        })
+    }
+
+    #[allow(dead_code)]
     pub fn write_bucket(&mut self, bucket_id: u32, bucket: &DiskBucket) -> Result<()> {
+        if bucket_id >= self.bucket_count {
+            return Err(BucketStoreError::InvalidBucketId {
+                bucket_id,
+                bucket_count: self.bucket_count,
+            });
+        }
         let offset = bucket_id as u64 * BUCKET_SIZE as u64;
         self.file.seek(SeekFrom::Start(offset))?;
 
@@ -78,11 +117,13 @@ impl BucketFile {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn sync(&self) -> Result<()> {
         self.file.sync_all()?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn bucket_count(&self) -> u32 {
         self.bucket_count
     }

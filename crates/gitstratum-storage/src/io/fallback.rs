@@ -5,6 +5,7 @@ use nix::unistd::fsync;
 
 use crate::error::Result;
 
+#[allow(dead_code)]
 pub const DEFAULT_RING_SIZE: u32 = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,11 +111,24 @@ impl UringHandle {
 
     fn execute_read(&self, req: IoRequest) -> IoCompletion {
         let mut buffer = req.buffer.into_vec();
-        // SAFETY: The fd is valid for the duration of this synchronous call.
-        // The caller (DataFile/BucketIo) keeps the File handle alive.
+
+        let offset = match i64::try_from(req.offset) {
+            Ok(o) => o,
+            Err(_) => {
+                return IoCompletion {
+                    id: req.id,
+                    result: Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "offset exceeds i64::MAX",
+                    )),
+                    buffer: buffer.into_boxed_slice(),
+                };
+            }
+        };
+
         let fd = unsafe { BorrowedFd::borrow_raw(req.fd) };
-        let result = pread(fd, &mut buffer, req.offset as i64)
-            .map_err(|e| std::io::Error::from_raw_os_error(e as i32));
+        let result =
+            pread(fd, &mut buffer, offset).map_err(|e| std::io::Error::from_raw_os_error(e as i32));
 
         IoCompletion {
             id: req.id,
@@ -125,10 +139,24 @@ impl UringHandle {
 
     fn execute_write(&self, req: IoRequest) -> IoCompletion {
         let buffer = req.buffer;
-        // SAFETY: The fd is valid for the duration of this synchronous call.
+
+        let offset = match i64::try_from(req.offset) {
+            Ok(o) => o,
+            Err(_) => {
+                return IoCompletion {
+                    id: req.id,
+                    result: Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "offset exceeds i64::MAX",
+                    )),
+                    buffer,
+                };
+            }
+        };
+
         let fd = unsafe { BorrowedFd::borrow_raw(req.fd) };
-        let result = pwrite(fd, &buffer, req.offset as i64)
-            .map_err(|e| std::io::Error::from_raw_os_error(e as i32));
+        let result =
+            pwrite(fd, &buffer, offset).map_err(|e| std::io::Error::from_raw_os_error(e as i32));
 
         IoCompletion {
             id: req.id,
@@ -149,6 +177,7 @@ impl UringHandle {
         }
     }
 
+    #[allow(dead_code)]
     pub fn inflight_count(&self) -> usize {
         self.pending.len()
     }

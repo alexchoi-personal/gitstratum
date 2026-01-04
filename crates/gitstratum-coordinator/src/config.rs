@@ -88,7 +88,7 @@ pub struct TlsConfig {
 impl Default for TlsConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             cert_path: PathBuf::new(),
             key_path: PathBuf::new(),
             ca_path: PathBuf::new(),
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn test_tls_config_default() {
         let config = TlsConfig::default();
-        assert!(config.enabled);
+        assert!(!config.enabled);
         assert!(config.cert_path.as_os_str().is_empty());
         assert!(config.key_path.as_os_str().is_empty());
         assert!(config.ca_path.as_os_str().is_empty());
@@ -167,9 +167,11 @@ mod tests {
 
     #[test]
     fn test_tls_config_clone() {
-        let mut config = TlsConfig::default();
-        config.enabled = false;
-        config.cert_path = PathBuf::from("/etc/certs/server.crt");
+        let config = TlsConfig {
+            enabled: false,
+            cert_path: PathBuf::from("/etc/certs/server.crt"),
+            ..TlsConfig::default()
+        };
         let cloned = config.clone();
         assert!(!cloned.enabled);
         assert_eq!(cloned.cert_path, PathBuf::from("/etc/certs/server.crt"));

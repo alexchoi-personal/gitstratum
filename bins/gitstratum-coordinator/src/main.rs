@@ -45,6 +45,9 @@ struct Args {
 
     #[arg(long, default_value = "1")]
     heartbeat_batch_interval: u64,
+
+    #[arg(long, default_value = "0.0.0.0:9090")]
+    metrics_addr: SocketAddr,
 }
 
 #[tokio::main]
@@ -54,6 +57,10 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    let _metrics = gitstratum_metrics::init_metrics(args.metrics_addr)
+        .map_err(|e| anyhow::anyhow!("metrics init failed: {}", e))?;
+    tracing::info!(%args.metrics_addr, "Metrics server started");
 
     let node_id = args.node_id.unwrap_or_else(|| {
         RaftNodeManager::<KeyValueStateMachine>::node_id_from_hostname().unwrap_or(1)
@@ -83,10 +90,12 @@ async fn main() -> Result<()> {
 
     raft.start_grpc_server(args.raft_addr.port()).await?;
 
-    let mut config = CoordinatorConfig::default();
-    config.suspect_timeout = Duration::from_secs(args.suspect_timeout);
-    config.down_timeout = Duration::from_secs(args.down_timeout);
-    config.heartbeat_batch_interval = Duration::from_secs(args.heartbeat_batch_interval);
+    let config = CoordinatorConfig {
+        suspect_timeout: Duration::from_secs(args.suspect_timeout),
+        down_timeout: Duration::from_secs(args.down_timeout),
+        heartbeat_batch_interval: Duration::from_secs(args.heartbeat_batch_interval),
+        ..CoordinatorConfig::default()
+    };
 
     let batcher = Arc::new(HeartbeatBatcher::new(config.heartbeat_batch_interval));
     let global_limiter = Arc::new(GlobalRateLimiter::with_config(

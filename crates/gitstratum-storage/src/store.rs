@@ -133,7 +133,7 @@ impl BucketStore {
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_micros() as u64;
 
         let record = DataRecord::new(oid, value.clone(), timestamp)?;
@@ -159,7 +159,7 @@ impl BucketStore {
             offset,
             record_size as u32,
             EntryFlags::NONE.bits(),
-        );
+        )?;
 
         let bucket_id = self.bucket_index.bucket_id(&oid);
         self.bucket_cache.invalidate(bucket_id);
@@ -275,7 +275,7 @@ impl BucketStore {
             return false;
         }
 
-        if let Ok(bucket) = self.bucket_file_for_iter.write().read_bucket(bucket_id) {
+        if let Ok(bucket) = self.bucket_file_for_iter.read().read_bucket_at(bucket_id) {
             self.bucket_cache.put(bucket_id, bucket.clone());
             if let Some(entry) = bucket.find_entry(oid) {
                 return !entry.is_deleted();
@@ -338,7 +338,8 @@ impl BucketStore {
     }
 
     pub async fn sync(&self) -> Result<()> {
-        self.inner.active_file.read().clone().sync().await?;
+        let active_file = self.inner.active_file.read().clone();
+        active_file.sync().await?;
         self.inner.bucket_io.sync().await?;
         Ok(())
     }
@@ -376,27 +377,31 @@ impl BucketStore {
         Ok(())
     }
 
-    pub fn iter(&self) -> BucketStoreIterator {
-        BucketStoreIterator::new(
+    pub fn iter(&self) -> Result<BucketStoreIterator> {
+        Ok(BucketStoreIterator::new(
             self.config.bucket_count,
-            self.bucket_file_for_iter.read().clone(),
+            self.bucket_file_for_iter.read().try_clone()?,
             self.file_manager.clone(),
-        )
+        ))
     }
 
-    pub fn iter_by_position(&self, from: u64, to: u64) -> BucketStorePositionIterator {
-        BucketStorePositionIterator::new(
+    pub fn iter_by_position(&self, from: u64, to: u64) -> Result<BucketStorePositionIterator> {
+        Ok(BucketStorePositionIterator::new(
             self.config.bucket_count,
-            self.bucket_file_for_iter.read().clone(),
+            self.bucket_file_for_iter.read().try_clone()?,
             self.file_manager.clone(),
             from,
             to,
-        )
+        ))
     }
 }
 
 fn compute_position(oid: &Oid) -> u64 {
-    u64::from_le_bytes(oid.as_bytes()[..8].try_into().unwrap())
+    u64::from_le_bytes(
+        oid.as_bytes()[..8]
+            .try_into()
+            .expect("Oid is always 32 bytes, first 8 bytes always valid"),
+    )
 }
 
 pub struct BucketStoreIterator {
@@ -442,13 +447,25 @@ impl BucketStoreIterator {
         None
     }
 
-    fn read_entry(&mut self, entry: &CompactEntry) -> Option<(Oid, Bytes)> {
+    fn read_entry(&self, entry: &CompactEntry) -> Option<(Oid, Bytes)> {
         let file_id = entry.file_id;
         let offset = entry.offset();
         let size = entry.size() as usize;
 
-        let data_file = self.file_manager.open_data_file(file_id).ok()?;
-        data_file.read_record_at_blocking(offset, size).ok()
+        let data_file = match self.file_manager.open_data_file(file_id) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(file_id, error = %e, "failed to open data file during iteration");
+                return None;
+            }
+        };
+        match data_file.read_record_at_blocking(offset, size) {
+            Ok(result) => Some(result),
+            Err(e) => {
+                tracing::warn!(file_id, offset, size, error = %e, "failed to read record during iteration");
+                None
+            }
+        }
     }
 }
 
@@ -532,6 +549,17 @@ impl BucketStoreStats {
             0.0
         } else {
             self.dead_bytes as f64 / self.total_bytes as f64
+        }
+    }
+}
+
+impl Drop for BucketStore {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.shutdown_notify.notify_waiters();
+        self.io.shutdown();
+        for handle in self.reaper_handles.write().drain(..) {
+            handle.abort();
         }
     }
 }
@@ -898,7 +926,7 @@ mod tests {
 
         assert_eq!(store.len(), 3, "Store should have 3 entries");
 
-        let items: Vec<_> = store.iter().collect::<Vec<_>>().await;
+        let items: Vec<_> = store.iter().unwrap().collect::<Vec<_>>().await;
         assert_eq!(items.len(), 3);
     }
 
@@ -918,6 +946,7 @@ mod tests {
 
         let items: Vec<_> = store
             .iter_by_position(0, u64::MAX)
+            .unwrap()
             .collect::<Vec<_>>()
             .await;
         assert_eq!(items.len(), 2);

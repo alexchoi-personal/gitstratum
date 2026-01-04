@@ -4,6 +4,7 @@ use gitstratum_core::{Blob, Commit, Oid, Tree};
 use std::sync::Arc;
 use tracing::{info, instrument};
 
+use crate::auth::{record_permission_check, AuthResult};
 use crate::cache::negotiation::NegotiationRequest;
 use crate::commands::receive_pack::{GitReceivePack, PushResult, RefUpdate};
 use crate::commands::upload_pack::GitUploadPack;
@@ -45,6 +46,8 @@ pub trait MetadataConnection: Send + Sync {
         force: bool,
     ) -> Result<bool>;
     async fn get_ref(&self, repo_id: &str, ref_name: &str) -> Result<Option<Oid>>;
+    async fn check_permission(&self, repo_id: &str, user_id: &str, perm: u8) -> Result<bool>;
+    async fn set_permission(&self, repo_id: &str, user_id: &str, perm: u8) -> Result<()>;
 }
 
 #[async_trait]
@@ -195,6 +198,108 @@ where
 
     pub fn node_id(&self) -> &str {
         &self.node_id
+    }
+
+    pub async fn check_read_access(&self, repo_id: &str, auth: &AuthResult) -> Result<()> {
+        if !auth.authenticated {
+            return Err(FrontendError::AuthenticationRequired(repo_id.to_string()));
+        }
+
+        if auth.can_read() {
+            record_permission_check(true);
+            return Ok(());
+        }
+
+        let has_perm = self
+            .metadata
+            .check_permission(repo_id, &auth.user_id, 0x01)
+            .await?;
+        if has_perm {
+            record_permission_check(true);
+            return Ok(());
+        }
+
+        record_permission_check(false);
+        Err(FrontendError::PermissionDenied {
+            operation: "read".to_string(),
+            repo_id: repo_id.to_string(),
+            user_id: auth.user_id.clone(),
+        })
+    }
+
+    pub async fn check_write_access(&self, repo_id: &str, auth: &AuthResult) -> Result<()> {
+        if !auth.authenticated {
+            return Err(FrontendError::AuthenticationRequired(repo_id.to_string()));
+        }
+
+        if auth.can_write() {
+            record_permission_check(true);
+            return Ok(());
+        }
+
+        let has_perm = self
+            .metadata
+            .check_permission(repo_id, &auth.user_id, 0x02)
+            .await?;
+        if has_perm {
+            record_permission_check(true);
+            return Ok(());
+        }
+
+        record_permission_check(false);
+        Err(FrontendError::PermissionDenied {
+            operation: "write".to_string(),
+            repo_id: repo_id.to_string(),
+            user_id: auth.user_id.clone(),
+        })
+    }
+
+    #[instrument(skip(self, auth))]
+    pub async fn advertise_refs_with_auth(
+        &self,
+        repo_id: &str,
+        auth: &AuthResult,
+    ) -> Result<Vec<(String, Oid)>> {
+        self.check_read_access(repo_id, auth).await?;
+        info!(repo_id, user_id = %auth.user_id, "advertising refs");
+        self.metadata.list_refs(repo_id, "").await
+    }
+
+    #[instrument(skip(self, request, auth))]
+    pub async fn handle_fetch_with_auth(
+        &self,
+        repo_id: &str,
+        request: NegotiationRequest,
+        auth: &AuthResult,
+    ) -> Result<Bytes> {
+        self.check_read_access(repo_id, auth).await?;
+        info!(
+            repo_id,
+            user_id = %auth.user_id,
+            wants = request.wants.len(),
+            haves = request.haves.len(),
+            "handling authenticated fetch request"
+        );
+        self.handle_fetch(repo_id, request).await
+    }
+
+    #[instrument(skip(self, updates, pack_data, auth))]
+    pub async fn handle_push_with_auth(
+        &self,
+        repo_id: &str,
+        updates: Vec<RefUpdate>,
+        pack_data: Bytes,
+        auth: &AuthResult,
+    ) -> Result<PushResult> {
+        self.check_write_access(repo_id, auth).await?;
+        info!(
+            repo_id,
+            user_id = %auth.user_id,
+            updates = updates.len(),
+            pack_size = pack_data.len(),
+            "handling authenticated push request"
+        );
+        self.handle_push(repo_id, updates, pack_data).await
     }
 }
 
@@ -427,6 +532,7 @@ mod tests {
         commits: Mutex<HashMap<Oid, Commit>>,
         trees: Mutex<HashMap<Oid, Tree>>,
         refs: Mutex<HashMap<String, Oid>>,
+        permissions: Mutex<HashMap<(String, String), u8>>,
     }
 
     impl MockMetadata {
@@ -435,6 +541,7 @@ mod tests {
                 commits: Mutex::new(HashMap::new()),
                 trees: Mutex::new(HashMap::new()),
                 refs: Mutex::new(HashMap::new()),
+                permissions: Mutex::new(HashMap::new()),
             }
         }
 
@@ -448,6 +555,13 @@ mod tests {
 
         async fn set_ref(&self, name: &str, oid: Oid) {
             self.refs.lock().await.insert(name.to_string(), oid);
+        }
+
+        async fn grant_permission(&self, repo_id: &str, user_id: &str, perm: u8) {
+            self.permissions
+                .lock()
+                .await
+                .insert((repo_id.to_string(), user_id.to_string()), perm);
         }
     }
 
@@ -510,6 +624,23 @@ mod tests {
 
         async fn get_ref(&self, _repo_id: &str, ref_name: &str) -> Result<Option<Oid>> {
             Ok(self.refs.lock().await.get(ref_name).copied())
+        }
+
+        async fn check_permission(&self, repo_id: &str, user_id: &str, perm: u8) -> Result<bool> {
+            let perms = self.permissions.lock().await;
+            let key = (repo_id.to_string(), user_id.to_string());
+            Ok(perms
+                .get(&key)
+                .map(|p| (*p & perm) == perm)
+                .unwrap_or(false))
+        }
+
+        async fn set_permission(&self, repo_id: &str, user_id: &str, perm: u8) -> Result<()> {
+            self.permissions
+                .lock()
+                .await
+                .insert((repo_id.to_string(), user_id.to_string()), perm);
+            Ok(())
         }
     }
 
@@ -756,5 +887,258 @@ mod tests {
 
         let result = frontend.get_tree("repo", &tree.oid).await.unwrap();
         assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_check_read_access_unauthenticated() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::unauthenticated();
+
+        let result = frontend.check_read_access("org/repo", &auth).await;
+        assert!(matches!(
+            result,
+            Err(FrontendError::AuthenticationRequired(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_check_read_access_with_scope() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string()).with_permission("read");
+
+        let result = frontend.check_read_access("org/repo", &auth).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_check_read_access_with_acl() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        metadata.grant_permission("org/repo", "user1", 0x01).await;
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string());
+
+        let result = frontend.check_read_access("org/repo", &auth).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_check_read_access_denied() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string());
+
+        let result = frontend.check_read_access("org/repo", &auth).await;
+        assert!(matches!(
+            result,
+            Err(FrontendError::PermissionDenied { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_check_write_access_unauthenticated() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::unauthenticated();
+
+        let result = frontend.check_write_access("org/repo", &auth).await;
+        assert!(matches!(
+            result,
+            Err(FrontendError::AuthenticationRequired(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_check_write_access_with_scope() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string()).with_permission("write");
+
+        let result = frontend.check_write_access("org/repo", &auth).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_check_write_access_with_acl() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        metadata.grant_permission("org/repo", "user1", 0x02).await;
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string());
+
+        let result = frontend.check_write_access("org/repo", &auth).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_check_write_access_denied() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string());
+
+        let result = frontend.check_write_access("org/repo", &auth).await;
+        assert!(matches!(
+            result,
+            Err(FrontendError::PermissionDenied { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_advertise_refs_with_auth() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let oid = Oid::hash(b"commit");
+        metadata.set_ref("refs/heads/main", oid).await;
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string()).with_permission("read");
+
+        let refs = frontend
+            .advertise_refs_with_auth("org/repo", &auth)
+            .await
+            .unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].0, "refs/heads/main");
+    }
+
+    #[tokio::test]
+    async fn test_advertise_refs_with_auth_denied() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string());
+
+        let result = frontend.advertise_refs_with_auth("org/repo", &auth).await;
+        assert!(matches!(
+            result,
+            Err(FrontendError::PermissionDenied { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_fetch_with_auth() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let blob = Blob::new(b"content".to_vec());
+        object.add_blob(blob.clone()).await;
+
+        let tree = Tree::new(vec![TreeEntry::file("file.txt", blob.oid)]);
+        metadata.add_tree(tree.clone()).await;
+
+        let commit = create_test_commit("test", tree.oid, vec![]);
+        metadata.add_commit(commit.clone()).await;
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string()).with_permission("read");
+
+        let mut request = NegotiationRequest::new();
+        request.add_want(commit.oid);
+        request.done = true;
+
+        let pack = frontend
+            .handle_fetch_with_auth("org/repo", request, &auth)
+            .await
+            .unwrap();
+        assert!(!pack.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_fetch_with_auth_denied() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string());
+
+        let request = NegotiationRequest::new();
+
+        let result = frontend
+            .handle_fetch_with_auth("org/repo", request, &auth)
+            .await;
+        assert!(matches!(
+            result,
+            Err(FrontendError::PermissionDenied { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_push_with_auth() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string()).with_permission("write");
+
+        let pack_data = create_test_pack();
+        let updates = vec![RefUpdate::new(
+            "refs/heads/main".to_string(),
+            Oid::ZERO,
+            Oid::hash(b"new"),
+        )];
+
+        let result = frontend
+            .handle_push_with_auth("org/repo", updates, pack_data, &auth)
+            .await
+            .unwrap();
+        assert!(result.all_successful());
+    }
+
+    #[tokio::test]
+    async fn test_handle_push_with_auth_denied() {
+        let control = Arc::new(MockControlPlane::new());
+        let metadata = Arc::new(MockMetadata::new());
+        let object = Arc::new(MockObject::new());
+
+        let frontend = GitFrontend::new(control, metadata, object, "frontend-1".to_string());
+        let auth = AuthResult::authenticated("user1".to_string()).with_permission("read");
+
+        let pack_data = create_test_pack();
+        let updates = vec![RefUpdate::new(
+            "refs/heads/main".to_string(),
+            Oid::ZERO,
+            Oid::hash(b"new"),
+        )];
+
+        let result = frontend
+            .handle_push_with_auth("org/repo", updates, pack_data, &auth)
+            .await;
+        assert!(matches!(
+            result,
+            Err(FrontendError::PermissionDenied { .. })
+        ));
     }
 }

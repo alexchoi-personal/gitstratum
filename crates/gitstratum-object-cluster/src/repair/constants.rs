@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 /// Default repair bandwidth limit: 100 MB/s

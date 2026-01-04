@@ -14,6 +14,7 @@ gitstratum-proto = { workspace = true }
 
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+futures = { workspace = true }
 async-trait = { workspace = true }
 tonic = { workspace = true }
 serde = { workspace = true }
@@ -29,6 +30,7 @@ gitstratum-storage = { workspace = true, optional = true }
 rocksdb = { workspace = true }
 dashmap = { workspace = true }
 lru = { workspace = true }
+moka = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

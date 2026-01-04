@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::future::join_all;
 use futures::stream::{self, StreamExt};
 use gitstratum_core::{Blob, Commit, Object, Oid, Tree};
 use tokio::sync::mpsc;
@@ -71,27 +72,19 @@ where
     }
 
     pub async fn negotiate(&self, request: &NegotiationRequest) -> Result<NegotiationResponse> {
+        let all_oids: Vec<&Oid> = request.haves.iter().chain(request.wants.iter()).collect();
+
+        let futures: Vec<_> = all_oids
+            .iter()
+            .map(|oid| self.metadata_client.get_commit(&self.repo_id, oid))
+            .collect();
+
+        let results = join_all(futures).await;
+
         let mut available = HashSet::new();
-
-        for have in &request.haves {
-            if self
-                .metadata_client
-                .get_commit(&self.repo_id, have)
-                .await?
-                .is_some()
-            {
-                available.insert(*have);
-            }
-        }
-
-        for want in &request.wants {
-            if self
-                .metadata_client
-                .get_commit(&self.repo_id, want)
-                .await?
-                .is_some()
-            {
-                available.insert(*want);
+        for (oid, result) in all_oids.iter().zip(results) {
+            if result?.is_some() {
+                available.insert(**oid);
             }
         }
 

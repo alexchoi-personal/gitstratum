@@ -48,7 +48,7 @@ impl CommitWalker {
         }
     }
 
-    fn next_commit(&mut self) -> Result<Option<Commit>> {
+    fn next_commit(&mut self) -> Result<Option<Arc<Commit>>> {
         if let Some(limit) = self.limit {
             if self.count >= limit {
                 return Ok(None);
@@ -72,7 +72,7 @@ impl CommitWalker {
 }
 
 impl Stream for CommitWalker {
-    type Item = Result<Commit>;
+    type Item = Result<Arc<Commit>>;
 
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.next_commit() {
@@ -159,13 +159,11 @@ pub fn find_merge_base(
                 any_progress = true;
                 let current_depth = *ancestors[i].get(&ts_oid.oid).unwrap_or(&0);
 
-                let mut is_common = true;
-                for j in 0..commits.len() {
-                    if j != i && !ancestors[j].contains_key(&ts_oid.oid) {
-                        is_common = false;
-                        break;
-                    }
-                }
+                let is_common = ancestors
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .all(|(_, anc)| anc.contains_key(&ts_oid.oid));
 
                 if is_common {
                     return Ok(Some(ts_oid.oid));
@@ -194,7 +192,7 @@ pub fn find_merge_base(
 
     let mut common: Option<(Oid, usize)> = None;
 
-    for (oid, _) in &ancestors[0] {
+    for oid in ancestors[0].keys() {
         let mut is_common = true;
         let mut total_depth = 0;
 
@@ -227,15 +225,12 @@ pub async fn walk_commits_async(
     from: Vec<Oid>,
     until: Vec<Oid>,
     limit: Option<usize>,
-) -> Result<Vec<Commit>> {
+) -> Result<Vec<Arc<Commit>>> {
     let walker = CommitWalker::new(store, repo_id, from, until, limit);
     let mut commits = Vec::new();
 
     let mut walker = walker;
-    while let Some(result) = {
-        let next = walker.next_commit();
-        next
-    }? {
+    while let Some(result) = { walker.next_commit() }? {
         commits.push(result);
     }
 

@@ -178,16 +178,15 @@ mod tls_error_tests {
     use super::*;
 
     #[test]
-    fn test_crl_fetch_failed_error() {
-        let error = TlsError::CrlFetchFailed {
+    fn test_crl_http_error() {
+        let error = TlsError::CrlHttpError {
             url: "https://ca.example.com/crl".to_string(),
-            message: "connection timeout".to_string(),
+            status: "503 Service Unavailable".to_string(),
         };
 
         let display = error.to_string();
-        assert!(display.contains("Failed to fetch CRL"));
         assert!(display.contains("ca.example.com"));
-        assert!(display.contains("connection timeout"));
+        assert!(display.contains("503 Service Unavailable"));
     }
 
     #[test]
@@ -212,13 +211,13 @@ mod tls_error_tests {
 
     #[test]
     fn test_error_debug_formatting() {
-        let error = TlsError::CrlFetchFailed {
+        let error = TlsError::CrlHttpError {
             url: "https://test.com/crl".to_string(),
-            message: "DNS resolution failed".to_string(),
+            status: "404 Not Found".to_string(),
         };
 
         let debug = format!("{:?}", error);
-        assert!(debug.contains("CrlFetchFailed"));
+        assert!(debug.contains("CrlHttpError"));
         assert!(debug.contains("test.com"));
     }
 }

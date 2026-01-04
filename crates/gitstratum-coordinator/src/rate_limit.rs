@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 #[derive(Debug, Clone)]
 pub enum RateLimitError {
@@ -72,7 +73,7 @@ impl TokenBucket {
     }
 
     fn refill(&self) {
-        let mut last_refill = self.last_refill.lock().unwrap();
+        let mut last_refill = self.last_refill.lock();
         let now = Instant::now();
         let elapsed = now.duration_since(*last_refill);
         let tokens_to_add = (elapsed.as_secs_f64() * self.refill_rate as f64) as u32;
@@ -312,11 +313,11 @@ impl ClientRateLimiter {
     }
 
     fn touch(&self) {
-        *self.last_access.lock().unwrap() = Instant::now();
+        *self.last_access.lock() = Instant::now();
     }
 
     pub fn last_access_time(&self) -> Instant {
-        *self.last_access.lock().unwrap()
+        *self.last_access.lock()
     }
 
     pub fn try_register(&self) -> Result<(), RateLimitError> {

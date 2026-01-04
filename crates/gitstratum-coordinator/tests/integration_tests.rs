@@ -109,10 +109,12 @@ mod cluster_topology_tests {
 
     #[test]
     fn test_topology_serialization_round_trip() {
-        let mut topo = ClusterTopology::default();
-        topo.hash_ring_config = HashRingConfig {
-            virtual_nodes_per_physical: 32,
-            replication_factor: 5,
+        let mut topo = ClusterTopology {
+            hash_ring_config: HashRingConfig {
+                virtual_nodes_per_physical: 32,
+                replication_factor: 5,
+            },
+            ..ClusterTopology::default()
         };
 
         for i in 0..20 {

@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod auth;
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod client;
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -14,6 +15,7 @@ pub mod repo;
 pub mod server;
 pub mod store;
 
+pub use auth::AuthStore;
 pub use client::MetadataClient;
 pub use error::{MetadataStoreError, Result};
 pub use graph::{
