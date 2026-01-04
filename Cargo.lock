@@ -1681,6 +1681,7 @@ dependencies = [
  "bincode",
  "bytes",
  "chrono",
+ "dashmap",
  "futures",
  "gitstratum-core",
  "gitstratum-proto",

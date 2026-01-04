@@ -91,15 +91,13 @@ mod tests {
 
     #[test]
     fn test_insufficient_nodes() {
-        let ring = HashRingBuilder::new()
+        let result = HashRingBuilder::new()
             .virtual_nodes(16)
             .replication_factor(3)
             .add_node(create_test_node("node-1"))
             .add_node(create_test_node("node-2"))
-            .build()
-            .unwrap();
+            .build();
 
-        let result = ring.nodes_for_key(b"test");
         assert!(matches!(
             result,
             Err(HashRingError::InsufficientNodes(3, 2))
@@ -301,6 +299,7 @@ mod tests {
     #[test]
     fn test_clone_ring() {
         let ring = HashRingBuilder::new()
+            .replication_factor(1)
             .add_node(create_test_node("node-1"))
             .build()
             .unwrap();
@@ -647,6 +646,7 @@ mod tests {
     fn test_get_ring_entries() {
         let ring = HashRingBuilder::new()
             .virtual_nodes(4)
+            .replication_factor(1)
             .add_node(create_test_node("node-1"))
             .build()
             .unwrap();

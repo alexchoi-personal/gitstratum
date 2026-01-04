@@ -16,6 +16,7 @@ struct CacheEntry {
 pub struct HotObjectsCacheConfig {
     pub max_entries: usize,
     pub max_size_bytes: usize,
+    pub eviction_batch_size: usize,
 }
 
 impl Default for HotObjectsCacheConfig {
@@ -23,6 +24,7 @@ impl Default for HotObjectsCacheConfig {
         Self {
             max_entries: 10000,
             max_size_bytes: 256 * 1024 * 1024,
+            eviction_batch_size: 100,
         }
     }
 }
@@ -68,6 +70,8 @@ impl HotObjectsCache {
             size,
         };
 
+        self.evict_if_needed(size);
+
         let mut entries = self.entries.lock();
 
         if let Some(old) = entries.peek(&oid) {
@@ -75,20 +79,41 @@ impl HotObjectsCache {
                 .fetch_sub(old.size as u64, Ordering::Relaxed);
         }
 
-        self.evict_for_size(&mut entries, size);
-
         entries.put(oid, entry);
         self.current_size.fetch_add(size as u64, Ordering::Relaxed);
     }
 
-    fn evict_for_size(&self, entries: &mut LruCache<Oid, CacheEntry>, incoming_size: usize) {
+    fn evict_if_needed(&self, incoming_size: usize) {
+        let current = self.current_size.load(Ordering::Relaxed) as usize;
+        if current + incoming_size <= self.config.max_size_bytes {
+            return;
+        }
+
+        let mut evicted_count = 0;
+        let batch_size = self.config.eviction_batch_size;
+
         while self.current_size.load(Ordering::Relaxed) as usize + incoming_size
             > self.config.max_size_bytes
+            && evicted_count < batch_size
         {
-            if let Some((_, entry)) = entries.pop_lru() {
-                self.current_size
-                    .fetch_sub(entry.size as u64, Ordering::Relaxed);
-            } else {
+            let mut entries = self.entries.lock();
+            let mut batch_freed = 0usize;
+            let mut local_evicted = 0;
+
+            while batch_freed < incoming_size && local_evicted < 10 {
+                if let Some((_, entry)) = entries.pop_lru() {
+                    batch_freed += entry.size;
+                    local_evicted += 1;
+                } else {
+                    break;
+                }
+            }
+
+            self.current_size
+                .fetch_sub(batch_freed as u64, Ordering::Relaxed);
+            evicted_count += local_evicted;
+
+            if local_evicted == 0 {
                 break;
             }
         }
@@ -250,6 +275,7 @@ mod tests {
         let config = HotObjectsCacheConfig {
             max_entries: 2,
             max_size_bytes: 1024 * 1024,
+            eviction_batch_size: 100,
         };
         let cache = HotObjectsCache::new(config).unwrap();
 
@@ -266,6 +292,7 @@ mod tests {
         let config = HotObjectsCacheConfig {
             max_entries: 100,
             max_size_bytes: 50,
+            eviction_batch_size: 100,
         };
         let cache = HotObjectsCache::new(config).unwrap();
 
@@ -282,6 +309,7 @@ mod tests {
         let config = HotObjectsCacheConfig {
             max_entries: 2,
             max_size_bytes: 1024 * 1024,
+            eviction_batch_size: 100,
         };
         let cache = HotObjectsCache::new(config).unwrap();
 
@@ -361,6 +389,7 @@ mod tests {
         let config = HotObjectsCacheConfig {
             max_entries: 0,
             max_size_bytes: 1024,
+            eviction_batch_size: 100,
         };
         let result = HotObjectsCache::new(config);
         assert!(result.is_err());

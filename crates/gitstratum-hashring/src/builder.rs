@@ -33,6 +33,12 @@ impl HashRingBuilder {
     }
 
     pub fn build(self) -> Result<ConsistentHashRing> {
+        if !self.nodes.is_empty() && self.replication_factor > self.nodes.len() {
+            return Err(crate::error::HashRingError::InsufficientNodes(
+                self.replication_factor,
+                self.nodes.len(),
+            ));
+        }
         ConsistentHashRing::with_nodes(
             self.nodes,
             self.virtual_nodes_per_physical,

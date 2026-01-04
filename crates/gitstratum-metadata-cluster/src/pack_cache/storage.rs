@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use dashmap::DashMap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use gitstratum_core::{Oid, RepoId};
@@ -65,53 +65,59 @@ impl PackCacheKey {
     }
 
     pub fn cache_id(&self) -> String {
-        let wants_str: Vec<String> = self.wants.iter().map(|o| o.to_hex()).collect();
-        let haves_str: Vec<String> = self.haves.iter().map(|o| o.to_hex()).collect();
-        format!(
-            "{}:{}:{}",
-            self.repo_id.as_str(),
-            wants_str.join(","),
-            haves_str.join(",")
-        )
+        use std::fmt::Write;
+        let mut result = String::with_capacity(
+            self.repo_id.as_str().len() + 2 + (self.wants.len() + self.haves.len()) * 41,
+        );
+        result.push_str(self.repo_id.as_str());
+        result.push(':');
+        for (i, oid) in self.wants.iter().enumerate() {
+            if i > 0 {
+                result.push(',');
+            }
+            let _ = write!(result, "{}", oid.to_hex());
+        }
+        result.push(':');
+        for (i, oid) in self.haves.iter().enumerate() {
+            if i > 0 {
+                result.push(',');
+            }
+            let _ = write!(result, "{}", oid.to_hex());
+        }
+        result
     }
 }
 
 pub struct PackCacheStorage {
-    entries: RwLock<HashMap<PackCacheKey, Arc<PackCacheEntry>>>,
+    entries: DashMap<PackCacheKey, Arc<PackCacheEntry>>,
     max_size_bytes: u64,
     current_size_bytes: AtomicU64,
+    eviction_lock: Mutex<()>,
 }
 
 impl PackCacheStorage {
     pub fn new(max_size_bytes: u64) -> Self {
         Self {
-            entries: RwLock::new(HashMap::new()),
+            entries: DashMap::new(),
             max_size_bytes,
             current_size_bytes: AtomicU64::new(0),
+            eviction_lock: Mutex::new(()),
         }
     }
 
     pub fn get(&self, key: &PackCacheKey) -> Option<Arc<PackCacheEntry>> {
-        {
-            let entries = self.entries.read();
-            if let Some(entry) = entries.get(key) {
-                if !entry.is_expired() {
-                    entry.record_hit();
-                    return Some(Arc::clone(entry));
-                }
-            } else {
-                return None;
+        let entry_ref = self.entries.get(key)?;
+        let entry = entry_ref.value();
+        if entry.is_expired() {
+            drop(entry_ref);
+            if let Some((_, removed)) = self.entries.remove(key) {
+                self.current_size_bytes
+                    .fetch_sub(removed.size_bytes, Ordering::Relaxed);
             }
+            return None;
         }
-        let mut entries = self.entries.write();
-        if let Some(entry) = entries.get(key) {
-            if entry.is_expired() {
-                let size = entry.size_bytes;
-                entries.remove(key);
-                self.current_size_bytes.fetch_sub(size, Ordering::Relaxed);
-            }
-        }
-        None
+        entry.record_hit();
+        Some(Arc::clone(entry))
     }
 
     pub fn put(&self, key: PackCacheKey, entry: PackCacheEntry) -> bool {
@@ -122,7 +128,7 @@ impl PackCacheStorage {
         self.evict_if_needed(entry.size_bytes);
 
         let size = entry.size_bytes;
-        self.entries.write().insert(key, Arc::new(entry));
+        self.entries.insert(key, Arc::new(entry));
         self.current_size_bytes.fetch_add(size, Ordering::Relaxed);
         true
     }
@@ -133,11 +139,17 @@ impl PackCacheStorage {
             return;
         }
 
-        let mut entries = self.entries.write();
+        let _eviction_guard = self.eviction_lock.lock();
+
+        let current = self.current_size_bytes.load(Ordering::Relaxed);
+        if current + needed_bytes <= self.max_size_bytes {
+            return;
+        }
+
         let now = chrono::Utc::now().timestamp();
 
         let mut freed = 0u64;
-        entries.retain(|_, entry| {
+        self.entries.retain(|_, entry| {
             if entry.expires_at < now {
                 freed += entry.size_bytes;
                 false
@@ -149,9 +161,16 @@ impl PackCacheStorage {
 
         let current_after_expired = self.current_size_bytes.load(Ordering::Relaxed);
         if current_after_expired + needed_bytes > self.max_size_bytes {
-            let mut by_hits: Vec<(PackCacheKey, u64, u64)> = entries
+            let mut by_hits: Vec<(PackCacheKey, u64, u64)> = self
+                .entries
                 .iter()
-                .map(|(k, e)| (k.clone(), e.get_hit_count(), e.size_bytes))
+                .map(|e| {
+                    (
+                        e.key().clone(),
+                        e.value().get_hit_count(),
+                        e.value().size_bytes,
+                    )
+                })
                 .collect();
             by_hits.sort_by_key(|(_, hits, _)| *hits);
 
@@ -162,8 +181,9 @@ impl PackCacheStorage {
                 if current_after_expired.saturating_sub(additional_freed) <= target {
                     break;
                 }
-                entries.remove(&key);
-                additional_freed += size;
+                if self.entries.remove(&key).is_some() {
+                    additional_freed += size;
+                }
             }
             self.current_size_bytes
                 .fetch_sub(additional_freed, Ordering::Relaxed);
@@ -171,7 +191,7 @@ impl PackCacheStorage {
     }
 
     pub fn remove(&self, key: &PackCacheKey) -> bool {
-        if let Some(entry) = self.entries.write().remove(key) {
+        if let Some((_, entry)) = self.entries.remove(key) {
             self.current_size_bytes
                 .fetch_sub(entry.size_bytes, Ordering::Relaxed);
             true
@@ -181,9 +201,8 @@ impl PackCacheStorage {
     }
 
     pub fn remove_by_repo(&self, repo_id: &RepoId) {
-        let mut entries = self.entries.write();
         let mut freed = 0u64;
-        entries.retain(|k, entry| {
+        self.entries.retain(|k, entry| {
             if &k.repo_id == repo_id {
                 freed += entry.size_bytes;
                 false
@@ -199,11 +218,11 @@ impl PackCacheStorage {
     }
 
     pub fn entry_count(&self) -> usize {
-        self.entries.read().len()
+        self.entries.len()
     }
 
     pub fn clear(&self) {
-        self.entries.write().clear();
+        self.entries.clear();
         self.current_size_bytes.store(0, Ordering::Relaxed);
     }
 }
