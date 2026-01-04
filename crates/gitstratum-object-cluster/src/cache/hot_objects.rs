@@ -1,12 +1,13 @@
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use gitstratum_core::{Blob, Oid};
 use lru::LruCache;
 use parking_lot::Mutex;
 
 struct CacheEntry {
-    blob: Blob,
+    blob: Arc<Blob>,
     size: usize,
 }
 
@@ -45,11 +46,11 @@ impl HotObjectsCache {
         }
     }
 
-    pub fn get(&self, oid: &Oid) -> Option<Blob> {
+    pub fn get(&self, oid: &Oid) -> Option<Arc<Blob>> {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.get(oid) {
             self.hits.fetch_add(1, Ordering::Relaxed);
-            return Some(entry.blob.clone());
+            return Some(Arc::clone(&entry.blob));
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
         None
@@ -59,7 +60,10 @@ impl HotObjectsCache {
         let size = blob.data.len();
         let oid = blob.oid;
 
-        let entry = CacheEntry { blob, size };
+        let entry = CacheEntry {
+            blob: Arc::new(blob),
+            size,
+        };
 
         let mut entries = self.entries.lock();
 
@@ -87,7 +91,7 @@ impl HotObjectsCache {
         }
     }
 
-    pub fn remove(&self, oid: &Oid) -> Option<Blob> {
+    pub fn remove(&self, oid: &Oid) -> Option<Arc<Blob>> {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.pop(oid) {
             self.current_size

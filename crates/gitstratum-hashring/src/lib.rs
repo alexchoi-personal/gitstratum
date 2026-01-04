@@ -304,7 +304,7 @@ impl ConsistentHashRing {
         let iter = ring.range(position..).chain(ring.iter()).map(|(_, v)| v);
 
         for vnode in iter {
-            if seen_nodes.contains(&vnode.node_id) {
+            if !seen_nodes.insert(&vnode.node_id) {
                 continue;
             }
 
@@ -316,7 +316,6 @@ impl ConsistentHashRing {
                 continue;
             }
 
-            seen_nodes.insert(vnode.node_id.clone());
             result.push(node.clone());
 
             if result.len() >= self.replication_factor {

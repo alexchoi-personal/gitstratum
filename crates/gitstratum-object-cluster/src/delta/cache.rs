@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,24 @@ struct CacheEntry {
     delta: StoredDelta,
     last_access: Instant,
     access_count: u64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct EvictionCandidate {
+    key: (Oid, Oid),
+    last_access: Instant,
+}
+
+impl Ord for EvictionCandidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.last_access.cmp(&other.last_access)
+    }
+}
+
+impl PartialOrd for EvictionCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 pub struct DeltaCacheConfig {
@@ -52,29 +71,21 @@ impl DeltaCache {
     pub fn get(&self, base_oid: &Oid, target_oid: &Oid) -> Option<StoredDelta> {
         let key = (*base_oid, *target_oid);
 
-        {
-            let entries = self.entries.read();
-            if let Some(entry) = entries.get(&key) {
-                if entry.last_access.elapsed() > self.config.ttl {
-                    drop(entries);
-                    let mut entries = self.entries.write();
-                    if let Some(entry) = entries.remove(&key) {
-                        self.current_size
-                            .fetch_sub(entry.delta.size as u64, Ordering::Relaxed);
-                    }
-                    self.misses.fetch_add(1, Ordering::Relaxed);
-                    return None;
+        let mut entries = self.entries.write();
+        if let Some(entry) = entries.get_mut(&key) {
+            if entry.last_access.elapsed() > self.config.ttl {
+                let removed_entry = entries.remove(&key);
+                if let Some(e) = removed_entry {
+                    self.current_size
+                        .fetch_sub(e.delta.size as u64, Ordering::Relaxed);
                 }
-                let delta = entry.delta.clone();
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                drop(entries);
-                let mut entries = self.entries.write();
-                if let Some(entry) = entries.get_mut(&key) {
-                    entry.last_access = Instant::now();
-                    entry.access_count += 1;
-                }
-                return Some(delta);
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                return None;
             }
+            entry.last_access = Instant::now();
+            entry.access_count += 1;
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            return Some(entry.delta.clone());
         }
 
         self.misses.fetch_add(1, Ordering::Relaxed);
@@ -127,19 +138,34 @@ impl DeltaCache {
             }
         }
 
+        let needs_eviction = (self.current_size.load(Ordering::Relaxed) as usize + incoming_size
+            > self.config.max_size_bytes)
+            || entries.len() >= self.config.max_entries;
+
+        if !needs_eviction {
+            return;
+        }
+
+        let mut heap: BinaryHeap<Reverse<EvictionCandidate>> = entries
+            .iter()
+            .map(|(k, e)| {
+                Reverse(EvictionCandidate {
+                    key: *k,
+                    last_access: e.last_access,
+                })
+            })
+            .collect();
+
         while (self.current_size.load(Ordering::Relaxed) as usize + incoming_size
             > self.config.max_size_bytes)
             || entries.len() >= self.config.max_entries
         {
-            let oldest = entries
-                .iter()
-                .min_by_key(|(_, e)| e.last_access)
-                .map(|(k, _)| *k);
-
-            if let Some(key) = oldest {
-                if let Some(entry) = entries.remove(&key) {
-                    self.current_size
-                        .fetch_sub(entry.delta.size as u64, Ordering::Relaxed);
+            if let Some(Reverse(candidate)) = heap.pop() {
+                if entries.contains_key(&candidate.key) {
+                    if let Some(entry) = entries.remove(&candidate.key) {
+                        self.current_size
+                            .fetch_sub(entry.delta.size as u64, Ordering::Relaxed);
+                    }
                 }
             } else {
                 break;

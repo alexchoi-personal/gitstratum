@@ -5,8 +5,11 @@ use gitstratum_proto::{Blob, GetBlobRequest, GetStatsRequest, HasBlobRequest, Pu
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::transport::Channel;
 use tracing::{debug, instrument, warn};
+
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::error::{ObjectStoreError, Result};
 use crate::store::StorageStats;
@@ -39,6 +42,7 @@ impl ObjectClusterClient {
         let addr = format!("http://{}", endpoint);
         let channel = Channel::from_shared(addr)
             .map_err(|e| ObjectStoreError::InvalidUri(e.to_string()))?
+            .connect_timeout(CONNECTION_TIMEOUT)
             .connect()
             .await?;
         let client = ObjectServiceClient::new(channel);

@@ -94,7 +94,7 @@ pub struct ReplicationWriterStats {
 
 pub struct BatchWriter {
     writer: Arc<ReplicationWriter>,
-    pending: Vec<Blob>,
+    pending: Vec<Arc<Blob>>,
     max_batch_size: usize,
 }
 
@@ -107,8 +107,8 @@ impl BatchWriter {
         }
     }
 
-    pub fn add(&mut self, blob: Blob) -> Option<Vec<Blob>> {
-        self.pending.push(blob);
+    pub fn add(&mut self, blob: Blob) -> Option<Vec<Arc<Blob>>> {
+        self.pending.push(Arc::new(blob));
         if self.pending.len() >= self.max_batch_size {
             Some(self.take_batch())
         } else {
@@ -116,7 +116,7 @@ impl BatchWriter {
         }
     }
 
-    pub fn take_batch(&mut self) -> Vec<Blob> {
+    pub fn take_batch(&mut self) -> Vec<Arc<Blob>> {
         std::mem::take(&mut self.pending)
     }
 
@@ -132,9 +132,9 @@ impl BatchWriter {
         self.pending.clear();
     }
 
-    pub fn group_by_node(&self) -> Result<Vec<(NodeInfo, Vec<Blob>)>> {
+    pub fn group_by_node(&self) -> Result<Vec<(NodeInfo, Vec<Arc<Blob>>)>> {
         use std::collections::HashMap;
-        let mut groups: HashMap<String, (NodeInfo, Vec<Blob>)> = HashMap::new();
+        let mut groups: HashMap<String, (NodeInfo, Vec<Arc<Blob>>)> = HashMap::new();
 
         for blob in &self.pending {
             let nodes = self.writer.get_target_nodes(&blob.oid)?;
@@ -144,7 +144,7 @@ impl BatchWriter {
                     .entry(endpoint)
                     .or_insert_with(|| (node, Vec::new()))
                     .1
-                    .push(blob.clone());
+                    .push(Arc::clone(blob));
             }
         }
 

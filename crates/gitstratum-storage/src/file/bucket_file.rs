@@ -43,7 +43,13 @@ impl BucketFile {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
 
         let metadata = file.metadata()?;
-        let bucket_count = (metadata.len() / BUCKET_SIZE as u64) as u32;
+        let file_size = metadata.len();
+        let bucket_count_u64 = file_size / BUCKET_SIZE as u64;
+        let bucket_count =
+            u32::try_from(bucket_count_u64).map_err(|_| BucketStoreError::FileTooLarge {
+                size: file_size,
+                max: u32::MAX as u64 * BUCKET_SIZE as u64,
+            })?;
 
         Ok(Self {
             file,

@@ -78,7 +78,15 @@ impl StoredDelta {
                             "truncated insert instruction".to_string(),
                         ));
                     }
-                    let len = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()) as usize;
+                    let len_u64 = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+                    const MAX_INSERT_SIZE: u64 = 100 * 1024 * 1024;
+                    if len_u64 > MAX_INSERT_SIZE {
+                        return Err(ObjectStoreError::DeltaDeserializeError(format!(
+                            "insert data too large: {} bytes (max: {} bytes)",
+                            len_u64, MAX_INSERT_SIZE
+                        )));
+                    }
+                    let len = len_u64 as usize;
                     pos += 8;
                     if pos + len > data.len() {
                         return Err(ObjectStoreError::DeltaDeserializeError(

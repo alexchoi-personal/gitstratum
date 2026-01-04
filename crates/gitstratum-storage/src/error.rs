@@ -58,4 +58,7 @@ pub enum BucketStoreError {
 
     #[error("compaction failed: {0}")]
     CompactionFailed(String),
+
+    #[error("offset overflow: {0} exceeds i64::MAX")]
+    OffsetOverflow(u64),
 }
