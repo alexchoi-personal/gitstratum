@@ -6,10 +6,12 @@ use crate::error::Result;
 use crate::record::DataRecord;
 use crate::store::BucketStore;
 
-pub struct Compactor {
+#[allow(dead_code)]
+pub(crate) struct Compactor {
     store: Arc<BucketStore>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct LiveEntry {
     bucket_id: u32,
@@ -21,6 +23,7 @@ struct LiveEntry {
     flags: u8,
 }
 
+#[allow(dead_code)]
 impl Compactor {
     pub fn new(store: Arc<BucketStore>) -> Self {
         Self { store }
@@ -191,12 +194,13 @@ impl Compactor {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct CompactionResult {
-    pub files_compacted: usize,
-    pub bytes_reclaimed: u64,
-    pub entries_moved: u64,
-    pub entries_purged: u64,
+pub(crate) struct CompactionResult {
+    pub(crate) files_compacted: usize,
+    pub(crate) bytes_reclaimed: u64,
+    pub(crate) entries_moved: u64,
+    pub(crate) entries_purged: u64,
 }
 
 #[cfg(test)]

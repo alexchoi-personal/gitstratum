@@ -7,6 +7,7 @@ use crate::bucket::{DiskBucket, BUCKET_SIZE};
 use crate::error::{BucketStoreError, Result};
 use crate::io::AsyncMultiQueueIo;
 
+#[allow(dead_code)]
 pub struct BucketIo {
     fd: RawFd,
     _file: File,
@@ -104,10 +105,12 @@ impl BucketIo {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn bucket_count(&self) -> u32 {
         self.bucket_count
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }

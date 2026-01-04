@@ -5,6 +5,7 @@ use nix::unistd::fsync;
 
 use crate::error::Result;
 
+#[allow(dead_code)]
 pub const DEFAULT_RING_SIZE: u32 = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +177,7 @@ impl UringHandle {
         }
     }
 
+    #[allow(dead_code)]
     pub fn inflight_count(&self) -> usize {
         self.pending.len()
     }

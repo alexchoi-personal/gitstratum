@@ -96,14 +96,6 @@ impl RefCache {
         self.len() == 0
     }
 
-    fn add_to_index(&self, repo_id: &RepoId, ref_name: &RefName) {
-        self.repo_index
-            .write()
-            .entry(repo_id.clone())
-            .or_default()
-            .insert(ref_name.clone());
-    }
-
     fn remove_from_index(&self, repo_id: &RepoId, ref_name: &RefName) {
         let mut index = self.repo_index.write();
         if let Some(refs) = index.get_mut(repo_id) {

@@ -498,8 +498,8 @@ async fn test_session_list_by_status() {
     let s0_id = SessionId::new("status-session-0");
     let s1_id = SessionId::new("status-session-1");
     let s2_id = SessionId::new("status-session-2");
-    let s3_id = SessionId::new("status-session-3");
-    let s4_id = SessionId::new("status-session-4");
+    let _s3_id = SessionId::new("status-session-3");
+    let _s4_id = SessionId::new("status-session-4");
 
     coordinator.start_session(&s0_id);
     coordinator.start_session(&s1_id);

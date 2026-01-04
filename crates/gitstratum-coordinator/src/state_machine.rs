@@ -1,11 +1,12 @@
 use crate::commands::{ClusterCommand, ClusterResponse, VersionedCommand};
 use crate::topology::ClusterTopology;
+use gitstratum_proto::NodeState;
 
 const TOPOLOGY_KEY: &str = "__cluster_topology__";
 
 const CURRENT_COMMAND_VERSION: u32 = 1;
 
-const NODE_STATE_DOWN: i32 = 4;
+const NODE_STATE_DOWN: i32 = NodeState::Down as i32;
 
 impl VersionedCommand {
     pub fn new(command: ClusterCommand) -> Self {

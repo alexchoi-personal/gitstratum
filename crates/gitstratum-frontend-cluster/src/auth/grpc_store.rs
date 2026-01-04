@@ -149,8 +149,10 @@ mod tests {
         rt.block_on(async {
             let handle = Handle::current();
 
+            #[allow(dead_code)]
             struct MockGrpcAuthStore;
 
+            #[allow(dead_code)]
             impl MockGrpcAuthStore {
                 async fn validate_token(
                     &self,
@@ -167,6 +169,7 @@ mod tests {
                 }
             }
 
+            #[allow(dead_code)]
             struct TestBlockingStore {
                 handle: Handle,
             }

@@ -1,5 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use crate::bucket::{DiskBucket, BUCKET_SIZE};
@@ -74,6 +76,31 @@ impl BucketFile {
         DiskBucket::from_bytes(&buf)
     }
 
+    #[cfg(unix)]
+    pub fn read_bucket_at(&self, bucket_id: u32) -> Result<DiskBucket> {
+        if bucket_id >= self.bucket_count {
+            return Err(BucketStoreError::InvalidBucketId {
+                bucket_id,
+                bucket_count: self.bucket_count,
+            });
+        }
+        let offset = bucket_id as u64 * BUCKET_SIZE as u64;
+
+        let mut buf = [0u8; BUCKET_SIZE];
+        self.file.read_exact_at(&mut buf, offset)?;
+
+        DiskBucket::from_bytes(&buf)
+    }
+
+    #[cfg(not(unix))]
+    pub fn read_bucket_at(&self, bucket_id: u32) -> Result<DiskBucket> {
+        Err(BucketStoreError::CorruptedBucket {
+            offset: bucket_id as u64 * BUCKET_SIZE as u64,
+            reason: "read_bucket_at not supported on non-Unix platforms".into(),
+        })
+    }
+
+    #[allow(dead_code)]
     pub fn write_bucket(&mut self, bucket_id: u32, bucket: &DiskBucket) -> Result<()> {
         if bucket_id >= self.bucket_count {
             return Err(BucketStoreError::InvalidBucketId {
@@ -90,11 +117,13 @@ impl BucketFile {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn sync(&self) -> Result<()> {
         self.file.sync_all()?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn bucket_count(&self) -> u32 {
         self.bucket_count
     }

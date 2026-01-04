@@ -241,6 +241,7 @@ mod tests {
     use tokio::sync::RwLock;
 
     struct MockNodeClient {
+        #[allow(dead_code)]
         node_id: String,
         blobs: RwLock<HashMap<Oid, Blob>>,
     }

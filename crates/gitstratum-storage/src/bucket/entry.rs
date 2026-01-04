@@ -111,6 +111,7 @@ impl CompactEntry {
     /// - `#[repr(C, packed)]` guarantees deterministic layout with no padding
     /// - Compile-time assertions verify size == ENTRY_SIZE and alignment == 1
     /// - All fields are plain data (no pointers, no Drop)
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_bytes(&self) -> [u8; ENTRY_SIZE] {
         // SAFETY: CompactEntry is repr(C, packed) with compile-time size/alignment checks
         unsafe { std::mem::transmute_copy(self) }

@@ -5,21 +5,72 @@ use gitstratum_proto::object_service_client::ObjectServiceClient;
 use gitstratum_proto::{Blob, GetBlobRequest, GetStatsRequest, HasBlobRequest, PutBlobRequest};
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::transport::Channel;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
+const CIRCUIT_BREAKER_RECOVERY_SECS: u64 = 30;
 
 use crate::error::{ObjectStoreError, Result};
 use crate::store::StorageStats;
 
 type ClientPool = HashMap<String, ObjectServiceClient<Channel>>;
 
+struct CircuitBreakerState {
+    failure_count: AtomicU32,
+    last_failure_epoch_secs: AtomicU64,
+    start_time: Instant,
+}
+
+impl CircuitBreakerState {
+    fn new() -> Self {
+        Self {
+            failure_count: AtomicU32::new(0),
+            last_failure_epoch_secs: AtomicU64::new(0),
+            start_time: Instant::now(),
+        }
+    }
+
+    fn record_failure(&self) {
+        self.failure_count.fetch_add(1, Ordering::Relaxed);
+        let now_secs = self.start_time.elapsed().as_secs();
+        self.last_failure_epoch_secs
+            .store(now_secs, Ordering::Relaxed);
+    }
+
+    fn record_success(&self) {
+        self.failure_count.store(0, Ordering::Relaxed);
+    }
+
+    fn is_open(&self) -> bool {
+        let failures = self.failure_count.load(Ordering::Relaxed);
+        if failures < CIRCUIT_BREAKER_THRESHOLD {
+            return false;
+        }
+
+        let last_failure = self.last_failure_epoch_secs.load(Ordering::Relaxed);
+        let now_secs = self.start_time.elapsed().as_secs();
+        let elapsed = now_secs.saturating_sub(last_failure);
+
+        if elapsed >= CIRCUIT_BREAKER_RECOVERY_SECS {
+            self.failure_count.store(0, Ordering::Relaxed);
+            return false;
+        }
+
+        true
+    }
+}
+
+type CircuitBreakers = HashMap<String, Arc<CircuitBreakerState>>;
+
 pub struct ObjectClusterClient {
     ring: Arc<ConsistentHashRing>,
     clients: RwLock<ClientPool>,
+    circuit_breakers: RwLock<CircuitBreakers>,
 }
 
 impl ObjectClusterClient {
@@ -27,7 +78,44 @@ impl ObjectClusterClient {
         Self {
             ring,
             clients: RwLock::new(HashMap::new()),
+            circuit_breakers: RwLock::new(HashMap::new()),
         }
+    }
+
+    fn get_circuit_breaker(&self, endpoint: &str) -> Arc<CircuitBreakerState> {
+        {
+            let breakers = self.circuit_breakers.read();
+            if let Some(breaker) = breakers.get(endpoint) {
+                return breaker.clone();
+            }
+        }
+
+        let mut breakers = self.circuit_breakers.write();
+        breakers
+            .entry(endpoint.to_string())
+            .or_insert_with(|| Arc::new(CircuitBreakerState::new()))
+            .clone()
+    }
+
+    fn is_node_available(&self, node: &NodeInfo) -> bool {
+        let endpoint = node.endpoint();
+        let breaker = self.get_circuit_breaker(&endpoint);
+        !breaker.is_open()
+    }
+
+    fn record_node_failure(&self, node: &NodeInfo) {
+        let endpoint = node.endpoint();
+        let breaker = self.get_circuit_breaker(&endpoint);
+        breaker.record_failure();
+        if breaker.is_open() {
+            info!(node_id = %node.id, endpoint = %endpoint, "circuit breaker opened for node");
+        }
+    }
+
+    fn record_node_success(&self, node: &NodeInfo) {
+        let endpoint = node.endpoint();
+        let breaker = self.get_circuit_breaker(&endpoint);
+        breaker.record_success();
     }
 
     async fn get_client(&self, node: &NodeInfo) -> Result<ObjectServiceClient<Channel>> {
@@ -95,12 +183,24 @@ impl ObjectClusterClient {
         }
 
         for node in &nodes {
+            if !self.is_node_available(node) {
+                debug!(node_id = %node.id, "skipping node - circuit breaker open");
+                continue;
+            }
+
             debug!(node_id = %node.id, "trying node for get");
 
             match self.get_from_node(node, oid).await {
-                Ok(Some(blob)) => return Ok(Some(blob)),
-                Ok(None) => continue,
+                Ok(Some(blob)) => {
+                    self.record_node_success(node);
+                    return Ok(Some(blob));
+                }
+                Ok(None) => {
+                    self.record_node_success(node);
+                    continue;
+                }
                 Err(e) => {
+                    self.record_node_failure(node);
                     warn!(node_id = %node.id, error = %e, "failed to get from node");
                     continue;
                 }
@@ -137,7 +237,19 @@ impl ObjectClusterClient {
             return Err(ObjectStoreError::NoAvailableNodes);
         }
 
-        let futures: Vec<_> = nodes
+        let available_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|node| {
+                if self.is_node_available(node) {
+                    true
+                } else {
+                    debug!(node_id = %node.id, "skipping node - circuit breaker open");
+                    false
+                }
+            })
+            .collect();
+
+        let futures: Vec<_> = available_nodes
             .iter()
             .map(|node| {
                 debug!(node_id = %node.id, "putting to node");
@@ -151,10 +263,13 @@ impl ObjectClusterClient {
             .into_iter()
             .enumerate()
             .filter(|(i, result)| {
+                let node = available_nodes[*i];
                 if let Err(e) = result {
-                    warn!(node_id = %nodes[*i].id, error = %e, "failed to put to node");
+                    self.record_node_failure(node);
+                    warn!(node_id = %node.id, error = %e, "failed to put to node");
                     false
                 } else {
+                    self.record_node_success(node);
                     true
                 }
             })
@@ -200,10 +315,22 @@ impl ObjectClusterClient {
         }
 
         for node in &nodes {
+            if !self.is_node_available(node) {
+                debug!(node_id = %node.id, "skipping node - circuit breaker open");
+                continue;
+            }
+
             match self.has_on_node(node, oid).await {
-                Ok(true) => return Ok(true),
-                Ok(false) => continue,
+                Ok(true) => {
+                    self.record_node_success(node);
+                    return Ok(true);
+                }
+                Ok(false) => {
+                    self.record_node_success(node);
+                    continue;
+                }
                 Err(e) => {
+                    self.record_node_failure(node);
                     warn!(node_id = %node.id, error = %e, "failed to check on node");
                     continue;
                 }
@@ -240,8 +367,14 @@ impl ObjectClusterClient {
         let mut node_count = 0u32;
 
         for node in &nodes {
+            if !self.is_node_available(node) {
+                debug!(node_id = %node.id, "skipping node for stats - circuit breaker open");
+                continue;
+            }
+
             match self.stats_from_node(node).await {
                 Ok(stats) => {
+                    self.record_node_success(node);
                     total_blobs += stats.total_blobs;
                     total_bytes += stats.total_bytes;
                     used_bytes += stats.used_bytes;
@@ -250,6 +383,7 @@ impl ObjectClusterClient {
                     node_count += 1;
                 }
                 Err(e) => {
+                    self.record_node_failure(node);
                     warn!(node_id = %node.id, error = %e, "failed to get stats from node");
                 }
             }
@@ -291,8 +425,15 @@ impl ObjectClusterClient {
 
     pub fn remove_node(&self, node_id: &NodeId) -> Result<NodeInfo> {
         let node = self.ring.remove_node(node_id)?;
-        let mut clients = self.clients.write();
-        clients.remove(&node.endpoint());
+        let endpoint = node.endpoint();
+        {
+            let mut clients = self.clients.write();
+            clients.remove(&endpoint);
+        }
+        {
+            let mut breakers = self.circuit_breakers.write();
+            breakers.remove(&endpoint);
+        }
         Ok(node)
     }
 

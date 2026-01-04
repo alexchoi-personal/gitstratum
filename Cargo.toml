@@ -112,8 +112,6 @@ gitstratum-metrics = { path = "crates/gitstratum-metrics" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
-dead_code = "allow"
-unused_variables = "allow"
 
 [workspace.lints.clippy]
 result_large_err = "allow"

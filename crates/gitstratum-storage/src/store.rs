@@ -275,7 +275,7 @@ impl BucketStore {
             return false;
         }
 
-        if let Ok(bucket) = self.bucket_file_for_iter.write().read_bucket(bucket_id) {
+        if let Ok(bucket) = self.bucket_file_for_iter.read().read_bucket_at(bucket_id) {
             self.bucket_cache.put(bucket_id, bucket.clone());
             if let Some(entry) = bucket.find_entry(oid) {
                 return !entry.is_deleted();

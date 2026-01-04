@@ -17,7 +17,8 @@ pub fn compute_crc32(header: &RecordHeader, key: &[u8], value: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-pub fn verify_crc32(header: &RecordHeader, key: &[u8], value: &[u8]) -> bool {
+#[allow(dead_code)]
+pub(crate) fn verify_crc32(header: &RecordHeader, key: &[u8], value: &[u8]) -> bool {
     let computed = compute_crc32(header, key, value);
     computed == header.crc32
 }

@@ -7,31 +7,36 @@ use crate::error::Result;
 use crate::file::BucketFile;
 use crate::record::{DataRecord, BLOCK_SIZE};
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct IntegrityError {
-    pub bucket_id: u32,
-    pub entry_index: usize,
-    pub file_id: u16,
-    pub offset: u64,
-    pub size: u32,
-    pub reason: String,
+pub(crate) struct IntegrityError {
+    pub(crate) bucket_id: u32,
+    pub(crate) entry_index: usize,
+    pub(crate) file_id: u16,
+    pub(crate) offset: u64,
+    pub(crate) size: u32,
+    pub(crate) reason: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
-pub struct IntegrityReport {
-    pub total_entries: u64,
-    pub valid_entries: u64,
-    pub corrupted_entries: Vec<IntegrityError>,
+pub(crate) struct IntegrityReport {
+    pub(crate) total_entries: u64,
+    pub(crate) valid_entries: u64,
+    pub(crate) corrupted_entries: Vec<IntegrityError>,
 }
 
+#[allow(dead_code)]
 impl IntegrityReport {
-    pub fn is_healthy(&self) -> bool {
+    pub(crate) fn is_healthy(&self) -> bool {
         self.corrupted_entries.is_empty()
     }
 }
 
-pub struct RecoveryScanner;
+#[allow(dead_code)]
+pub(crate) struct RecoveryScanner;
 
+#[allow(dead_code)]
 impl RecoveryScanner {
     pub fn recover_bucket_index(bucket_file_path: &Path, bucket_count: u32) -> Result<BucketIndex> {
         if bucket_file_path.exists() {

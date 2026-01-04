@@ -1,14 +1,14 @@
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
-pub mod uring;
+pub(crate) mod uring;
 
 #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
-pub mod fallback;
+pub(crate) mod fallback;
 
 #[cfg(all(target_os = "linux", feature = "io_uring"))]
-pub use uring::{IoCompletion, IoOperation, UringHandle, DEFAULT_RING_SIZE};
+pub(crate) use uring::UringHandle;
 
 #[cfg(not(all(target_os = "linux", feature = "io_uring")))]
-pub use fallback::{IoCompletion, IoOperation, UringHandle, DEFAULT_RING_SIZE};
+pub(crate) use fallback::UringHandle;
 
-pub mod async_queue;
-pub use async_queue::{AsyncMultiQueueIo, AsyncUringQueue, IoQueueConfig, IoResult};
+pub(crate) mod async_queue;
+pub(crate) use async_queue::{AsyncMultiQueueIo, IoQueueConfig};
