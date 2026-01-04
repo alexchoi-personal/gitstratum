@@ -22,14 +22,19 @@ pub struct ConsistentHashRing {
 }
 
 impl ConsistentHashRing {
-    pub fn new(virtual_nodes_per_physical: u32, replication_factor: usize) -> Self {
-        Self {
+    pub fn new(virtual_nodes_per_physical: u32, replication_factor: usize) -> Result<Self> {
+        if replication_factor == 0 {
+            return Err(HashRingError::InvalidConfig(
+                "replication_factor must be greater than 0".to_string(),
+            ));
+        }
+        Ok(Self {
             ring: RwLock::new(BTreeMap::new()),
             nodes: RwLock::new(BTreeMap::new()),
             virtual_nodes_per_physical,
             replication_factor,
             version: RwLock::new(0),
-        }
+        })
     }
 
     pub fn with_nodes(
@@ -37,7 +42,7 @@ impl ConsistentHashRing {
         virtual_nodes_per_physical: u32,
         replication_factor: usize,
     ) -> Result<Self> {
-        let ring = Self::new(virtual_nodes_per_physical, replication_factor);
+        let ring = Self::new(virtual_nodes_per_physical, replication_factor)?;
         for node in nodes {
             ring.add_node(node)?;
         }

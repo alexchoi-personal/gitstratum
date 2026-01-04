@@ -249,10 +249,10 @@ impl QuorumWriter {
                 replication_factor,
                 ..Default::default()
             },
-            ring: Arc::new(gitstratum_hashring::ConsistentHashRing::new(
-                16,
-                replication_factor,
-            )),
+            ring: Arc::new(
+                gitstratum_hashring::ConsistentHashRing::new(16, replication_factor)
+                    .expect("replication_factor must be > 0"),
+            ),
             writes_attempted: AtomicU64::new(0),
             writes_succeeded: AtomicU64::new(0),
             writes_failed: AtomicU64::new(0),

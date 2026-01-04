@@ -7,7 +7,7 @@ fn create_node(id: usize) -> NodeInfo {
 }
 
 fn create_ring(node_count: usize) -> ConsistentHashRing {
-    let ring = ConsistentHashRing::new(64, 3);
+    let ring = ConsistentHashRing::new(64, 3).unwrap();
     for i in 0..node_count {
         ring.add_node(create_node(i)).unwrap();
     }

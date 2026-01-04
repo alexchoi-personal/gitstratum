@@ -19,7 +19,7 @@ mod tests {
 
     #[test]
     fn test_add_remove_node() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
 
         let node1 = create_test_node("node-1");
         ring.add_node(node1.clone()).unwrap();
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_empty_ring() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.primary_node(b"test");
         assert!(matches!(result, Err(HashRingError::EmptyRing)));
     }
@@ -213,21 +213,21 @@ mod tests {
 
     #[test]
     fn test_remove_nonexistent_node() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.remove_node(&NodeId::new("nonexistent"));
         assert!(matches!(result, Err(HashRingError::NodeNotFound(_))));
     }
 
     #[test]
     fn test_set_node_state_nonexistent() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.set_node_state(&NodeId::new("nonexistent"), NodeState::Draining);
         assert!(matches!(result, Err(HashRingError::NodeNotFound(_))));
     }
 
     #[test]
     fn test_get_nonexistent_node() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         assert!(ring.get_node(&NodeId::new("nonexistent")).is_none());
     }
 
@@ -287,14 +287,14 @@ mod tests {
 
     #[test]
     fn test_nodes_for_prefix_empty_ring() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.nodes_for_prefix(0xAB);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_replication_factor() {
-        let ring = ConsistentHashRing::new(16, 3);
+        let ring = ConsistentHashRing::new(16, 3).unwrap();
         assert_eq!(ring.replication_factor(), 3);
     }
 
@@ -319,14 +319,14 @@ mod tests {
 
     #[test]
     fn test_nodes_for_key_empty() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.nodes_for_key(b"test");
         assert!(matches!(result, Err(HashRingError::EmptyRing)));
     }
 
     #[test]
     fn test_version_increments() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         assert_eq!(ring.version(), 0);
 
         ring.add_node(create_test_node("node-1")).unwrap();
@@ -441,23 +441,20 @@ mod tests {
     }
 
     #[test]
-    fn test_nodes_for_key_with_zero_replication_factor_empty_ring() {
-        let ring = ConsistentHashRing::new(16, 0);
-        let result = ring.nodes_for_key(b"test");
-        assert!(matches!(result, Err(HashRingError::EmptyRing)));
+    fn test_zero_replication_factor_rejected() {
+        let result = ConsistentHashRing::new(16, 0);
+        assert!(matches!(result, Err(HashRingError::InvalidConfig(_))));
     }
 
     #[test]
-    fn test_nodes_for_key_with_zero_replication_factor_with_nodes() {
-        let ring = HashRingBuilder::new()
+    fn test_zero_replication_factor_rejected_via_builder() {
+        let result = HashRingBuilder::new()
             .virtual_nodes(16)
             .replication_factor(0)
             .add_node(create_test_node("node-1"))
-            .build()
-            .unwrap();
+            .build();
 
-        let result = ring.nodes_for_key(b"test");
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(HashRingError::InvalidConfig(_))));
     }
 
     #[test]
@@ -567,7 +564,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let ring = Arc::new(ConsistentHashRing::new(16, 2));
+        let ring = Arc::new(ConsistentHashRing::new(16, 2).unwrap());
 
         let mut handles = vec![];
 

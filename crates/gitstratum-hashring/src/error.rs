@@ -12,4 +12,7 @@ pub enum HashRingError {
 
     #[error("insufficient nodes for replication factor {0}, have {1}")]
     InsufficientNodes(usize, usize),
+
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 }
