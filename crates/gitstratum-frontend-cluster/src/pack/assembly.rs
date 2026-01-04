@@ -76,7 +76,8 @@ impl PackEntry {
 }
 
 fn serialize_tree(tree: &Tree) -> Bytes {
-    let mut data = Vec::new();
+    let estimated_size = tree.entries.iter().map(|e| 7 + e.name.len() + 1 + 32).sum();
+    let mut data = Vec::with_capacity(estimated_size);
     for entry in &tree.entries {
         data.extend_from_slice(entry.mode.as_str().as_bytes());
         data.push(b' ');
@@ -88,14 +89,25 @@ fn serialize_tree(tree: &Tree) -> Bytes {
 }
 
 fn serialize_commit(commit: &Commit) -> Bytes {
-    let mut data = Vec::new();
-    data.extend_from_slice(format!("tree {}\n", commit.tree).as_bytes());
+    use std::io::Write;
+    let estimated_size = 5
+        + 64
+        + 1
+        + commit.parents.len() * (7 + 64 + 1)
+        + 7
+        + 100
+        + 10
+        + 100
+        + 1
+        + commit.message.len();
+    let mut data = Vec::with_capacity(estimated_size);
+    writeln!(data, "tree {}", commit.tree).ok();
     for parent in &commit.parents {
-        data.extend_from_slice(format!("parent {}\n", parent).as_bytes());
+        writeln!(data, "parent {}", parent).ok();
     }
-    data.extend_from_slice(format!("author {}\n", commit.author).as_bytes());
-    data.extend_from_slice(format!("committer {}\n", commit.committer).as_bytes());
-    data.extend_from_slice(b"\n");
+    writeln!(data, "author {}", commit.author).ok();
+    writeln!(data, "committer {}", commit.committer).ok();
+    data.push(b'\n');
     data.extend_from_slice(commit.message.as_bytes());
     Bytes::from(data)
 }

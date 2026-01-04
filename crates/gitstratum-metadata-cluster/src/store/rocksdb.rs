@@ -74,15 +74,31 @@ impl MetadataStore {
     }
 
     fn ref_key(repo_id: &RepoId, ref_name: &RefName) -> Vec<u8> {
-        format!("{}/ref/{}", repo_id.as_str(), ref_name.as_str()).into_bytes()
+        let repo = repo_id.as_str();
+        let refn = ref_name.as_str();
+        let mut key = Vec::with_capacity(repo.len() + 5 + refn.len());
+        key.extend_from_slice(repo.as_bytes());
+        key.extend_from_slice(b"/ref/");
+        key.extend_from_slice(refn.as_bytes());
+        key
     }
 
     fn commit_key(repo_id: &RepoId, oid: &Oid) -> Vec<u8> {
-        format!("{}/commit/{}", repo_id.as_str(), oid.to_hex()).into_bytes()
+        let repo = repo_id.as_str();
+        let mut key = Vec::with_capacity(repo.len() + 8 + 64);
+        key.extend_from_slice(repo.as_bytes());
+        key.extend_from_slice(b"/commit/");
+        oid.write_hex(&mut key);
+        key
     }
 
     fn tree_key(repo_id: &RepoId, oid: &Oid) -> Vec<u8> {
-        format!("{}/tree/{}", repo_id.as_str(), oid.to_hex()).into_bytes()
+        let repo = repo_id.as_str();
+        let mut key = Vec::with_capacity(repo.len() + 6 + 64);
+        key.extend_from_slice(repo.as_bytes());
+        key.extend_from_slice(b"/tree/");
+        oid.write_hex(&mut key);
+        key
     }
 
     pub fn create_repo(&self, repo_id: &RepoId) -> Result<()> {

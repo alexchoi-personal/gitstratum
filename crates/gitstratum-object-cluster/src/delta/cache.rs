@@ -71,23 +71,29 @@ impl DeltaCache {
     pub fn get(&self, base_oid: &Oid, target_oid: &Oid) -> Option<StoredDelta> {
         let key = (*base_oid, *target_oid);
 
+        {
+            let entries = self.entries.read();
+            if let Some(entry) = entries.get(&key) {
+                if entry.last_access.elapsed() <= self.config.ttl {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(entry.delta.clone());
+                }
+            } else {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        }
+
         let mut entries = self.entries.write();
-        if let Some(entry) = entries.get_mut(&key) {
+        if let Some(entry) = entries.get(&key) {
             if entry.last_access.elapsed() > self.config.ttl {
                 let removed_entry = entries.remove(&key);
                 if let Some(e) = removed_entry {
                     self.current_size
                         .fetch_sub(e.delta.size as u64, Ordering::Relaxed);
                 }
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                return None;
             }
-            entry.last_access = Instant::now();
-            entry.access_count += 1;
-            self.hits.fetch_add(1, Ordering::Relaxed);
-            return Some(entry.delta.clone());
         }
-
         self.misses.fetch_add(1, Ordering::Relaxed);
         None
     }

@@ -103,7 +103,7 @@ impl Compactor {
 
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(std::time::Duration::ZERO)
                 .as_micros() as u64;
             let record = DataRecord::new(oid, value, timestamp)?;
 
@@ -147,7 +147,9 @@ impl Compactor {
         }
 
         for (bucket_id, entry_idx) in deleted_entries.iter().rev() {
-            let bucket = buckets_to_update.get_mut(bucket_id).unwrap();
+            let Some(bucket) = buckets_to_update.get_mut(bucket_id) else {
+                continue;
+            };
 
             let count = { bucket.header.count } as usize;
             if *entry_idx < count {
