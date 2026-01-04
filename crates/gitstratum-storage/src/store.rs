@@ -338,7 +338,8 @@ impl BucketStore {
     }
 
     pub async fn sync(&self) -> Result<()> {
-        self.inner.active_file.read().clone().sync().await?;
+        let active_file = self.inner.active_file.read().clone();
+        active_file.sync().await?;
         self.inner.bucket_io.sync().await?;
         Ok(())
     }

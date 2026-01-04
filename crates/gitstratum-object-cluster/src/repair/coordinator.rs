@@ -244,7 +244,10 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
     }
 
     pub async fn acquire_rate_limit(&self, bytes: u64) {
-        self.rate_limiter.write().acquire(bytes).await;
+        let sleep_duration = self.rate_limiter.write().acquire(bytes);
+        if let Some(duration) = sleep_duration {
+            tokio::time::sleep(duration).await;
+        }
     }
 
     pub fn total_sessions_created(&self) -> u64 {

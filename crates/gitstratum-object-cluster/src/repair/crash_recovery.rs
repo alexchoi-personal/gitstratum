@@ -200,27 +200,31 @@ impl RepairRateLimiter {
         }
     }
 
-    pub async fn acquire(&mut self, bytes: u64) {
+    pub fn acquire(&mut self, bytes: u64) -> Option<Duration> {
         self.bytes_since_last_check = self.bytes_since_last_check.saturating_add(bytes);
 
         let elapsed = self.last_check.elapsed();
         let expected_duration =
             Duration::from_secs_f64(self.bytes_since_last_check as f64 / self.bytes_per_sec as f64);
 
-        if expected_duration > elapsed {
-            let sleep_duration = expected_duration - elapsed;
+        let sleep_duration = if expected_duration > elapsed {
+            let duration = expected_duration - elapsed;
             debug!(
-                sleep_ms = sleep_duration.as_millis(),
+                sleep_ms = duration.as_millis(),
                 bytes_transferred = self.bytes_since_last_check,
                 "Rate limiting repair bandwidth"
             );
-            tokio::time::sleep(sleep_duration).await;
-        }
+            Some(duration)
+        } else {
+            None
+        };
 
         if elapsed > Duration::from_secs(1) {
             self.last_check = Instant::now();
             self.bytes_since_last_check = 0;
         }
+
+        sleep_duration
     }
 
     pub fn bytes_per_sec(&self) -> u64 {
@@ -616,7 +620,9 @@ mod tests {
     async fn test_repair_rate_limiter_acquire_no_delay() {
         let mut limiter = RepairRateLimiter::new(1024 * 1024 * 1024);
         let start = Instant::now();
-        limiter.acquire(1024).await;
+        if let Some(d) = limiter.acquire(1024) {
+            tokio::time::sleep(d).await;
+        }
         let elapsed = start.elapsed();
         assert!(elapsed < Duration::from_millis(10));
     }
@@ -624,9 +630,13 @@ mod tests {
     #[tokio::test]
     async fn test_repair_rate_limiter_acquire_with_delay() {
         let mut limiter = RepairRateLimiter::new(1000);
-        limiter.acquire(500).await;
+        if let Some(d) = limiter.acquire(500) {
+            tokio::time::sleep(d).await;
+        }
         let start = Instant::now();
-        limiter.acquire(1000).await;
+        if let Some(d) = limiter.acquire(1000) {
+            tokio::time::sleep(d).await;
+        }
         let elapsed = start.elapsed();
         assert!(elapsed >= Duration::from_millis(400));
     }
@@ -647,15 +657,15 @@ mod tests {
         assert_eq!(limiter.bytes_per_sec(), 100);
     }
 
-    #[tokio::test]
-    async fn test_repair_rate_limiter_bytes_since_last_check() {
+    #[test]
+    fn test_repair_rate_limiter_bytes_since_last_check() {
         let mut limiter = RepairRateLimiter::new(1024 * 1024 * 1024);
         assert_eq!(limiter.bytes_since_last_check(), 0);
 
-        limiter.acquire(1000).await;
+        limiter.acquire(1000);
         assert_eq!(limiter.bytes_since_last_check(), 1000);
 
-        limiter.acquire(500).await;
+        limiter.acquire(500);
         assert_eq!(limiter.bytes_since_last_check(), 1500);
     }
 
@@ -668,22 +678,22 @@ mod tests {
         assert_eq!(limiter.bytes_since_last_check(), 0);
     }
 
-    #[tokio::test]
-    async fn test_repair_rate_limiter_reset_after_second() {
+    #[test]
+    fn test_repair_rate_limiter_reset_after_second() {
         let mut limiter = RepairRateLimiter::new(1024 * 1024 * 1024);
-        limiter.acquire(100).await;
+        limiter.acquire(100);
 
         limiter.last_check = Instant::now() - Duration::from_secs(2);
 
-        limiter.acquire(100).await;
+        limiter.acquire(100);
         assert_eq!(limiter.bytes_since_last_check(), 0);
     }
 
-    #[tokio::test]
-    async fn test_repair_rate_limiter_saturating_add() {
+    #[test]
+    fn test_repair_rate_limiter_saturating_add() {
         let mut limiter = RepairRateLimiter::new(u64::MAX);
         limiter.bytes_since_last_check = u64::MAX - 10;
-        limiter.acquire(100).await;
+        limiter.acquire(100);
         assert_eq!(limiter.bytes_since_last_check(), u64::MAX);
     }
 

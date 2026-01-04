@@ -2,6 +2,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use tonic::transport::{Channel, Endpoint};
+use tracing::warn;
 
 use gitstratum_core::{Commit, Oid, RefName, RepoId, Signature, Tree, TreeEntry, TreeEntryMode};
 use gitstratum_proto::metadata_service_client::MetadataServiceClient;
@@ -192,11 +193,21 @@ impl MetadataClient {
 
         let mut refs = Vec::new();
         for entry in response.refs {
-            if let Ok(ref_name) = RefName::new(&entry.name) {
-                if let Some(target) = &entry.target {
-                    if let Ok(oid) = Self::proto_to_oid(target) {
-                        refs.push((ref_name, oid));
+            match RefName::new(&entry.name) {
+                Ok(ref_name) => {
+                    if let Some(target) = &entry.target {
+                        match Self::proto_to_oid(target) {
+                            Ok(oid) => refs.push((ref_name, oid)),
+                            Err(e) => {
+                                warn!(ref_name = %entry.name, error = %e, "skipping ref with invalid OID");
+                            }
+                        }
+                    } else {
+                        warn!(ref_name = %entry.name, "skipping ref with missing target");
                     }
+                }
+                Err(e) => {
+                    warn!(ref_name = %entry.name, error = %e, "skipping ref with invalid name");
                 }
             }
         }
