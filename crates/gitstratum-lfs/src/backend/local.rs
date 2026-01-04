@@ -42,7 +42,7 @@ impl LfsBackend for LocalBackend {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .map_err(|e| LfsError::Backend(e.to_string()))?;
+                .map_err(LfsError::Backend)?;
         }
 
         let url = format!("{}/{}", self.base_url, key);
@@ -76,7 +76,7 @@ impl LfsBackend for LocalBackend {
                 Ok(true)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(LfsError::Backend(e.to_string())),
+            Err(e) => Err(LfsError::Backend(e)),
         }
     }
 
@@ -86,7 +86,7 @@ impl LfsBackend for LocalBackend {
         match fs::remove_file(&path).await {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(LfsError::Backend(e.to_string())),
+            Err(e) => Err(LfsError::Backend(e)),
         }
     }
 
@@ -103,7 +103,7 @@ impl LfsBackend for LocalBackend {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 Err(LfsError::NotFound(hex::encode(oid)))
             }
-            Err(e) => Err(LfsError::Backend(e.to_string())),
+            Err(e) => Err(LfsError::Backend(e)),
         }
     }
 

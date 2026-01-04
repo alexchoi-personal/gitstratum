@@ -452,8 +452,20 @@ impl BucketStoreIterator {
         let offset = entry.offset();
         let size = entry.size() as usize;
 
-        let data_file = self.file_manager.open_data_file(file_id).ok()?;
-        data_file.read_record_at_blocking(offset, size).ok()
+        let data_file = match self.file_manager.open_data_file(file_id) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(file_id, error = %e, "failed to open data file during iteration");
+                return None;
+            }
+        };
+        match data_file.read_record_at_blocking(offset, size) {
+            Ok(result) => Some(result),
+            Err(e) => {
+                tracing::warn!(file_id, offset, size, error = %e, "failed to read record during iteration");
+                None
+            }
+        }
     }
 }
 

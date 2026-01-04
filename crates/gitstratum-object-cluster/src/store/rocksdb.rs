@@ -206,12 +206,17 @@ impl RocksDbStore {
     pub fn iter(&self) -> impl Iterator<Item = Result<(Oid, Blob)>> + '_ {
         self.db
             .iterator(rocksdb::IteratorMode::Start)
-            .filter_map(|item| {
-                let (key, value) = item.ok()?;
-                if Self::is_metadata_key(&key) {
-                    return None;
+            .filter_map(|item| match item {
+                Ok((key, value)) => {
+                    if Self::is_metadata_key(&key) {
+                        return None;
+                    }
+                    Some((key, value))
                 }
-                Some((key, value))
+                Err(e) => {
+                    tracing::warn!(error = %e, "RocksDB iterator error, skipping entry");
+                    None
+                }
             })
             .map(|(key, value)| {
                 let oid = Oid::from_slice(&key)
@@ -228,16 +233,27 @@ impl RocksDbStore {
     ) -> impl Iterator<Item = Result<(Oid, Blob)>> + '_ {
         self.db
             .iterator(rocksdb::IteratorMode::Start)
-            .filter_map(move |item| {
-                let (key, value) = item.ok()?;
-                if Self::is_metadata_key(&key) {
-                    return None;
+            .filter_map(move |item| match item {
+                Ok((key, value)) => {
+                    if Self::is_metadata_key(&key) {
+                        return None;
+                    }
+                    let oid = match Oid::from_slice(&key) {
+                        Ok(o) => o,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "invalid OID in RocksDB key, skipping entry");
+                            return None;
+                        }
+                    };
+                    let position = self.oid_position(&oid);
+                    if position >= from_position && position < to_position {
+                        Some((oid, value))
+                    } else {
+                        None
+                    }
                 }
-                let oid = Oid::from_slice(&key).ok()?;
-                let position = self.oid_position(&oid);
-                if position >= from_position && position < to_position {
-                    Some((oid, value))
-                } else {
+                Err(e) => {
+                    tracing::warn!(error = %e, "RocksDB iterator error, skipping entry");
                     None
                 }
             })

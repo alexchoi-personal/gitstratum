@@ -436,7 +436,7 @@ impl PackReader {
                     OBJ_TREE => ObjectType::Tree,
                     OBJ_BLOB => ObjectType::Blob,
                     OBJ_TAG => ObjectType::Tag,
-                    _ => unreachable!(),
+                    _ => unreachable!("type_byte already matched to OBJ_COMMIT|TREE|BLOB|TAG"),
                 };
                 let oid = Oid::hash_object(object_type.as_str(), &decompressed);
                 PackEntry::new(oid, object_type, Bytes::from(decompressed))
