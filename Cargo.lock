@@ -1498,6 +1498,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitstratum-admin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "gitstratum-frontend-cluster",
+ "gitstratum-proto",
+ "ssh-key",
+ "tokio",
+ "tonic 0.10.2",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "gitstratum-coordinator"
 version = "0.1.0"
 dependencies = [

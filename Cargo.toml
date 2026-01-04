@@ -15,6 +15,7 @@ members = [
     "bins/gitstratum-frontend",
     "bins/gitstratum-metadata",
     "bins/gitstratum-object",
+    "bins/gitstratum-admin",
 ]
 
 [workspace.package]
