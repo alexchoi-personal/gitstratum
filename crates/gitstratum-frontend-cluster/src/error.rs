@@ -7,6 +7,16 @@ pub enum FrontendError {
     #[error("object not found: {0}")]
     ObjectNotFound(String),
 
+    #[error("authentication required for repository: {0}")]
+    AuthenticationRequired(String),
+
+    #[error("permission denied: {operation} on {repo_id} by {user_id}")]
+    PermissionDenied {
+        operation: String,
+        repo_id: String,
+        user_id: String,
+    },
+
     #[error("ref not found: {0}")]
     RefNotFound(String),
 
@@ -211,5 +221,25 @@ mod tests {
         let err = FrontendError::ObjectNotFound("test".to_string());
         let debug = format!("{:?}", err);
         assert!(debug.contains("ObjectNotFound"));
+    }
+
+    #[test]
+    fn test_authentication_required_display() {
+        let err = FrontendError::AuthenticationRequired("org/repo".to_string());
+        assert!(err.to_string().contains("org/repo"));
+        assert!(err.to_string().contains("authentication required"));
+    }
+
+    #[test]
+    fn test_permission_denied_display() {
+        let err = FrontendError::PermissionDenied {
+            operation: "write".to_string(),
+            repo_id: "org/repo".to_string(),
+            user_id: "user123".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("write"));
+        assert!(msg.contains("org/repo"));
+        assert!(msg.contains("user123"));
     }
 }

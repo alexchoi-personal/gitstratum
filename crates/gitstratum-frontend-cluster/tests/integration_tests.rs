@@ -165,6 +165,14 @@ impl MetadataConnection for TestMetadata {
     async fn get_ref(&self, _repo_id: &str, ref_name: &str) -> Result<Option<Oid>> {
         Ok(self.refs.lock().await.get(ref_name).copied())
     }
+
+    async fn check_permission(&self, _repo_id: &str, _user_id: &str, _perm: u8) -> Result<bool> {
+        Ok(true)
+    }
+
+    async fn set_permission(&self, _repo_id: &str, _user_id: &str, _perm: u8) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
