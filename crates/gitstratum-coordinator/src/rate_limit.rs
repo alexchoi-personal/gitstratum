@@ -78,9 +78,19 @@ impl TokenBucket {
         let tokens_to_add = (elapsed.as_secs_f64() * self.refill_rate as f64) as u32;
 
         if tokens_to_add > 0 {
-            let current = self.tokens.load(Ordering::Acquire);
-            let new_tokens = current.saturating_add(tokens_to_add).min(self.capacity);
-            self.tokens.store(new_tokens, Ordering::Release);
+            loop {
+                let current = self.tokens.load(Ordering::Acquire);
+                let new_tokens = current.saturating_add(tokens_to_add).min(self.capacity);
+                match self.tokens.compare_exchange(
+                    current,
+                    new_tokens,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(_) => continue,
+                }
+            }
             *last_refill = now;
         }
     }
@@ -120,7 +130,21 @@ pub struct WatchGuard<'a> {
 
 impl<'a> Drop for WatchGuard<'a> {
     fn drop(&mut self) {
-        self.counter.fetch_sub(1, Ordering::SeqCst);
+        loop {
+            let current = self.counter.load(Ordering::SeqCst);
+            if current == 0 {
+                return;
+            }
+            match self.counter.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(_) => continue,
+            }
+        }
     }
 }
 
@@ -140,6 +164,21 @@ impl GlobalRateLimiter {
             topology_limiter: TokenBucket::new(100_000, 50_000),
             watch_connections: AtomicU32::new(0),
             max_watch_connections: 1_000,
+        }
+    }
+
+    pub fn with_config(
+        registrations_per_sec: u32,
+        heartbeats_per_sec: u32,
+        topology_reads_per_sec: u32,
+        max_watch_connections: u32,
+    ) -> Self {
+        Self {
+            register_limiter: TokenBucket::new(registrations_per_sec * 2, registrations_per_sec),
+            heartbeat_limiter: TokenBucket::new(heartbeats_per_sec * 2, heartbeats_per_sec),
+            topology_limiter: TokenBucket::new(topology_reads_per_sec * 2, topology_reads_per_sec),
+            watch_connections: AtomicU32::new(0),
+            max_watch_connections,
         }
     }
 
@@ -206,7 +245,21 @@ impl GlobalRateLimiter {
     }
 
     pub fn decrement_watch(&self) {
-        self.watch_connections.fetch_sub(1, Ordering::SeqCst);
+        loop {
+            let current = self.watch_connections.load(Ordering::SeqCst);
+            if current == 0 {
+                return;
+            }
+            match self.watch_connections.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(_) => continue,
+            }
+        }
     }
 
     pub fn try_increment_watch(&self) -> Result<(), RateLimitError> {
@@ -615,5 +668,20 @@ mod tests {
             retry_after: Duration::from_secs(1),
         };
         let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn test_global_rate_limiter_with_config() {
+        let limiter = GlobalRateLimiter::with_config(50, 5000, 25000, 500);
+
+        for _ in 0..100 {
+            assert!(limiter.try_register().is_ok());
+        }
+        assert!(limiter.try_register().is_err());
+
+        for _ in 0..500 {
+            assert!(limiter.try_increment_watch().is_ok());
+        }
+        assert!(limiter.try_increment_watch().is_err());
     }
 }

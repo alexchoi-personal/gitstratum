@@ -1,7 +1,14 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+fn unix_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
 
 use gitstratum_coordinator::{
     apply_command, serialize_command, serialize_topology, ClusterCommand, ClusterTopology,
@@ -40,7 +47,7 @@ mod load_tests {
                         known_version: round as u64,
                         reported_state: NodeState::Active as i32,
                         generation_id: format!("gen-node-{}", node_id),
-                        received_at: Instant::now(),
+                        received_at: unix_timestamp_ms(),
                     };
                     batcher.record_heartbeat(format!("node-{}", node_id), info);
                     successful_heartbeats += 1;
@@ -279,7 +286,7 @@ mod load_tests {
                         known_version: round as u64,
                         reported_state: NodeState::Active as i32,
                         generation_id: format!("gen-node-{}", node_id),
-                        received_at: Instant::now(),
+                        received_at: unix_timestamp_ms(),
                     };
                     batcher_clone.record_heartbeat(format!("node-{}", node_id), info);
                     ops_clone.fetch_add(1, Ordering::Relaxed);
