@@ -6,10 +6,12 @@ use crate::error::Result;
 use crate::record::DataRecord;
 use crate::store::BucketStore;
 
-pub struct Compactor {
+#[allow(dead_code)]
+pub(crate) struct Compactor {
     store: Arc<BucketStore>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct LiveEntry {
     bucket_id: u32,
@@ -21,6 +23,7 @@ struct LiveEntry {
     flags: u8,
 }
 
+#[allow(dead_code)]
 impl Compactor {
     pub fn new(store: Arc<BucketStore>) -> Self {
         Self { store }
@@ -87,7 +90,7 @@ impl Compactor {
             });
         }
 
-        let mut target_file = file_manager.create_data_file()?;
+        let target_file = file_manager.create_data_file()?;
         let target_file_id = target_file.file_id();
 
         let mut bucket_updates: HashMap<u32, Vec<(usize, CompactEntry)>> = HashMap::new();
@@ -103,7 +106,7 @@ impl Compactor {
 
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(std::time::Duration::ZERO)
                 .as_micros() as u64;
             let record = DataRecord::new(oid, value, timestamp)?;
 
@@ -115,7 +118,7 @@ impl Compactor {
                 new_offset,
                 record.record_size() as u32,
                 live.flags,
-            );
+            )?;
 
             bucket_updates
                 .entry(live.bucket_id)
@@ -147,7 +150,9 @@ impl Compactor {
         }
 
         for (bucket_id, entry_idx) in deleted_entries.iter().rev() {
-            let bucket = buckets_to_update.get_mut(bucket_id).unwrap();
+            let Some(bucket) = buckets_to_update.get_mut(bucket_id) else {
+                continue;
+            };
 
             let count = { bucket.header.count } as usize;
             if *entry_idx < count {
@@ -189,12 +194,13 @@ impl Compactor {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct CompactionResult {
-    pub files_compacted: usize,
-    pub bytes_reclaimed: u64,
-    pub entries_moved: u64,
-    pub entries_purged: u64,
+pub(crate) struct CompactionResult {
+    pub(crate) files_compacted: usize,
+    pub(crate) bytes_reclaimed: u64,
+    pub(crate) entries_moved: u64,
+    pub(crate) entries_purged: u64,
 }
 
 #[cfg(test)]

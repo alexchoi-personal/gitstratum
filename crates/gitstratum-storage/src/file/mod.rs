@@ -1,9 +1,9 @@
-pub mod bucket_file;
-pub mod bucket_io;
-pub mod data_file;
-pub mod manager;
+pub(crate) mod bucket_file;
+pub(crate) mod bucket_io;
+pub(crate) mod data_file;
+pub(crate) mod manager;
 
-pub use bucket_file::BucketFile;
-pub use bucket_io::BucketIo;
-pub use data_file::DataFile;
-pub use manager::FileManager;
+pub(crate) use bucket_file::BucketFile;
+pub(crate) use bucket_io::BucketIo;
+pub(crate) use data_file::DataFile;
+pub(crate) use manager::FileManager;

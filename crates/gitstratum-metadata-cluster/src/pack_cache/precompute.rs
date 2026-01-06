@@ -14,18 +14,13 @@ pub struct PrecomputeRequest {
     pub priority: PrecomputePriority,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum PrecomputePriority {
     Low = 0,
+    #[default]
     Normal = 1,
     High = 2,
     Critical = 3,
-}
-
-impl Default for PrecomputePriority {
-    fn default() -> Self {
-        PrecomputePriority::Normal
-    }
 }
 
 pub struct PrecomputeQueue {

@@ -15,6 +15,7 @@ members = [
     "bins/gitstratum-frontend",
     "bins/gitstratum-metadata",
     "bins/gitstratum-object",
+    "bins/gitstratum-admin",
 ]
 
 [workspace.package]
@@ -46,9 +47,14 @@ tonic-build = "0.10"
 # Storage
 rocksdb = "0.22"
 
-# Hashing
+# Hashing & Cryptography
 sha2 = "0.10"
 hex = "0.4"
+argon2 = "0.5"
+
+# SSH
+russh = "0.48"
+russh-keys = "0.48"
 
 # Raft consensus
 openraft = { version = "0.9", features = ["serde"] }
@@ -66,13 +72,18 @@ anyhow = "1.0"
 # CLI
 clap = { version = "4.4", features = ["derive"] }
 
+# Caching
+moka = { version = "0.12", features = ["sync"] }
+
 # Utilities
+base64 = "0.22"
 bytes = { version = "1.5", features = ["serde"] }
 parking_lot = "0.12"
 dashmap = "5.5"
 flate2 = "1.0"
 lru = "0.12"
 rand = "0.8"
+rayon = "1.10"
 uuid = { version = "1.6", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 siphasher = "1.0"
@@ -97,47 +108,16 @@ gitstratum-frontend-cluster = { path = "crates/gitstratum-frontend-cluster" }
 gitstratum-proto = { path = "crates/gitstratum-proto" }
 gitstratum-storage = { path = "crates/gitstratum-storage" }
 gitstratum-lfs = { path = "crates/gitstratum-lfs" }
+gitstratum-metrics = { path = "crates/gitstratum-metrics" }
 
 # External HA framework (has newer k8s dependencies, enable via kubernetes feature)
 # k8s-operator = { path = "../k8s-operator" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
-unused_variables = "allow"
-unused_mut = "allow"
-dead_code = "allow"
 
 [workspace.lints.clippy]
-type_complexity = "allow"
 result_large_err = "allow"
-field_reassign_with_default = "allow"
-too_many_arguments = "allow"
-needless_range_loop = "allow"
-for_kv_map = "allow"
-let_and_return = "allow"
-derivable_impls = "allow"
-should_implement_trait = "allow"
-enum_variant_names = "allow"
-await_holding_lock = "allow"
-unnecessary_get_then_check = "allow"
-new_without_default = "allow"
-match_like_matches_macro = "allow"
-len_without_is_empty = "allow"
-from_over_into = "allow"
-unnecessary_map_or = "allow"
-useless_conversion = "allow"
-implicit_saturating_sub = "allow"
-manual_flatten = "allow"
-extra_unused_type_parameters = "allow"
-needless_borrows_for_generic_args = "allow"
-vec_init_then_push = "allow"
-needless_update = "allow"
-io_other_error = "allow"
-assertions_on_constants = "allow"
-single_match = "allow"
-if_same_then_else = "allow"
-redundant_pattern_matching = "allow"
-clone_on_copy = "allow"
 
 [profile.release]
 lto = true

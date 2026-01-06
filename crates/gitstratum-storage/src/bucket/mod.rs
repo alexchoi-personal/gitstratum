@@ -1,9 +1,9 @@
-pub mod cache;
-pub mod disk;
-pub mod entry;
-pub mod index;
+pub(crate) mod cache;
+pub(crate) mod disk;
+pub(crate) mod entry;
+pub(crate) mod index;
 
-pub use cache::BucketCache;
-pub use disk::{BucketHeader, DiskBucket, BUCKET_SIZE, MAX_ENTRIES};
-pub use entry::{CompactEntry, EntryFlags, ENTRY_SIZE, OID_PREFIX_SIZE, OID_SIZE, OID_SUFFIX_SIZE};
-pub use index::BucketIndex;
+pub(crate) use cache::BucketCache;
+pub(crate) use disk::{DiskBucket, BUCKET_SIZE, MAX_ENTRIES};
+pub(crate) use entry::{CompactEntry, EntryFlags};
+pub(crate) use index::BucketIndex;

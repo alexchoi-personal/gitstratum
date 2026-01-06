@@ -32,11 +32,20 @@ pub enum BucketStoreError {
     #[error("bucket overflow: bucket {bucket_id} is full")]
     BucketOverflow { bucket_id: u32 },
 
+    #[error("invalid bucket id: {bucket_id} >= {bucket_count}")]
+    InvalidBucketId { bucket_id: u32, bucket_count: u32 },
+
     #[error("file too large: {size} bytes exceeds maximum {max}")]
     FileTooLarge { size: u64, max: u64 },
 
     #[error("object too large: {size} bytes exceeds maximum 16MB")]
     ObjectTooLarge { size: usize },
+
+    #[error("entry offset {offset} exceeds maximum {max}")]
+    EntryOffsetTooLarge { offset: u64, max: u64 },
+
+    #[error("entry size {size} exceeds maximum {max}")]
+    EntrySizeTooLarge { size: u32, max: u32 },
 
     #[error("store is closed")]
     StoreClosed,
@@ -49,4 +58,7 @@ pub enum BucketStoreError {
 
     #[error("compaction failed: {0}")]
     CompactionFailed(String),
+
+    #[error("offset overflow: {0} exceeds i64::MAX")]
+    OffsetOverflow(u64),
 }

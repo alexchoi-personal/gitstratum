@@ -88,12 +88,13 @@ impl AsyncUringQueue {
         Ok(rx)
     }
 
-    pub fn reap_completions(&self) {
+    pub fn reap_completions(&self) -> usize {
         let completions = {
             let mut uring = self.uring.lock();
             uring.wait_completions(0)
         };
 
+        let count = completions.len();
         let mut pending = self.pending.lock();
         for completion in completions {
             if let Some(op) = pending.remove(&completion.id) {
@@ -103,6 +104,7 @@ impl AsyncUringQueue {
                 });
             }
         }
+        count
     }
 
     pub fn has_pending(&self) -> bool {
@@ -149,8 +151,10 @@ impl AsyncMultiQueueIo {
                 let shutdown = Arc::clone(&self.shutdown);
                 tokio::spawn(async move {
                     while !shutdown.load(Ordering::Relaxed) {
-                        queue.reap_completions();
-                        tokio::task::yield_now().await;
+                        let reaped = queue.reap_completions();
+                        if reaped == 0 {
+                            tokio::time::sleep(std::time::Duration::from_micros(100)).await;
+                        }
                     }
                 })
             })

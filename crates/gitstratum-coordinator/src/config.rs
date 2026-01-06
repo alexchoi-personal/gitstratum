@@ -30,6 +30,9 @@ pub struct CoordinatorConfig {
     pub global_registrations_per_sec: u32,
     pub global_heartbeats_per_sec: u32,
     pub global_topology_reads_per_sec: u32,
+
+    pub client_limiter_cleanup_interval: Duration,
+    pub client_limiter_max_idle: Duration,
 }
 
 impl Default for CoordinatorConfig {
@@ -62,6 +65,9 @@ impl Default for CoordinatorConfig {
             global_registrations_per_sec: 100,
             global_heartbeats_per_sec: 10_000,
             global_topology_reads_per_sec: 50_000,
+
+            client_limiter_cleanup_interval: Duration::from_secs(60),
+            client_limiter_max_idle: Duration::from_secs(600),
         }
     }
 }
@@ -82,7 +88,7 @@ pub struct TlsConfig {
 impl Default for TlsConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             cert_path: PathBuf::new(),
             key_path: PathBuf::new(),
             ca_path: PathBuf::new(),
@@ -123,6 +129,11 @@ mod tests {
         assert_eq!(config.global_registrations_per_sec, 100);
         assert_eq!(config.global_heartbeats_per_sec, 10_000);
         assert_eq!(config.global_topology_reads_per_sec, 50_000);
+        assert_eq!(
+            config.client_limiter_cleanup_interval,
+            Duration::from_secs(60)
+        );
+        assert_eq!(config.client_limiter_max_idle, Duration::from_secs(600));
     }
 
     #[test]
@@ -144,7 +155,7 @@ mod tests {
     #[test]
     fn test_tls_config_default() {
         let config = TlsConfig::default();
-        assert!(config.enabled);
+        assert!(!config.enabled);
         assert!(config.cert_path.as_os_str().is_empty());
         assert!(config.key_path.as_os_str().is_empty());
         assert!(config.ca_path.as_os_str().is_empty());
@@ -156,9 +167,11 @@ mod tests {
 
     #[test]
     fn test_tls_config_clone() {
-        let mut config = TlsConfig::default();
-        config.enabled = false;
-        config.cert_path = PathBuf::from("/etc/certs/server.crt");
+        let config = TlsConfig {
+            enabled: false,
+            cert_path: PathBuf::from("/etc/certs/server.crt"),
+            ..TlsConfig::default()
+        };
         let cloned = config.clone();
         assert!(!cloned.enabled);
         assert_eq!(cloned.cert_path, PathBuf::from("/etc/certs/server.crt"));

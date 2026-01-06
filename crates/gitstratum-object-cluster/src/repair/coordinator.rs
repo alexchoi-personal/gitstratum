@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,10 +58,6 @@ pub struct RepairCoordinator<S: ObjectStorage> {
     rate_limiter: RwLock<RepairRateLimiter>,
 
     stats: RwLock<RepairStats>,
-
-    sessions_created: AtomicU64,
-    objects_repaired: AtomicU64,
-    bytes_transferred: AtomicU64,
 }
 
 impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
@@ -78,9 +75,6 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
             sessions: DashMap::new(),
             rate_limiter,
             stats: RwLock::new(RepairStats::default()),
-            sessions_created: AtomicU64::new(0),
-            objects_repaired: AtomicU64::new(0),
-            bytes_transferred: AtomicU64::new(0),
         }
     }
 
@@ -112,7 +106,6 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
         );
 
         self.sessions.insert(session_id.clone(), session);
-        self.sessions_created.fetch_add(1, Ordering::Relaxed);
 
         {
             let mut stats = self.stats.write();
@@ -211,9 +204,6 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
     }
 
     pub fn record_objects_repaired(&self, count: u64, bytes: u64) {
-        self.objects_repaired.fetch_add(count, Ordering::Relaxed);
-        self.bytes_transferred.fetch_add(bytes, Ordering::Relaxed);
-
         let mut stats = self.stats.write();
         stats.objects_repaired += count;
         stats.bytes_transferred += bytes;
@@ -244,19 +234,22 @@ impl<S: ObjectStorage + Send + Sync + 'static> RepairCoordinator<S> {
     }
 
     pub async fn acquire_rate_limit(&self, bytes: u64) {
-        self.rate_limiter.write().acquire(bytes).await;
+        let sleep_duration = self.rate_limiter.write().acquire(bytes);
+        if let Some(duration) = sleep_duration {
+            tokio::time::sleep(duration).await;
+        }
     }
 
     pub fn total_sessions_created(&self) -> u64 {
-        self.sessions_created.load(Ordering::Relaxed)
+        self.stats.read().sessions_created
     }
 
     pub fn total_objects_repaired(&self) -> u64 {
-        self.objects_repaired.load(Ordering::Relaxed)
+        self.stats.read().objects_repaired
     }
 
     pub fn total_bytes_transferred(&self) -> u64 {
-        self.bytes_transferred.load(Ordering::Relaxed)
+        self.stats.read().bytes_transferred
     }
 
     pub fn cleanup_timed_out_sessions(&self) -> usize {
@@ -379,9 +372,11 @@ mod tests {
 
     #[test]
     fn test_repair_stats_clone() {
-        let mut stats = RepairStats::default();
-        stats.sessions_created = 10;
-        stats.sessions_completed = 5;
+        let stats = RepairStats {
+            sessions_created: 10,
+            sessions_completed: 5,
+            ..RepairStats::default()
+        };
         let cloned = stats.clone();
         assert_eq!(stats.sessions_created, cloned.sessions_created);
         assert_eq!(stats.sessions_completed, cloned.sessions_completed);

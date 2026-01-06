@@ -1,419 +1,17 @@
-use gitstratum_core::Oid;
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
-use thiserror::Error;
-
-pub type Result<T> = std::result::Result<T, HashRingError>;
-
-#[derive(Error, Debug)]
-pub enum HashRingError {
-    #[error("node not found: {0}")]
-    NodeNotFound(String),
-
-    #[error("ring is empty")]
-    EmptyRing,
-
-    #[error("insufficient nodes for replication factor {0}, have {1}")]
-    InsufficientNodes(usize, usize),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct NodeId(String);
-
-impl NodeId {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for NodeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeInfo {
-    pub id: NodeId,
-    pub address: String,
-    pub port: u16,
-    pub state: NodeState,
-}
-
-impl NodeInfo {
-    pub fn new(id: impl Into<String>, address: impl Into<String>, port: u16) -> Self {
-        Self {
-            id: NodeId::new(id),
-            address: address.into(),
-            port,
-            state: NodeState::Active,
-        }
-    }
-
-    pub fn with_state(mut self, state: NodeState) -> Self {
-        self.state = state;
-        self
-    }
-
-    pub fn endpoint(&self) -> String {
-        format!("{}:{}", self.address, self.port)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NodeState {
-    Active,
-    Joining,
-    Draining,
-    Down,
-}
-
-impl NodeState {
-    pub fn is_active(&self) -> bool {
-        matches!(self, NodeState::Active)
-    }
-
-    pub fn can_serve_reads(&self) -> bool {
-        matches!(self, NodeState::Active | NodeState::Draining)
-    }
-
-    pub fn can_serve_writes(&self) -> bool {
-        matches!(self, NodeState::Active)
-    }
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct VirtualNode {
-    position: u64,
-    node_id: NodeId,
-    virtual_index: u32,
-}
-
-#[derive(Debug)]
-pub struct ConsistentHashRing {
-    ring: RwLock<BTreeMap<u64, VirtualNode>>,
-    nodes: RwLock<BTreeMap<NodeId, NodeInfo>>,
-    virtual_nodes_per_physical: u32,
-    replication_factor: usize,
-    version: RwLock<u64>,
-}
-
-impl ConsistentHashRing {
-    pub fn new(virtual_nodes_per_physical: u32, replication_factor: usize) -> Self {
-        Self {
-            ring: RwLock::new(BTreeMap::new()),
-            nodes: RwLock::new(BTreeMap::new()),
-            virtual_nodes_per_physical,
-            replication_factor,
-            version: RwLock::new(0),
-        }
-    }
-
-    pub fn with_nodes(
-        nodes: Vec<NodeInfo>,
-        virtual_nodes_per_physical: u32,
-        replication_factor: usize,
-    ) -> Result<Self> {
-        let ring = Self::new(virtual_nodes_per_physical, replication_factor);
-        for node in nodes {
-            ring.add_node(node)?;
-        }
-        Ok(ring)
-    }
-
-    fn hash_position(node_id: &NodeId, virtual_index: u32) -> u64 {
-        let mut hasher = Sha256::new();
-        hasher.update(node_id.as_str().as_bytes());
-        hasher.update(virtual_index.to_le_bytes());
-        let result = hasher.finalize();
-        u64::from_le_bytes(result[..8].try_into().unwrap())
-    }
-
-    /// Compute position for arbitrary keys by hashing them.
-    /// Use this for non-OID keys that need uniform distribution.
-    fn key_position(key: &[u8]) -> u64 {
-        let mut hasher = Sha256::new();
-        hasher.update(key);
-        let result = hasher.finalize();
-        u64::from_le_bytes(result[..8].try_into().unwrap())
-    }
-
-    /// Compute position for OIDs directly from their bytes.
-    /// OIDs are already SHA-256 hashes, so no additional hashing needed.
-    fn oid_position(oid: &Oid) -> u64 {
-        u64::from_le_bytes(oid.as_bytes()[..8].try_into().unwrap())
-    }
-
-    pub fn add_node(&self, node: NodeInfo) -> Result<()> {
-        let node_id = node.id.clone();
-
-        {
-            let mut nodes = self.nodes.write();
-            nodes.insert(node_id.clone(), node);
-        }
-
-        {
-            let mut ring = self.ring.write();
-            for i in 0..self.virtual_nodes_per_physical {
-                let position = Self::hash_position(&node_id, i);
-                let vnode = VirtualNode {
-                    position,
-                    node_id: node_id.clone(),
-                    virtual_index: i,
-                };
-                ring.insert(position, vnode);
-            }
-        }
-
-        self.increment_version();
-        Ok(())
-    }
-
-    pub fn remove_node(&self, node_id: &NodeId) -> Result<NodeInfo> {
-        let node = {
-            let mut nodes = self.nodes.write();
-            nodes
-                .remove(node_id)
-                .ok_or_else(|| HashRingError::NodeNotFound(node_id.to_string()))?
-        };
-
-        {
-            let mut ring = self.ring.write();
-            let positions_to_remove: Vec<u64> = ring
-                .iter()
-                .filter(|(_, vnode)| &vnode.node_id == node_id)
-                .map(|(pos, _)| *pos)
-                .collect();
-
-            for pos in positions_to_remove {
-                ring.remove(&pos);
-            }
-        }
-
-        self.increment_version();
-        Ok(node)
-    }
-
-    pub fn set_node_state(&self, node_id: &NodeId, state: NodeState) -> Result<()> {
-        let mut nodes = self.nodes.write();
-        let node = nodes
-            .get_mut(node_id)
-            .ok_or_else(|| HashRingError::NodeNotFound(node_id.to_string()))?;
-        node.state = state;
-        drop(nodes);
-        self.increment_version();
-        Ok(())
-    }
-
-    pub fn get_node(&self, node_id: &NodeId) -> Option<NodeInfo> {
-        self.nodes.read().get(node_id).cloned()
-    }
-
-    pub fn get_nodes(&self) -> Vec<NodeInfo> {
-        self.nodes.read().values().cloned().collect()
-    }
-
-    pub fn active_nodes(&self) -> Vec<NodeInfo> {
-        self.nodes
-            .read()
-            .values()
-            .filter(|n| n.state.is_active())
-            .cloned()
-            .collect()
-    }
-
-    pub fn node_count(&self) -> usize {
-        self.nodes.read().len()
-    }
-
-    fn increment_version(&self) {
-        let mut version = self.version.write();
-        *version += 1;
-    }
-
-    pub fn version(&self) -> u64 {
-        *self.version.read()
-    }
-
-    pub fn get_ring_entries(&self) -> Vec<(u64, NodeId)> {
-        self.ring
-            .read()
-            .iter()
-            .map(|(pos, vnode)| (*pos, vnode.node_id.clone()))
-            .collect()
-    }
-
-    fn primary_node_at_position(&self, position: u64) -> Result<NodeInfo> {
-        let ring = self.ring.read();
-
-        if ring.is_empty() {
-            return Err(HashRingError::EmptyRing);
-        }
-
-        let vnode = ring
-            .range(position..)
-            .next()
-            .or_else(|| ring.iter().next())
-            .map(|(_, v)| v)
-            .ok_or(HashRingError::EmptyRing)?;
-
-        self.nodes
-            .read()
-            .get(&vnode.node_id)
-            .cloned()
-            .ok_or_else(|| HashRingError::NodeNotFound(vnode.node_id.to_string()))
-    }
-
-    pub fn primary_node(&self, key: &[u8]) -> Result<NodeInfo> {
-        let position = Self::key_position(key);
-        self.primary_node_at_position(position)
-    }
-
-    pub fn primary_node_for_oid(&self, oid: &Oid) -> Result<NodeInfo> {
-        let position = Self::oid_position(oid);
-        self.primary_node_at_position(position)
-    }
-
-    fn nodes_at_position(&self, position: u64) -> Result<Vec<NodeInfo>> {
-        let nodes = self.nodes.read();
-        let active_count = nodes.values().filter(|n| n.state.can_serve_reads()).count();
-
-        if active_count < self.replication_factor {
-            return Err(HashRingError::InsufficientNodes(
-                self.replication_factor,
-                active_count,
-            ));
-        }
-
-        let ring = self.ring.read();
-
-        if ring.is_empty() {
-            return Err(HashRingError::EmptyRing);
-        }
-
-        let mut result = Vec::with_capacity(self.replication_factor);
-        let mut seen_nodes = std::collections::HashSet::new();
-
-        let iter = ring.range(position..).chain(ring.iter()).map(|(_, v)| v);
-
-        for vnode in iter {
-            if seen_nodes.contains(&vnode.node_id) {
-                continue;
-            }
-
-            let Some(node) = nodes.get(&vnode.node_id) else {
-                continue;
-            };
-
-            if !node.state.can_serve_reads() {
-                continue;
-            }
-
-            seen_nodes.insert(vnode.node_id.clone());
-            result.push(node.clone());
-
-            if result.len() >= self.replication_factor {
-                break;
-            }
-        }
-
-        if result.len() < self.replication_factor {
-            return Err(HashRingError::InsufficientNodes(
-                self.replication_factor,
-                result.len(),
-            ));
-        }
-
-        Ok(result)
-    }
-
-    pub fn nodes_for_key(&self, key: &[u8]) -> Result<Vec<NodeInfo>> {
-        let position = Self::key_position(key);
-        self.nodes_at_position(position)
-    }
-
-    pub fn nodes_for_oid(&self, oid: &Oid) -> Result<Vec<NodeInfo>> {
-        let position = Self::oid_position(oid);
-        self.nodes_at_position(position)
-    }
-
-    pub fn nodes_for_prefix(&self, prefix: u8) -> Result<Vec<NodeInfo>> {
-        let key = [prefix, 0, 0, 0, 0, 0, 0, 0];
-        self.nodes_for_key(&key)
-    }
-
-    pub fn replication_factor(&self) -> usize {
-        self.replication_factor
-    }
-}
-
-impl Clone for ConsistentHashRing {
-    fn clone(&self) -> Self {
-        Self {
-            ring: RwLock::new(self.ring.read().clone()),
-            nodes: RwLock::new(self.nodes.read().clone()),
-            virtual_nodes_per_physical: self.virtual_nodes_per_physical,
-            replication_factor: self.replication_factor,
-            version: RwLock::new(*self.version.read()),
-        }
-    }
-}
-
-pub struct HashRingBuilder {
-    virtual_nodes_per_physical: u32,
-    replication_factor: usize,
-    nodes: Vec<NodeInfo>,
-}
-
-impl HashRingBuilder {
-    pub fn new() -> Self {
-        Self {
-            virtual_nodes_per_physical: 16,
-            replication_factor: 2,
-            nodes: Vec::new(),
-        }
-    }
-
-    pub fn virtual_nodes(mut self, count: u32) -> Self {
-        self.virtual_nodes_per_physical = count;
-        self
-    }
-
-    pub fn replication_factor(mut self, rf: usize) -> Self {
-        self.replication_factor = rf;
-        self
-    }
-
-    pub fn add_node(mut self, node: NodeInfo) -> Self {
-        self.nodes.push(node);
-        self
-    }
-
-    pub fn build(self) -> Result<ConsistentHashRing> {
-        ConsistentHashRing::with_nodes(
-            self.nodes,
-            self.virtual_nodes_per_physical,
-            self.replication_factor,
-        )
-    }
-}
-
-impl Default for HashRingBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+mod builder;
+mod error;
+mod node;
+mod ring;
+
+pub use builder::HashRingBuilder;
+pub use error::{HashRingError, Result};
+pub use node::{NodeId, NodeInfo, NodeState};
+pub use ring::ConsistentHashRing;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gitstratum_core::Oid;
 
     fn create_test_node(id: &str) -> NodeInfo {
         NodeInfo::new(id, format!("10.0.0.{}", id.chars().last().unwrap()), 9002)
@@ -421,7 +19,7 @@ mod tests {
 
     #[test]
     fn test_add_remove_node() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
 
         let node1 = create_test_node("node-1");
         ring.add_node(node1.clone()).unwrap();
@@ -493,15 +91,13 @@ mod tests {
 
     #[test]
     fn test_insufficient_nodes() {
-        let ring = HashRingBuilder::new()
+        let result = HashRingBuilder::new()
             .virtual_nodes(16)
             .replication_factor(3)
             .add_node(create_test_node("node-1"))
             .add_node(create_test_node("node-2"))
-            .build()
-            .unwrap();
+            .build();
 
-        let result = ring.nodes_for_key(b"test");
         assert!(matches!(
             result,
             Err(HashRingError::InsufficientNodes(3, 2))
@@ -561,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_empty_ring() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.primary_node(b"test");
         assert!(matches!(result, Err(HashRingError::EmptyRing)));
     }
@@ -615,21 +211,21 @@ mod tests {
 
     #[test]
     fn test_remove_nonexistent_node() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.remove_node(&NodeId::new("nonexistent"));
         assert!(matches!(result, Err(HashRingError::NodeNotFound(_))));
     }
 
     #[test]
     fn test_set_node_state_nonexistent() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.set_node_state(&NodeId::new("nonexistent"), NodeState::Draining);
         assert!(matches!(result, Err(HashRingError::NodeNotFound(_))));
     }
 
     #[test]
     fn test_get_nonexistent_node() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         assert!(ring.get_node(&NodeId::new("nonexistent")).is_none());
     }
 
@@ -689,20 +285,21 @@ mod tests {
 
     #[test]
     fn test_nodes_for_prefix_empty_ring() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.nodes_for_prefix(0xAB);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_replication_factor() {
-        let ring = ConsistentHashRing::new(16, 3);
+        let ring = ConsistentHashRing::new(16, 3).unwrap();
         assert_eq!(ring.replication_factor(), 3);
     }
 
     #[test]
     fn test_clone_ring() {
         let ring = HashRingBuilder::new()
+            .replication_factor(1)
             .add_node(create_test_node("node-1"))
             .build()
             .unwrap();
@@ -721,17 +318,14 @@ mod tests {
 
     #[test]
     fn test_nodes_for_key_empty() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         let result = ring.nodes_for_key(b"test");
-        assert!(matches!(
-            result,
-            Err(HashRingError::InsufficientNodes(_, _))
-        ));
+        assert!(matches!(result, Err(HashRingError::EmptyRing)));
     }
 
     #[test]
     fn test_version_increments() {
-        let ring = ConsistentHashRing::new(16, 2);
+        let ring = ConsistentHashRing::new(16, 2).unwrap();
         assert_eq!(ring.version(), 0);
 
         ring.add_node(create_test_node("node-1")).unwrap();
@@ -846,23 +440,20 @@ mod tests {
     }
 
     #[test]
-    fn test_nodes_for_key_with_zero_replication_factor_empty_ring() {
-        let ring = ConsistentHashRing::new(16, 0);
-        let result = ring.nodes_for_key(b"test");
-        assert!(matches!(result, Err(HashRingError::EmptyRing)));
+    fn test_zero_replication_factor_rejected() {
+        let result = ConsistentHashRing::new(16, 0);
+        assert!(matches!(result, Err(HashRingError::InvalidConfig(_))));
     }
 
     #[test]
-    fn test_nodes_for_key_with_zero_replication_factor_with_nodes() {
-        let ring = HashRingBuilder::new()
+    fn test_zero_replication_factor_rejected_via_builder() {
+        let result = HashRingBuilder::new()
             .virtual_nodes(16)
             .replication_factor(0)
             .add_node(create_test_node("node-1"))
-            .build()
-            .unwrap();
+            .build();
 
-        let result = ring.nodes_for_key(b"test");
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(HashRingError::InvalidConfig(_))));
     }
 
     #[test]
@@ -972,7 +563,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let ring = Arc::new(ConsistentHashRing::new(16, 2));
+        let ring = Arc::new(ConsistentHashRing::new(16, 2).unwrap());
 
         let mut handles = vec![];
 
@@ -1042,6 +633,28 @@ mod tests {
 
         for handle in handles {
             handle.join().expect("Thread panicked");
+        }
+    }
+
+    #[test]
+    fn test_node_info_with_state() {
+        let node = NodeInfo::new("node-1", "10.0.0.1", 9002).with_state(NodeState::Draining);
+        assert_eq!(node.state, NodeState::Draining);
+    }
+
+    #[test]
+    fn test_get_ring_entries() {
+        let ring = HashRingBuilder::new()
+            .virtual_nodes(4)
+            .replication_factor(1)
+            .add_node(create_test_node("node-1"))
+            .build()
+            .unwrap();
+
+        let entries = ring.get_ring_entries();
+        assert_eq!(entries.len(), 4);
+        for (_, node_id) in entries {
+            assert_eq!(node_id.as_str(), "node-1");
         }
     }
 }

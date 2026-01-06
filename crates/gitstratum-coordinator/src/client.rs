@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -56,6 +57,11 @@ impl TopologyCache {
 
     pub fn staleness(&self) -> Duration {
         self.last_updated.read().elapsed()
+    }
+
+    pub fn invalidate(&self) {
+        *self.topology.write() = None;
+        *self.last_updated.write() = Instant::now() - self.max_staleness - Duration::from_secs(1);
     }
 }
 
@@ -198,8 +204,10 @@ impl CoordinatorClient {
     pub async fn get_topology(&mut self) -> Result<ClusterTopology, CoordinatorError> {
         let state = self.get_cluster_state().await?;
 
-        let mut topology = ClusterTopology::default();
-        topology.version = state.version;
+        let mut topology = ClusterTopology {
+            version: state.version,
+            ..ClusterTopology::default()
+        };
 
         for node in state.object_nodes {
             let entry = crate::topology::NodeEntry::from_proto(&node);
@@ -271,6 +279,7 @@ pub struct SmartCoordinatorClient {
     current_leader: RwLock<Option<String>>,
     retry_config: RetryConfig,
     cache: Arc<TopologyCache>,
+    channels: RwLock<HashMap<String, Channel>>,
 }
 
 impl SmartCoordinatorClient {
@@ -280,12 +289,33 @@ impl SmartCoordinatorClient {
             current_leader: RwLock::new(None),
             retry_config: RetryConfig::default(),
             cache,
+            channels: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
         self.retry_config = config;
         self
+    }
+
+    async fn get_channel(&self, endpoint: &str) -> Result<Channel, CoordinatorError> {
+        if let Some(channel) = self.channels.read().get(endpoint) {
+            return Ok(channel.clone());
+        }
+
+        let channel = Channel::from_shared(endpoint.to_string())
+            .map_err(|e| CoordinatorError::Internal(format!("Invalid address: {}", e)))?
+            .connect_timeout(Duration::from_secs(5))
+            .connect()
+            .await
+            .map_err(|e| CoordinatorError::Internal(format!("Connection failed: {}", e)))?;
+
+        let mut channels = self.channels.write();
+        if let Some(existing) = channels.get(endpoint) {
+            return Ok(existing.clone());
+        }
+        channels.insert(endpoint.to_string(), channel.clone());
+        Ok(channel)
     }
 
     fn get_endpoint(&self, attempt: u32) -> String {
@@ -322,8 +352,14 @@ impl SmartCoordinatorClient {
             let endpoint = self.get_endpoint(attempt);
 
             let result = tokio::time::timeout(self.retry_config.timeout_per_attempt, async {
-                let mut client = CoordinatorClient::connect(&endpoint).await?;
-                client.register_node(node.clone()).await
+                let channel = self.get_channel(&endpoint).await?;
+                let mut client = CoordinatorServiceClient::new(channel);
+                let response = client
+                    .register_node(RegisterNodeRequest {
+                        node: Some(node.clone()),
+                    })
+                    .await?;
+                Ok::<_, CoordinatorError>(response.into_inner())
             })
             .await;
 
@@ -377,10 +413,17 @@ impl SmartCoordinatorClient {
             let endpoint = self.get_endpoint(attempt);
 
             let result = tokio::time::timeout(self.retry_config.timeout_per_attempt, async {
-                let mut client = CoordinatorClient::connect(&endpoint).await?;
-                client
-                    .heartbeat(node_id, known_version, reported_state, generation_id)
-                    .await
+                let channel = self.get_channel(&endpoint).await?;
+                let mut client = CoordinatorServiceClient::new(channel);
+                let response = client
+                    .heartbeat(HeartbeatRequest {
+                        node_id: node_id.to_string(),
+                        known_version,
+                        reported_state: reported_state as i32,
+                        generation_id: generation_id.to_string(),
+                    })
+                    .await?;
+                Ok::<_, CoordinatorError>(response.into_inner())
             })
             .await;
 
@@ -421,8 +464,10 @@ impl SmartCoordinatorClient {
             let endpoint = self.get_endpoint(attempt);
 
             let result = tokio::time::timeout(self.retry_config.timeout_per_attempt, async {
-                let mut client = CoordinatorClient::connect(&endpoint).await?;
-                client.get_cluster_state().await
+                let channel = self.get_channel(&endpoint).await?;
+                let mut client = CoordinatorServiceClient::new(channel);
+                let response = client.get_cluster_state(GetClusterStateRequest {}).await?;
+                Ok::<_, CoordinatorError>(response.into_inner())
             })
             .await;
 
@@ -490,6 +535,7 @@ pub async fn watch_topology_with_recovery<F>(
     cache: Arc<TopologyCache>,
     config: WatchConfig,
     mut on_event: F,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) where
     F: FnMut(WatchEvent, u64),
 {
@@ -497,6 +543,9 @@ pub async fn watch_topology_with_recovery<F>(
     let mut endpoint_index = 0usize;
 
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         let endpoint = &endpoints[endpoint_index % endpoints.len()];
         endpoint_index += 1;
 
@@ -543,7 +592,8 @@ pub async fn watch_topology_with_recovery<F>(
                             "Server sent Lagged notification"
                         );
                         on_event(WatchEvent::Lagged, lagged.current_version);
-                        current_version = lagged.current_version;
+                        cache.invalidate();
+                        current_version = 0;
                         break;
                     }
                     Some(Update::FullSync(topo)) => {
@@ -560,6 +610,8 @@ pub async fn watch_topology_with_recovery<F>(
                                 got = update.previous_version,
                                 "Gap detected in watch stream"
                             );
+                            cache.invalidate();
+                            current_version = 0;
                             break;
                         }
                         current_version = update.version;
@@ -575,6 +627,8 @@ pub async fn watch_topology_with_recovery<F>(
                                 got = update.previous_version,
                                 "Gap detected in watch stream"
                             );
+                            cache.invalidate();
+                            current_version = 0;
                             break;
                         }
                         current_version = update.version;
@@ -590,6 +644,8 @@ pub async fn watch_topology_with_recovery<F>(
                                 got = update.previous_version,
                                 "Gap detected in watch stream"
                             );
+                            cache.invalidate();
+                            current_version = 0;
                             break;
                         }
                         current_version = update.version;
@@ -727,5 +783,464 @@ mod tests {
         client.clear_leader_hint();
         assert!(client.current_leader.read().is_none());
         assert_eq!(client.get_endpoint(0), "http://coord-0:9000");
+    }
+
+    #[test]
+    fn test_topology_cache_invalidate_clears_cached_topology() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+
+        let topo = GetTopologyResponse {
+            version: 42,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: String::new(),
+        };
+        cache.update(topo);
+
+        assert!(cache.get().is_some());
+        assert_eq!(cache.get_version(), 42);
+
+        cache.invalidate();
+
+        assert!(cache.get().is_none());
+        assert_eq!(cache.get_version(), 0);
+    }
+
+    #[test]
+    fn test_topology_cache_invalidate_allows_reupdate() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+
+        let topo1 = GetTopologyResponse {
+            version: 10,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: "leader-1".to_string(),
+        };
+        cache.update(topo1);
+        assert_eq!(cache.get_version(), 10);
+
+        cache.invalidate();
+        assert_eq!(cache.get_version(), 0);
+
+        let topo2 = GetTopologyResponse {
+            version: 20,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: "leader-2".to_string(),
+        };
+        cache.update(topo2);
+        assert_eq!(cache.get_version(), 20);
+        assert_eq!(cache.get().unwrap().leader_id, "leader-2");
+    }
+
+    #[test]
+    fn test_topology_cache_invalidate_on_empty_is_noop() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+
+        assert!(cache.get().is_none());
+        assert_eq!(cache.get_version(), 0);
+
+        cache.invalidate();
+
+        assert!(cache.get().is_none());
+        assert_eq!(cache.get_version(), 0);
+    }
+
+    #[test]
+    fn test_smart_client_channels_initially_empty() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache);
+        assert!(client.channels.read().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_channel_double_checked_locking() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = Arc::new(SmartCoordinatorClient::new(
+            vec!["http://localhost:50051".to_string()],
+            cache,
+        ));
+
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let c = Arc::clone(&client);
+            let handle = tokio::spawn(async move {
+                let _ = c.get_channel("http://localhost:50051").await;
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let _ = handle.await;
+        }
+
+        let channels = client.channels.read();
+        assert!(
+            channels.len() <= 1,
+            "Expected at most 1 channel due to double-checked locking, got {}",
+            channels.len()
+        );
+    }
+
+    #[test]
+    fn test_topology_cache_staleness_returns_elapsed_time() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+        let staleness_before = cache.staleness();
+        std::thread::sleep(Duration::from_millis(10));
+        let staleness_after = cache.staleness();
+        assert!(staleness_after > staleness_before);
+        assert!(staleness_after >= Duration::from_millis(10));
+    }
+
+    #[test]
+    fn test_topology_cache_is_stale_when_expired() {
+        let cache = TopologyCache::new(Duration::from_millis(5));
+        assert!(!cache.is_stale());
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(cache.is_stale());
+    }
+
+    #[test]
+    fn test_topology_cache_update_resets_staleness() {
+        let cache = TopologyCache::new(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(cache.is_stale());
+
+        let topo = GetTopologyResponse {
+            version: 1,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: String::new(),
+        };
+        cache.update(topo);
+
+        assert!(!cache.is_stale());
+    }
+
+    #[test]
+    fn test_retry_config_clone() {
+        let config = RetryConfig {
+            max_attempts: 10,
+            initial_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_secs(10),
+            timeout_per_attempt: Duration::from_secs(3),
+            jitter_fraction: 0.5,
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.max_attempts, 10);
+        assert_eq!(cloned.initial_backoff, Duration::from_millis(50));
+        assert_eq!(cloned.max_backoff, Duration::from_secs(10));
+        assert_eq!(cloned.timeout_per_attempt, Duration::from_secs(3));
+        assert!((cloned.jitter_fraction - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_retry_config_zero_jitter() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(5),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.0,
+        };
+        let backoff = config.compute_backoff_with_jitter(0);
+        assert_eq!(backoff, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_retry_config_backoff_capped_at_max() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(2),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.0,
+        };
+        let backoff = config.compute_backoff_with_jitter(10);
+        assert_eq!(backoff, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_watch_config_custom_values() {
+        let config = WatchConfig {
+            keepalive_timeout: Duration::from_secs(120),
+            reconnect_backoff: Duration::from_secs(5),
+            reconnect_jitter_fraction: 0.75,
+        };
+        assert_eq!(config.keepalive_timeout, Duration::from_secs(120));
+        assert_eq!(config.reconnect_backoff, Duration::from_secs(5));
+        assert!((config.reconnect_jitter_fraction - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    #[allow(clippy::clone_on_copy)]
+    fn test_watch_event_copy_clone() {
+        let event = WatchEvent::NodeAdded;
+        let copied = event;
+        let cloned = event.clone();
+        assert_eq!(copied, WatchEvent::NodeAdded);
+        assert_eq!(cloned, WatchEvent::NodeAdded);
+    }
+
+    #[test]
+    fn test_watch_event_all_variants_debug() {
+        let variants = [
+            WatchEvent::NodeAdded,
+            WatchEvent::NodeUpdated,
+            WatchEvent::NodeRemoved,
+            WatchEvent::FullSync,
+            WatchEvent::Keepalive,
+            WatchEvent::Lagged,
+            WatchEvent::StreamEnded,
+            WatchEvent::Error,
+        ];
+        for event in variants {
+            let debug_str = format!("{:?}", event);
+            assert!(!debug_str.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_watch_event_equality() {
+        assert_eq!(WatchEvent::NodeAdded, WatchEvent::NodeAdded);
+        assert_eq!(WatchEvent::NodeUpdated, WatchEvent::NodeUpdated);
+        assert_eq!(WatchEvent::NodeRemoved, WatchEvent::NodeRemoved);
+        assert_eq!(WatchEvent::FullSync, WatchEvent::FullSync);
+        assert_eq!(WatchEvent::Keepalive, WatchEvent::Keepalive);
+        assert_eq!(WatchEvent::Lagged, WatchEvent::Lagged);
+        assert_eq!(WatchEvent::StreamEnded, WatchEvent::StreamEnded);
+        assert_eq!(WatchEvent::Error, WatchEvent::Error);
+
+        assert_ne!(WatchEvent::NodeAdded, WatchEvent::NodeUpdated);
+        assert_ne!(WatchEvent::FullSync, WatchEvent::Keepalive);
+        assert_ne!(WatchEvent::Error, WatchEvent::StreamEnded);
+    }
+
+    #[test]
+    fn test_smart_client_with_retry_config() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let custom_config = RetryConfig {
+            max_attempts: 10,
+            initial_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_secs(10),
+            timeout_per_attempt: Duration::from_secs(15),
+            jitter_fraction: 0.1,
+        };
+        let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache)
+            .with_retry_config(custom_config);
+
+        assert_eq!(client.retry_config.max_attempts, 10);
+        assert_eq!(
+            client.retry_config.initial_backoff,
+            Duration::from_millis(50)
+        );
+        assert_eq!(client.retry_config.max_backoff, Duration::from_secs(10));
+        assert_eq!(
+            client.retry_config.timeout_per_attempt,
+            Duration::from_secs(15)
+        );
+        assert!((client.retry_config.jitter_fraction - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_smart_client_update_leader_hint_with_valid_metadata() {
+        use tonic::metadata::MetadataValue;
+
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache);
+
+        assert!(client.current_leader.read().is_none());
+
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert(
+            "leader-address",
+            MetadataValue::try_from("http://coord-2:9000").unwrap(),
+        );
+        let status =
+            tonic::Status::with_metadata(Code::FailedPrecondition, "not the leader", metadata);
+
+        client.update_leader_hint(&status);
+
+        assert_eq!(
+            client.current_leader.read().as_ref().unwrap(),
+            "http://coord-2:9000"
+        );
+    }
+
+    #[test]
+    fn test_smart_client_update_leader_hint_without_metadata() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(vec!["http://coord-0:9000".to_string()], cache);
+
+        let status = tonic::Status::new(Code::FailedPrecondition, "not the leader");
+        client.update_leader_hint(&status);
+
+        assert!(client.current_leader.read().is_none());
+    }
+
+    #[test]
+    fn test_smart_client_update_leader_hint_updates_get_endpoint() {
+        use tonic::metadata::MetadataValue;
+
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(
+            vec![
+                "http://coord-0:9000".to_string(),
+                "http://coord-1:9000".to_string(),
+            ],
+            cache,
+        );
+
+        assert_eq!(client.get_endpoint(0), "http://coord-0:9000");
+        assert_eq!(client.get_endpoint(1), "http://coord-1:9000");
+
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert(
+            "leader-address",
+            MetadataValue::try_from("http://coord-leader:9000").unwrap(),
+        );
+        let status =
+            tonic::Status::with_metadata(Code::FailedPrecondition, "not the leader", metadata);
+        client.update_leader_hint(&status);
+
+        assert_eq!(client.get_endpoint(0), "http://coord-leader:9000");
+        assert_eq!(client.get_endpoint(1), "http://coord-leader:9000");
+        assert_eq!(client.get_endpoint(100), "http://coord-leader:9000");
+    }
+
+    #[test]
+    fn test_smart_client_clear_leader_hint_falls_back_to_round_robin() {
+        use tonic::metadata::MetadataValue;
+
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client = SmartCoordinatorClient::new(
+            vec![
+                "http://coord-0:9000".to_string(),
+                "http://coord-1:9000".to_string(),
+                "http://coord-2:9000".to_string(),
+            ],
+            cache,
+        );
+
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert(
+            "leader-address",
+            MetadataValue::try_from("http://leader:9000").unwrap(),
+        );
+        let status =
+            tonic::Status::with_metadata(Code::FailedPrecondition, "not the leader", metadata);
+        client.update_leader_hint(&status);
+        assert_eq!(client.get_endpoint(0), "http://leader:9000");
+
+        client.clear_leader_hint();
+        assert_eq!(client.get_endpoint(0), "http://coord-0:9000");
+        assert_eq!(client.get_endpoint(1), "http://coord-1:9000");
+        assert_eq!(client.get_endpoint(2), "http://coord-2:9000");
+        assert_eq!(client.get_endpoint(3), "http://coord-0:9000");
+    }
+
+    #[test]
+    fn test_topology_cache_get_returns_full_topology() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+        let topo = GetTopologyResponse {
+            version: 123,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: "test-leader".to_string(),
+        };
+        cache.update(topo);
+
+        let retrieved = cache.get().unwrap();
+        assert_eq!(retrieved.version, 123);
+        assert_eq!(retrieved.leader_id, "test-leader");
+    }
+
+    #[test]
+    fn test_smart_client_single_endpoint() {
+        let cache = Arc::new(TopologyCache::new(Duration::from_secs(300)));
+        let client =
+            SmartCoordinatorClient::new(vec!["http://single-coord:9000".to_string()], cache);
+
+        assert_eq!(client.get_endpoint(0), "http://single-coord:9000");
+        assert_eq!(client.get_endpoint(1), "http://single-coord:9000");
+        assert_eq!(client.get_endpoint(100), "http://single-coord:9000");
+    }
+
+    #[test]
+    fn test_retry_config_exponential_backoff_sequence() {
+        let config = RetryConfig {
+            max_attempts: 5,
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(10),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.0,
+        };
+
+        assert_eq!(
+            config.compute_backoff_with_jitter(0),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            config.compute_backoff_with_jitter(1),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            config.compute_backoff_with_jitter(2),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            config.compute_backoff_with_jitter(3),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            config.compute_backoff_with_jitter(4),
+            Duration::from_millis(1600)
+        );
+    }
+
+    #[test]
+    fn test_retry_config_saturating_pow_no_overflow() {
+        let config = RetryConfig {
+            max_attempts: 100,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(60),
+            timeout_per_attempt: Duration::from_secs(5),
+            jitter_fraction: 0.0,
+        };
+
+        let backoff = config.compute_backoff_with_jitter(50);
+        assert_eq!(backoff, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_topology_cache_invalidate_marks_as_stale() {
+        let cache = TopologyCache::new(Duration::from_secs(300));
+
+        let topo = GetTopologyResponse {
+            version: 42,
+            frontend_nodes: vec![],
+            metadata_nodes: vec![],
+            object_nodes: vec![],
+            hash_ring_config: None,
+            leader_id: String::new(),
+        };
+        cache.update(topo);
+
+        assert!(!cache.is_stale());
+
+        cache.invalidate();
+
+        assert!(cache.is_stale());
+        assert!(cache.get().is_none());
     }
 }

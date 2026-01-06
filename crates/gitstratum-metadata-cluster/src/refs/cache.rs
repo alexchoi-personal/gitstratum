@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
@@ -9,6 +9,7 @@ use gitstratum_core::{Oid, RefName, RepoId};
 
 pub struct RefCache {
     cache: RwLock<LruCache<(RepoId, RefName), CacheEntry>>,
+    repo_index: RwLock<HashMap<RepoId, HashSet<RefName>>>,
     ttl: Duration,
 }
 
@@ -22,6 +23,7 @@ impl RefCache {
         let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(1).unwrap());
         Self {
             cache: RwLock::new(LruCache::new(cap)),
+            repo_index: RwLock::new(HashMap::new()),
             ttl,
         }
     }
@@ -35,6 +37,8 @@ impl RefCache {
                 return Some(entry.oid);
             }
             cache.pop(&key);
+            drop(cache);
+            self.remove_from_index(repo_id, ref_name);
         }
 
         None
@@ -46,29 +50,42 @@ impl RefCache {
             oid,
             inserted_at: Instant::now(),
         };
-        self.cache.write().put(key, entry);
+        let mut cache = self.cache.write();
+        let mut repo_index = self.repo_index.write();
+        cache.put(key, entry);
+        repo_index
+            .entry(repo_id.clone())
+            .or_default()
+            .insert(ref_name.clone());
     }
 
     pub fn invalidate(&self, repo_id: &RepoId, ref_name: &RefName) {
         let key = (repo_id.clone(), ref_name.clone());
-        self.cache.write().pop(&key);
+        let mut cache = self.cache.write();
+        let mut repo_index = self.repo_index.write();
+        cache.pop(&key);
+        if let Some(refs) = repo_index.get_mut(repo_id) {
+            refs.remove(ref_name);
+            if refs.is_empty() {
+                repo_index.remove(repo_id);
+            }
+        }
     }
 
     pub fn invalidate_repo(&self, repo_id: &RepoId) {
         let mut cache = self.cache.write();
-        let keys_to_remove: Vec<_> = cache
-            .iter()
-            .filter(|((r, _), _)| r == repo_id)
-            .map(|(k, _)| k.clone())
-            .collect();
+        let mut repo_index = self.repo_index.write();
 
-        for key in keys_to_remove {
-            cache.pop(&key);
+        if let Some(ref_names) = repo_index.remove(repo_id) {
+            for ref_name in ref_names {
+                cache.pop(&(repo_id.clone(), ref_name));
+            }
         }
     }
 
     pub fn clear(&self) {
         self.cache.write().clear();
+        self.repo_index.write().clear();
     }
 
     pub fn len(&self) -> usize {
@@ -77,6 +94,16 @@ impl RefCache {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    fn remove_from_index(&self, repo_id: &RepoId, ref_name: &RefName) {
+        let mut index = self.repo_index.write();
+        if let Some(refs) = index.get_mut(repo_id) {
+            refs.remove(ref_name);
+            if refs.is_empty() {
+                index.remove(repo_id);
+            }
+        }
     }
 }
 

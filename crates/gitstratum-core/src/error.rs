@@ -31,6 +31,9 @@ pub enum Error {
     #[error("decompression error: {0}")]
     Decompression(String),
 
+    #[error("OID mismatch: expected {expected}, computed {computed}")]
+    OidMismatch { expected: String, computed: String },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -39,6 +39,7 @@ impl RecordHeader {
         self.record_size() - (HEADER_SIZE + KEY_SIZE + self.value_len as usize)
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_bytes(&self) -> [u8; HEADER_SIZE] {
         let mut buf = [0u8; HEADER_SIZE];
         buf[0..4].copy_from_slice(&self.magic.to_le_bytes());

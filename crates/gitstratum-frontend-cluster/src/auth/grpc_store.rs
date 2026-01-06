@@ -202,10 +202,7 @@ mod tests {
                     }))
                 }
 
-                fn get_ssh_key(
-                    &self,
-                    _fingerprint: &str,
-                ) -> Result<Option<SshKey>, AuthError> {
+                fn get_ssh_key(&self, _fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
                     Ok(None)
                 }
             }
@@ -233,10 +230,7 @@ mod tests {
                     Ok(None)
                 }
 
-                fn get_ssh_key(
-                    &self,
-                    _fingerprint: &str,
-                ) -> Result<Option<SshKey>, AuthError> {
+                fn get_ssh_key(&self, _fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
                     Ok(None)
                 }
             }
@@ -263,10 +257,7 @@ mod tests {
                     Ok(None)
                 }
 
-                fn get_ssh_key(
-                    &self,
-                    _fingerprint: &str,
-                ) -> Result<Option<SshKey>, AuthError> {
+                fn get_ssh_key(&self, _fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
                     Ok(None)
                 }
             }

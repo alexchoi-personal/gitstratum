@@ -1,5 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod auth;
 pub mod cache;
 pub mod client;
 pub mod coalesce;
@@ -10,6 +11,7 @@ pub mod middleware;
 pub mod pack;
 pub mod protocol;
 pub mod server;
+pub mod ssh;
 
 pub use cache::negotiation::{
     compute_common_commits, negotiate_refs, AckType, NegotiationLine, NegotiationRequest,

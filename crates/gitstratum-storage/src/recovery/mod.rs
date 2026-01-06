@@ -1,3 +1,1 @@
-pub mod scanner;
-
-pub use scanner::{IntegrityError, IntegrityReport, RecoveryScanner};
+pub(crate) mod scanner;

@@ -22,6 +22,15 @@ pub struct BatchRequest {
     pub hash_algo: Option<String>,
 }
 
+impl BatchRequest {
+    pub fn validate(&self) -> Result<(), crate::error::LfsError> {
+        for obj in &self.objects {
+            obj.validate()?;
+        }
+        Ok(())
+    }
+}
+
 /// LFS batch API response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchResponse {
@@ -42,6 +51,8 @@ pub enum Operation {
     Download,
 }
 
+const MAX_LFS_OBJECT_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+
 /// Object in a batch request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchObject {
@@ -49,6 +60,29 @@ pub struct BatchObject {
     pub oid: String,
     /// Size in bytes
     pub size: u64,
+}
+
+impl BatchObject {
+    pub fn validate(&self) -> Result<(), crate::error::LfsError> {
+        if self.oid.len() != 64 {
+            return Err(crate::error::LfsError::InvalidOid(format!(
+                "OID must be 64 hex characters, got {}",
+                self.oid.len()
+            )));
+        }
+        if !self.oid.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(crate::error::LfsError::InvalidOid(
+                "OID must contain only hex characters".to_string(),
+            ));
+        }
+        if self.size > MAX_LFS_OBJECT_SIZE {
+            return Err(crate::error::LfsError::ObjectTooLarge {
+                size: self.size,
+                limit: MAX_LFS_OBJECT_SIZE,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Git ref information
@@ -198,5 +232,62 @@ mod tests {
         let json = serde_json::to_string_pretty(&resp).unwrap();
         assert!(json.contains("upload"));
         assert!(json.contains("https://example.com/upload"));
+    }
+
+    #[test]
+    fn test_batch_object_validate_valid() {
+        let obj = BatchObject {
+            oid: "a".repeat(64),
+            size: 1024,
+        };
+        assert!(obj.validate().is_ok());
+    }
+
+    #[test]
+    fn test_batch_object_validate_invalid_oid_length() {
+        let obj = BatchObject {
+            oid: "abc123".to_string(),
+            size: 1024,
+        };
+        assert!(obj.validate().is_err());
+    }
+
+    #[test]
+    fn test_batch_object_validate_invalid_oid_chars() {
+        let obj = BatchObject {
+            oid: "g".repeat(64),
+            size: 1024,
+        };
+        assert!(obj.validate().is_err());
+    }
+
+    #[test]
+    fn test_batch_object_validate_size_too_large() {
+        let obj = BatchObject {
+            oid: "a".repeat(64),
+            size: 6 * 1024 * 1024 * 1024,
+        };
+        assert!(obj.validate().is_err());
+    }
+
+    #[test]
+    fn test_batch_request_validate() {
+        let req = BatchRequest {
+            operation: Operation::Upload,
+            objects: vec![
+                BatchObject {
+                    oid: "a".repeat(64),
+                    size: 1024,
+                },
+                BatchObject {
+                    oid: "b".repeat(64),
+                    size: 2048,
+                },
+            ],
+            transfers: vec![],
+            git_ref: None,
+            hash_algo: None,
+        };
+        assert!(req.validate().is_ok());
     }
 }

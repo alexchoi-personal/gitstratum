@@ -39,7 +39,7 @@ pub trait LfsMetadata: Send + Sync {
 /// In-memory metadata store for testing
 #[derive(Default)]
 pub struct InMemoryMetadata {
-    objects: std::sync::RwLock<std::collections::HashMap<Oid, LfsObject>>,
+    objects: parking_lot::RwLock<std::collections::HashMap<Oid, LfsObject>>,
 }
 
 impl InMemoryMetadata {
@@ -51,24 +51,24 @@ impl InMemoryMetadata {
 #[async_trait]
 impl LfsMetadata for InMemoryMetadata {
     async fn get(&self, oid: &Oid) -> Result<Option<LfsObject>, LfsError> {
-        let objects = self.objects.read().unwrap();
+        let objects = self.objects.read();
         Ok(objects.get(oid).cloned())
     }
 
     async fn put(&self, object: &LfsObject) -> Result<(), LfsError> {
-        let mut objects = self.objects.write().unwrap();
+        let mut objects = self.objects.write();
         objects.insert(object.oid, object.clone());
         Ok(())
     }
 
     async fn delete(&self, oid: &Oid) -> Result<(), LfsError> {
-        let mut objects = self.objects.write().unwrap();
+        let mut objects = self.objects.write();
         objects.remove(oid);
         Ok(())
     }
 
     async fn update_status(&self, oid: &Oid, status: ObjectStatus) -> Result<(), LfsError> {
-        let mut objects = self.objects.write().unwrap();
+        let mut objects = self.objects.write();
         if let Some(obj) = objects.get_mut(oid) {
             obj.status = status;
             Ok(())
@@ -78,7 +78,7 @@ impl LfsMetadata for InMemoryMetadata {
     }
 
     async fn add_repo_reference(&self, oid: &Oid, repo: &str) -> Result<(), LfsError> {
-        let mut objects = self.objects.write().unwrap();
+        let mut objects = self.objects.write();
         if let Some(obj) = objects.get_mut(oid) {
             if !obj.repos.contains(&repo.to_string()) {
                 obj.repos.push(repo.to_string());
@@ -90,7 +90,7 @@ impl LfsMetadata for InMemoryMetadata {
     }
 
     async fn remove_repo_reference(&self, oid: &Oid, repo: &str) -> Result<(), LfsError> {
-        let mut objects = self.objects.write().unwrap();
+        let mut objects = self.objects.write();
         if let Some(obj) = objects.get_mut(oid) {
             obj.repos.retain(|r| r != repo);
             Ok(())
@@ -100,7 +100,7 @@ impl LfsMetadata for InMemoryMetadata {
     }
 
     async fn list_by_repo(&self, repo: &str) -> Result<Vec<LfsObject>, LfsError> {
-        let objects = self.objects.read().unwrap();
+        let objects = self.objects.read();
         Ok(objects
             .values()
             .filter(|o| o.repos.contains(&repo.to_string()))
@@ -109,7 +109,7 @@ impl LfsMetadata for InMemoryMetadata {
     }
 
     async fn list_orphaned(&self) -> Result<Vec<LfsObject>, LfsError> {
-        let objects = self.objects.read().unwrap();
+        let objects = self.objects.read();
         Ok(objects
             .values()
             .filter(|o| o.repos.is_empty())
@@ -118,7 +118,7 @@ impl LfsMetadata for InMemoryMetadata {
     }
 
     async fn list_stale_pending(&self, older_than: u64) -> Result<Vec<LfsObject>, LfsError> {
-        let objects = self.objects.read().unwrap();
+        let objects = self.objects.read();
         Ok(objects
             .values()
             .filter(|o| o.status == ObjectStatus::Pending && o.created_at < older_than)

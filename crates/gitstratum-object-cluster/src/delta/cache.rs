@@ -1,17 +1,18 @@
-use std::collections::HashMap;
+#![allow(dead_code)]
+
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use gitstratum_core::Oid;
-use parking_lot::RwLock;
+use lru::LruCache;
+use parking_lot::Mutex;
 
 use super::storage::StoredDelta;
 
-#[derive(Debug, Clone)]
 struct CacheEntry {
     delta: StoredDelta,
-    last_access: Instant,
-    access_count: u64,
+    inserted_at: Instant,
 }
 
 pub struct DeltaCacheConfig {
@@ -32,7 +33,7 @@ impl Default for DeltaCacheConfig {
 
 pub struct DeltaCache {
     config: DeltaCacheConfig,
-    entries: RwLock<HashMap<(Oid, Oid), CacheEntry>>,
+    entries: Mutex<LruCache<(Oid, Oid), CacheEntry>>,
     current_size: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -40,9 +41,10 @@ pub struct DeltaCache {
 
 impl DeltaCache {
     pub fn new(config: DeltaCacheConfig) -> Self {
+        let cap = NonZeroUsize::new(config.max_entries).unwrap_or(NonZeroUsize::new(1).unwrap());
         Self {
+            entries: Mutex::new(LruCache::new(cap)),
             config,
-            entries: RwLock::new(HashMap::new()),
             current_size: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -51,21 +53,18 @@ impl DeltaCache {
 
     pub fn get(&self, base_oid: &Oid, target_oid: &Oid) -> Option<StoredDelta> {
         let key = (*base_oid, *target_oid);
-        let mut entries = self.entries.write();
 
-        if let Some(entry) = entries.get_mut(&key) {
-            if entry.last_access.elapsed() > self.config.ttl {
+        {
+            let mut entries = self.entries.lock();
+            if let Some(entry) = entries.get(&key) {
+                if entry.inserted_at.elapsed() <= self.config.ttl {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(entry.delta.clone());
+                }
                 let size = entry.delta.size as u64;
-                entries.remove(&key);
+                entries.pop(&key);
                 self.current_size.fetch_sub(size, Ordering::Relaxed);
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                return None;
             }
-
-            entry.last_access = Instant::now();
-            entry.access_count += 1;
-            self.hits.fetch_add(1, Ordering::Relaxed);
-            return Some(entry.delta.clone());
         }
 
         self.misses.fetch_add(1, Ordering::Relaxed);
@@ -76,62 +75,45 @@ impl DeltaCache {
         let key = (delta.base_oid, delta.target_oid);
         let size = delta.size;
 
-        self.evict_if_needed(size);
+        let mut entries = self.entries.lock();
 
-        let entry = CacheEntry {
-            delta,
-            last_access: Instant::now(),
-            access_count: 1,
-        };
-
-        let mut entries = self.entries.write();
-        if let Some(old) = entries.insert(key, entry) {
+        if let Some(old) = entries.pop(&key) {
             self.current_size
                 .fetch_sub(old.delta.size as u64, Ordering::Relaxed);
         }
+
+        self.evict_for_size(&mut entries, size);
+
+        let entry = CacheEntry {
+            delta,
+            inserted_at: Instant::now(),
+        };
+
+        entries.put(key, entry);
         self.current_size.fetch_add(size as u64, Ordering::Relaxed);
     }
 
-    fn evict_if_needed(&self, incoming_size: usize) {
-        let current = self.current_size.load(Ordering::Relaxed) as usize;
-        let entries_count = self.entries.read().len();
-
-        if current + incoming_size <= self.config.max_size_bytes
-            && entries_count < self.config.max_entries
-        {
-            return;
-        }
-
-        let mut entries = self.entries.write();
-
+    fn evict_for_size(&self, entries: &mut LruCache<(Oid, Oid), CacheEntry>, incoming_size: usize) {
         let now = Instant::now();
-        let expired: Vec<_> = entries
-            .iter()
-            .filter(|(_, e)| now.duration_since(e.last_access) > self.config.ttl)
-            .map(|(k, _)| *k)
-            .collect();
-
-        for key in expired {
-            if let Some(entry) = entries.remove(&key) {
-                self.current_size
-                    .fetch_sub(entry.delta.size as u64, Ordering::Relaxed);
+        loop {
+            if let Some((_, entry)) = entries.peek_lru() {
+                if now.duration_since(entry.inserted_at) > self.config.ttl {
+                    if let Some((_, evicted)) = entries.pop_lru() {
+                        self.current_size
+                            .fetch_sub(evicted.delta.size as u64, Ordering::Relaxed);
+                        continue;
+                    }
+                }
             }
+            break;
         }
 
-        while (self.current_size.load(Ordering::Relaxed) as usize + incoming_size
-            > self.config.max_size_bytes)
-            || entries.len() >= self.config.max_entries
+        while self.current_size.load(Ordering::Relaxed) as usize + incoming_size
+            > self.config.max_size_bytes
         {
-            let oldest = entries
-                .iter()
-                .min_by_key(|(_, e)| e.last_access)
-                .map(|(k, _)| *k);
-
-            if let Some(key) = oldest {
-                if let Some(entry) = entries.remove(&key) {
-                    self.current_size
-                        .fetch_sub(entry.delta.size as u64, Ordering::Relaxed);
-                }
+            if let Some((_, evicted)) = entries.pop_lru() {
+                self.current_size
+                    .fetch_sub(evicted.delta.size as u64, Ordering::Relaxed);
             } else {
                 break;
             }
@@ -140,8 +122,8 @@ impl DeltaCache {
 
     pub fn remove(&self, base_oid: &Oid, target_oid: &Oid) -> Option<StoredDelta> {
         let key = (*base_oid, *target_oid);
-        let mut entries = self.entries.write();
-        if let Some(entry) = entries.remove(&key) {
+        let mut entries = self.entries.lock();
+        if let Some(entry) = entries.pop(&key) {
             self.current_size
                 .fetch_sub(entry.delta.size as u64, Ordering::Relaxed);
             Some(entry.delta)
@@ -151,17 +133,17 @@ impl DeltaCache {
     }
 
     pub fn clear(&self) {
-        let mut entries = self.entries.write();
+        let mut entries = self.entries.lock();
         entries.clear();
         self.current_size.store(0, Ordering::Relaxed);
     }
 
     pub fn len(&self) -> usize {
-        self.entries.read().len()
+        self.entries.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.read().is_empty()
+        self.entries.lock().is_empty()
     }
 
     pub fn size_bytes(&self) -> usize {
@@ -400,19 +382,6 @@ mod tests {
         assert_eq!(stats.size_bytes, 1024);
         assert_eq!(stats.hits, 50);
         assert_eq!(stats.misses, 10);
-    }
-
-    #[test]
-    fn test_cache_entry_debug_clone() {
-        let delta = create_test_stored_delta(b"base", b"target");
-        let entry = CacheEntry {
-            delta: delta.clone(),
-            last_access: Instant::now(),
-            access_count: 1,
-        };
-        let cloned = entry.clone();
-        assert_eq!(cloned.access_count, entry.access_count);
-        assert!(format!("{:?}", entry).contains("access_count"));
     }
 
     #[test]

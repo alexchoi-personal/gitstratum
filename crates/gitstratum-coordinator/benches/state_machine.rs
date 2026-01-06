@@ -1,5 +1,12 @@
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn unix_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use gitstratum_coordinator::{
@@ -10,10 +17,12 @@ use gitstratum_coordinator::{
 use gitstratum_proto::NodeState;
 
 fn create_sample_topology(num_nodes: usize) -> ClusterTopology {
-    let mut topo = ClusterTopology::default();
-    topo.hash_ring_config = HashRingConfig {
-        virtual_nodes_per_physical: 16,
-        replication_factor: 3,
+    let mut topo = ClusterTopology {
+        hash_ring_config: HashRingConfig {
+            virtual_nodes_per_physical: 16,
+            replication_factor: 3,
+        },
+        ..ClusterTopology::default()
     };
 
     for i in 0..num_nodes {
@@ -216,7 +225,7 @@ fn bench_heartbeat_batcher(c: &mut Criterion) {
             known_version: 100,
             reported_state: NodeState::Active as i32,
             generation_id: "uuid-1234".to_string(),
-            received_at: Instant::now(),
+            received_at: unix_timestamp_ms(),
         };
         b.iter(|| {
             batcher.record_heartbeat(black_box("node-1".to_string()), black_box(info.clone()));
@@ -232,7 +241,7 @@ fn bench_heartbeat_batcher(c: &mut Criterion) {
                         known_version: i as u64,
                         reported_state: NodeState::Active as i32,
                         generation_id: format!("uuid-{}", i),
-                        received_at: Instant::now(),
+                        received_at: unix_timestamp_ms(),
                     };
                     batcher.record_heartbeat(format!("node-{}", i), info);
                 }

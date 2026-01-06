@@ -475,7 +475,7 @@ mod tests {
 
         let mut partition_counts = vec![0u32; 16];
         for i in 0..1000 {
-            let repo_id = RepoId::new(&format!("org/repo{}", i)).unwrap();
+            let repo_id = RepoId::new(format!("org/repo{}", i)).unwrap();
             let partition_id = router.hash_repo(&repo_id);
             assert!(partition_id < 16);
             partition_counts[partition_id as usize] += 1;

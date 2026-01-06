@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use gitstratum_core::{Blob, Commit, Object, Oid, Tree};
+use tracing::warn;
 
 use crate::error::{FrontendError, Result};
 use crate::pack::assembly::PackReader;
@@ -247,16 +248,51 @@ where
 
         let result = self.apply_push(&updates, objects).await;
 
-        for (_, lock_id) in locks {
-            let _ = self.control_plane.release_ref_lock(&lock_id).await;
+        for (ref_name, lock_id) in locks {
+            let mut released = false;
+            for attempt in 1..=3 {
+                match self.control_plane.release_ref_lock(&lock_id).await {
+                    Ok(()) => {
+                        released = true;
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(
+                            ref_name = %ref_name,
+                            lock_id = %lock_id,
+                            error = %e,
+                            attempt = attempt,
+                            "failed to release ref lock, retrying"
+                        );
+                        if attempt < 3 {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                100 * attempt as u64,
+                            ))
+                            .await;
+                        }
+                    }
+                }
+            }
+            if !released {
+                warn!(
+                    ref_name = %ref_name,
+                    lock_id = %lock_id,
+                    "lock release failed after 3 attempts, lock may be orphaned"
+                );
+            }
         }
 
         result
     }
 
     fn parse_and_validate_pack(&self, pack_data: Bytes) -> Result<HashMap<Oid, Object>> {
-        if pack_data.len() < 12 {
+        if pack_data.is_empty() {
             return Ok(HashMap::new());
+        }
+        if pack_data.len() < 12 {
+            return Err(FrontendError::InvalidPackFormat(
+                "pack data too short (must be at least 12 bytes or empty)".to_string(),
+            ));
         }
 
         let reader = PackReader::new(pack_data)?;

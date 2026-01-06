@@ -33,21 +33,21 @@ impl BucketObjectStore {
         })
     }
 
-    pub fn iter(&self) -> BucketObjectIterator {
-        BucketObjectIterator {
-            inner: self.store.iter(),
+    pub fn iter(&self) -> Result<BucketObjectIterator> {
+        Ok(BucketObjectIterator {
+            inner: self.store.iter()?,
             compressor: self.compressor.clone(),
-        }
+        })
     }
 
-    pub fn iter_by_position(&self, from: u64, to: u64) -> BucketPositionObjectIterator {
-        BucketPositionObjectIterator {
-            inner: self.store.iter_by_position(from, to),
+    pub fn iter_by_position(&self, from: u64, to: u64) -> Result<BucketPositionObjectIterator> {
+        Ok(BucketPositionObjectIterator {
+            inner: self.store.iter_by_position(from, to)?,
             compressor: self.compressor.clone(),
-        }
+        })
     }
 
-    pub fn iter_range(&self, from: u64, to: u64) -> BucketPositionObjectIterator {
+    pub fn iter_range(&self, from: u64, to: u64) -> Result<BucketPositionObjectIterator> {
         self.iter_by_position(from, to)
     }
 
@@ -268,7 +268,7 @@ mod tests {
         store.put(&blob2).await.unwrap();
         store.put(&blob3).await.unwrap();
 
-        let blobs: Vec<_> = store.iter().collect::<Vec<_>>().await;
+        let blobs: Vec<_> = store.iter().unwrap().collect::<Vec<_>>().await;
         assert_eq!(blobs.len(), 3);
     }
 
@@ -287,6 +287,7 @@ mod tests {
 
         let blobs: Vec<_> = store
             .iter_by_position(0, u64::MAX)
+            .unwrap()
             .collect::<Vec<_>>()
             .await;
         assert_eq!(blobs.len(), 2);
@@ -370,7 +371,7 @@ mod tests {
             .await
             .unwrap();
 
-        let blobs: Vec<_> = store.iter().collect::<Vec<_>>().await;
+        let blobs: Vec<_> = store.iter().unwrap().collect::<Vec<_>>().await;
         assert!(blobs.is_empty());
     }
 
@@ -383,6 +384,7 @@ mod tests {
 
         let blobs: Vec<_> = store
             .iter_by_position(0, u64::MAX)
+            .unwrap()
             .collect::<Vec<_>>()
             .await;
         assert!(blobs.is_empty());

@@ -8,15 +8,19 @@ use gitstratum_proto::{
 };
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, instrument, warn};
 
-use crate::error::ObjectStoreError;
 use crate::store::ObjectStorage;
 use crate::store::ObjectStore;
+
+const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024;
+const MAX_CUMULATIVE_BLOB_SIZE: usize = 500 * 1024 * 1024;
+const STREAMING_TASK_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct ObjectServiceImpl {
     store: Arc<ObjectStore>,
@@ -54,6 +58,17 @@ impl ObjectServiceImpl {
             compressed,
         }
     }
+
+    fn validate_blob_size(blob: &Blob) -> Result<(), Status> {
+        if blob.data.len() > MAX_BLOB_SIZE {
+            return Err(Status::resource_exhausted(format!(
+                "blob size {} exceeds maximum allowed size {}",
+                blob.data.len(),
+                MAX_BLOB_SIZE
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -72,7 +87,7 @@ impl ObjectService for ObjectServiceImpl {
 
         debug!(%oid, "get_blob");
 
-        match self.store.get(&oid).await.map_err(ObjectStoreError::from)? {
+        match self.store.get(&oid).await? {
             Some(blob) => Ok(Response::new(GetBlobResponse {
                 blob: Some(Self::core_blob_to_proto(&blob, false)),
                 found: true,
@@ -97,27 +112,39 @@ impl ObjectService for ObjectServiceImpl {
         let (tx, rx) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            for proto_oid in req.oids {
-                let oid = match Self::proto_oid_to_core(&proto_oid) {
-                    Ok(oid) => oid,
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
-                        continue;
-                    }
-                };
+            let task = async {
+                for proto_oid in req.oids {
+                    let oid = match Self::proto_oid_to_core(&proto_oid) {
+                        Ok(oid) => oid,
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            continue;
+                        }
+                    };
 
-                match store.get(&oid).await {
-                    Ok(Some(blob)) => {
-                        let proto_blob = Self::core_blob_to_proto(&blob, false);
-                        if tx.send(Ok(proto_blob)).await.is_err() {
-                            break;
+                    match store.get(&oid).await {
+                        Ok(Some(blob)) => {
+                            let proto_blob = Self::core_blob_to_proto(&blob, false);
+                            if tx.send(Ok(proto_blob)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            warn!(%oid, error = %e, "failed to get blob");
                         }
                     }
-                    Ok(None) => {}
-                    Err(e) => {
-                        warn!(%oid, error = %e, "failed to get blob");
-                    }
                 }
+            };
+
+            if tokio::time::timeout(STREAMING_TASK_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                warn!(
+                    "get_blobs streaming task timed out after {:?}",
+                    STREAMING_TASK_TIMEOUT
+                );
             }
         });
 
@@ -135,14 +162,12 @@ impl ObjectService for ObjectServiceImpl {
             .blob
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("missing blob"))?;
+        Self::validate_blob_size(blob)?;
         let core_blob = Self::proto_blob_to_core(blob)?;
 
         debug!(oid = %core_blob.oid, "put_blob");
 
-        self.store
-            .put(&core_blob)
-            .await
-            .map_err(ObjectStoreError::from)?;
+        self.store.put(&core_blob).await?;
 
         Ok(Response::new(PutBlobResponse {
             success: true,
@@ -159,22 +184,37 @@ impl ObjectService for ObjectServiceImpl {
         let mut success_count = 0u32;
         let mut error_count = 0u32;
         let mut errors = Vec::new();
+        let mut cumulative_size = 0usize;
 
         while let Some(result) = stream.next().await {
             match result {
-                Ok(blob) => match Self::proto_blob_to_core(&blob) {
-                    Ok(core_blob) => match self.store.put(&core_blob).await {
-                        Ok(()) => success_count += 1,
+                Ok(blob) => {
+                    if let Err(e) = Self::validate_blob_size(&blob) {
+                        error_count += 1;
+                        errors.push(e.to_string());
+                        continue;
+                    }
+                    cumulative_size = cumulative_size.saturating_add(blob.data.len());
+                    if cumulative_size > MAX_CUMULATIVE_BLOB_SIZE {
+                        return Err(Status::resource_exhausted(format!(
+                            "cumulative blob size {} exceeds maximum allowed {}",
+                            cumulative_size, MAX_CUMULATIVE_BLOB_SIZE
+                        )));
+                    }
+                    match Self::proto_blob_to_core(&blob) {
+                        Ok(core_blob) => match self.store.put(&core_blob).await {
+                            Ok(()) => success_count += 1,
+                            Err(e) => {
+                                error_count += 1;
+                                errors.push(e.to_string());
+                            }
+                        },
                         Err(e) => {
                             error_count += 1;
                             errors.push(e.to_string());
                         }
-                    },
-                    Err(e) => {
-                        error_count += 1;
-                        errors.push(e.to_string());
                     }
-                },
+                }
                 Err(e) => {
                     error_count += 1;
                     errors.push(e.to_string());
@@ -250,39 +290,52 @@ impl ObjectService for ObjectServiceImpl {
         let (tx, rx) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            #[cfg(feature = "bucketstore")]
-            {
-                let mut stream = store.iter_range(from_position, to_position);
-                while let Some(result) = std::pin::Pin::new(&mut stream).next().await {
-                    match result {
-                        Ok((_, blob)) => {
-                            let proto_blob = Self::core_blob_to_proto(&blob, false);
-                            if tx.send(Ok(proto_blob)).await.is_err() {
-                                break;
+            let task = async {
+                #[cfg(feature = "bucketstore")]
+                {
+                    if let Ok(mut stream) = store.iter_range(from_position, to_position) {
+                        while let Some(result) = std::pin::Pin::new(&mut stream).next().await {
+                            match result {
+                                Ok((_, blob)) => {
+                                    let proto_blob = Self::core_blob_to_proto(&blob, false);
+                                    if tx.send(Ok(proto_blob)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                                }
                             }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
                         }
                     }
                 }
-            }
 
-            #[cfg(not(feature = "bucketstore"))]
-            {
-                for result in store.iter_range(from_position, to_position) {
-                    match result {
-                        Ok((_, blob)) => {
-                            let proto_blob = Self::core_blob_to_proto(&blob, false);
-                            if tx.send(Ok(proto_blob)).await.is_err() {
-                                break;
+                #[cfg(not(feature = "bucketstore"))]
+                if let Ok(iter) = store.iter_range(from_position, to_position) {
+                    for result in iter {
+                        match result {
+                            Ok((_, blob)) => {
+                                let proto_blob = Self::core_blob_to_proto(&blob, false);
+                                if tx.send(Ok(proto_blob)).await.is_err() {
+                                    break;
+                                }
                             }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                            Err(e) => {
+                                let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                            }
                         }
                     }
                 }
+            };
+
+            if tokio::time::timeout(STREAMING_TASK_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                warn!(
+                    "stream_blobs task timed out after {:?}",
+                    STREAMING_TASK_TIMEOUT
+                );
             }
         });
 
@@ -297,15 +350,21 @@ impl ObjectService for ObjectServiceImpl {
     ) -> Result<Response<ReceiveBlobsResponse>, Status> {
         let mut stream = request.into_inner();
         let mut received_count = 0u32;
+        let mut cumulative_size = 0usize;
 
         while let Some(result) = stream.next().await {
             match result {
                 Ok(blob) => {
+                    Self::validate_blob_size(&blob)?;
+                    cumulative_size = cumulative_size.saturating_add(blob.data.len());
+                    if cumulative_size > MAX_CUMULATIVE_BLOB_SIZE {
+                        return Err(Status::resource_exhausted(format!(
+                            "cumulative blob size {} exceeds maximum allowed {}",
+                            cumulative_size, MAX_CUMULATIVE_BLOB_SIZE
+                        )));
+                    }
                     let core_blob = Self::proto_blob_to_core(&blob)?;
-                    self.store
-                        .put(&core_blob)
-                        .await
-                        .map_err(ObjectStoreError::from)?;
+                    self.store.put(&core_blob).await?;
                     received_count += 1;
                 }
                 Err(e) => {
@@ -654,7 +713,7 @@ mod tests {
         let mut stream = response.into_inner();
 
         let mut count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             count += 1;
         }
         assert_eq!(count, 0);
@@ -869,7 +928,7 @@ mod tests {
         let mut stream = response.into_inner();
 
         let mut count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             count += 1;
         }
         assert_eq!(count, 0);
@@ -1087,7 +1146,7 @@ mod tests {
         let mut stream = response.into_inner();
 
         let mut count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             count += 1;
         }
         assert_eq!(count, 0);
@@ -1114,7 +1173,7 @@ mod tests {
         let mut stream = response.into_inner();
 
         let mut count = 0;
-        while let Some(_) = stream.next().await {
+        while (stream.next().await).is_some() {
             count += 1;
         }
         assert_eq!(count, 0);

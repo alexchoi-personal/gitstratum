@@ -71,6 +71,9 @@ pub enum ObjectStoreError {
 
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("already started")]
+    AlreadyStarted,
 }
 
 impl From<ObjectStoreError> for tonic::Status {

@@ -9,6 +9,8 @@ pub const CF_REPO_STATS: &str = "repo_stats";
 pub const CF_COMMIT_GRAPH: &str = "commit_graph";
 pub const CF_PACK_CACHE: &str = "pack_cache";
 pub const CF_OBJECT_INDEX: &str = "object_index";
+pub const CF_AUTH: &str = "auth";
+pub const CF_ACL: &str = "acl";
 
 pub fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
     vec![
@@ -21,6 +23,8 @@ pub fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
         ColumnFamilyDescriptor::new(CF_COMMIT_GRAPH, Options::default()),
         ColumnFamilyDescriptor::new(CF_PACK_CACHE, Options::default()),
         ColumnFamilyDescriptor::new(CF_OBJECT_INDEX, Options::default()),
+        ColumnFamilyDescriptor::new(CF_AUTH, Options::default()),
+        ColumnFamilyDescriptor::new(CF_ACL, Options::default()),
     ]
 }
 
@@ -39,11 +43,13 @@ mod tests {
         assert_eq!(CF_COMMIT_GRAPH, "commit_graph");
         assert_eq!(CF_PACK_CACHE, "pack_cache");
         assert_eq!(CF_OBJECT_INDEX, "object_index");
+        assert_eq!(CF_AUTH, "auth");
+        assert_eq!(CF_ACL, "acl");
     }
 
     #[test]
     fn test_create_cf_descriptors() {
         let descriptors = create_cf_descriptors();
-        assert_eq!(descriptors.len(), 9);
+        assert_eq!(descriptors.len(), 11);
     }
 }

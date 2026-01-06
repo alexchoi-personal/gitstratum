@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -248,11 +250,12 @@ impl RebalanceHandler {
     pub async fn build_tree_for_range(&self, range: &PositionRange) -> ObjectMerkleTree {
         let mut builder = MerkleTreeBuilder::with_depth(0, 4);
 
-        let mut stream = self.store.iter_range(range.start, range.end);
-        while let Some(result) = stream.next().await {
-            if let Ok((oid, _blob)) = result {
-                let position = oid_to_position(&oid);
-                builder.add(position, oid);
+        if let Ok(mut stream) = self.store.iter_range(range.start, range.end) {
+            while let Some(result) = stream.next().await {
+                if let Ok((oid, _blob)) = result {
+                    let position = oid_to_position(&oid);
+                    builder.add(position, oid);
+                }
             }
         }
 
@@ -439,6 +442,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_rebalance_state_clone() {
         let state = RebalanceState::Transferring;
         let cloned = state.clone();
@@ -465,9 +469,11 @@ mod tests {
 
     #[test]
     fn test_rebalance_stats_clone() {
-        let mut stats = RebalanceStats::default();
-        stats.rebalances_started = 5;
-        stats.objects_transferred = 100;
+        let stats = RebalanceStats {
+            rebalances_started: 5,
+            objects_transferred: 100,
+            ..RebalanceStats::default()
+        };
         let cloned = stats.clone();
         assert_eq!(stats.rebalances_started, cloned.rebalances_started);
         assert_eq!(stats.objects_transferred, cloned.objects_transferred);

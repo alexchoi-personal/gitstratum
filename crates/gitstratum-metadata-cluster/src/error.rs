@@ -34,11 +34,23 @@ pub enum MetadataStoreError {
     #[error("deserialization error: {0}")]
     Deserialization(String),
 
+    #[error("missing required field: {0}")]
+    MissingField(String),
+
+    #[error("bincode error")]
+    Bincode(#[source] bincode::Error),
+
     #[error("storage error: {0}")]
     Storage(String),
 
+    #[error("rocksdb error: {0}")]
+    RocksDb(#[source] rocksdb::Error),
+
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("column family not found: {0}")]
+    ColumnFamilyNotFound(String),
 
     #[error("grpc error: {0}")]
     Grpc(String),
@@ -49,13 +61,13 @@ pub enum MetadataStoreError {
 
 impl From<rocksdb::Error> for MetadataStoreError {
     fn from(err: rocksdb::Error) -> Self {
-        MetadataStoreError::Storage(err.to_string())
+        MetadataStoreError::RocksDb(err)
     }
 }
 
 impl From<bincode::Error> for MetadataStoreError {
     fn from(err: bincode::Error) -> Self {
-        MetadataStoreError::Serialization(err.to_string())
+        MetadataStoreError::Bincode(err)
     }
 }
 
@@ -89,8 +101,14 @@ impl From<MetadataStoreError> for tonic::Status {
             MetadataStoreError::InvalidRepoId(msg) => tonic::Status::invalid_argument(msg),
             MetadataStoreError::Serialization(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Deserialization(msg) => tonic::Status::internal(msg),
+            MetadataStoreError::MissingField(msg) => {
+                tonic::Status::invalid_argument(format!("missing required field: {}", msg))
+            }
+            MetadataStoreError::Bincode(err) => tonic::Status::internal(err.to_string()),
             MetadataStoreError::Storage(msg) => tonic::Status::internal(msg),
+            MetadataStoreError::RocksDb(err) => tonic::Status::internal(err.to_string()),
             MetadataStoreError::Internal(msg) => tonic::Status::internal(msg),
+            MetadataStoreError::ColumnFamilyNotFound(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Grpc(msg) => tonic::Status::internal(msg),
             MetadataStoreError::Connection(msg) => tonic::Status::unavailable(msg),
         }
@@ -198,7 +216,7 @@ mod tests {
             .deserialize::<String>(&[0xff, 0xff, 0xff, 0xff])
             .unwrap_err();
         let err: MetadataStoreError = bincode_err.into();
-        assert!(err.to_string().contains("serialization"));
+        assert!(err.to_string().contains("bincode"));
     }
 
     #[test]
@@ -279,6 +297,20 @@ mod tests {
         let err = MetadataStoreError::Deserialization("err".to_string());
         let status: tonic::Status = err.into();
         assert_eq!(status.code(), tonic::Code::Internal);
+    }
+
+    #[test]
+    fn test_missing_field_display() {
+        let err = MetadataStoreError::MissingField("commit.oid".to_string());
+        assert!(err.to_string().contains("commit.oid"));
+    }
+
+    #[test]
+    fn test_missing_field_to_status() {
+        let err = MetadataStoreError::MissingField("tree.entries[0].oid".to_string());
+        let status: tonic::Status = err.into();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("tree.entries[0].oid"));
     }
 
     #[test]

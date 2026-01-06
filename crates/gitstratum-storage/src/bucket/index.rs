@@ -52,7 +52,11 @@ impl BucketIndex {
     }
 
     pub fn decrement_entry_count(&self) {
-        self.entry_count.fetch_sub(1, Ordering::Relaxed);
+        self.entry_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            })
+            .ok();
     }
 
     pub fn memory_usage(&self) -> usize {

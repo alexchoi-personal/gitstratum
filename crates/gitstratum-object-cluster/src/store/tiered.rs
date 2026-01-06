@@ -4,16 +4,11 @@ use std::time::{Duration, SystemTime};
 
 use crate::error::Result;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StorageTier {
+    #[default]
     Hot,
     Cold,
-}
-
-impl Default for StorageTier {
-    fn default() -> Self {
-        StorageTier::Hot
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,24 +86,32 @@ impl TieredStorage {
     pub fn remove_from_tier(&self, tier: StorageTier, bytes: u64) {
         match tier {
             StorageTier::Hot => {
-                self.hot_bytes.fetch_sub(bytes, Ordering::Relaxed);
+                Self::saturating_sub(&self.hot_bytes, bytes);
             }
             StorageTier::Cold => {
-                self.cold_bytes.fetch_sub(bytes, Ordering::Relaxed);
+                Self::saturating_sub(&self.cold_bytes, bytes);
             }
         }
     }
 
     pub fn move_to_cold(&self, bytes: u64) -> Result<()> {
-        self.hot_bytes.fetch_sub(bytes, Ordering::Relaxed);
+        Self::saturating_sub(&self.hot_bytes, bytes);
         self.cold_bytes.fetch_add(bytes, Ordering::Relaxed);
         Ok(())
     }
 
     pub fn promote_to_hot(&self, bytes: u64) -> Result<()> {
-        self.cold_bytes.fetch_sub(bytes, Ordering::Relaxed);
+        Self::saturating_sub(&self.cold_bytes, bytes);
         self.hot_bytes.fetch_add(bytes, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn saturating_sub(counter: &AtomicU64, value: u64) {
+        counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(value))
+            })
+            .ok();
     }
 
     pub fn hot_bytes(&self) -> u64 {

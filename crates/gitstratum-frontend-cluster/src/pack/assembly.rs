@@ -5,6 +5,7 @@ use flate2::Compression;
 use gitstratum_core::{
     Blob, Commit, Object, ObjectType, Oid, Signature, Tree, TreeEntry, TreeEntryMode,
 };
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::str::FromStr;
@@ -20,6 +21,8 @@ const OBJ_BLOB: u8 = 3;
 const OBJ_TAG: u8 = 4;
 const OBJ_OFS_DELTA: u8 = 6;
 const OBJ_REF_DELTA: u8 = 7;
+
+const MAX_BASE_OBJECTS: usize = 1_000_000;
 
 #[derive(Debug, Clone)]
 pub struct PackEntry {
@@ -76,7 +79,8 @@ impl PackEntry {
 }
 
 fn serialize_tree(tree: &Tree) -> Bytes {
-    let mut data = Vec::new();
+    let estimated_size = tree.entries.iter().map(|e| 7 + e.name.len() + 1 + 32).sum();
+    let mut data = Vec::with_capacity(estimated_size);
     for entry in &tree.entries {
         data.extend_from_slice(entry.mode.as_str().as_bytes());
         data.push(b' ');
@@ -88,14 +92,25 @@ fn serialize_tree(tree: &Tree) -> Bytes {
 }
 
 fn serialize_commit(commit: &Commit) -> Bytes {
-    let mut data = Vec::new();
-    data.extend_from_slice(format!("tree {}\n", commit.tree).as_bytes());
+    use std::io::Write;
+    let estimated_size = 5
+        + 64
+        + 1
+        + commit.parents.len() * (7 + 64 + 1)
+        + 7
+        + 100
+        + 10
+        + 100
+        + 1
+        + commit.message.len();
+    let mut data = Vec::with_capacity(estimated_size);
+    writeln!(data, "tree {}", commit.tree).ok();
     for parent in &commit.parents {
-        data.extend_from_slice(format!("parent {}\n", parent).as_bytes());
+        writeln!(data, "parent {}", parent).ok();
     }
-    data.extend_from_slice(format!("author {}\n", commit.author).as_bytes());
-    data.extend_from_slice(format!("committer {}\n", commit.committer).as_bytes());
-    data.extend_from_slice(b"\n");
+    writeln!(data, "author {}", commit.author).ok();
+    writeln!(data, "committer {}", commit.committer).ok();
+    data.push(b'\n');
     data.extend_from_slice(commit.message.as_bytes());
     Bytes::from(data)
 }
@@ -248,24 +263,31 @@ impl PackWriter {
     }
 
     pub fn build(self) -> Result<Bytes> {
-        let mut buf = BytesMut::new();
+        let compressed_entries: Result<Vec<_>> = self
+            .entries
+            .par_iter()
+            .map(|entry| {
+                let type_byte = match entry.object_type {
+                    ObjectType::Commit => OBJ_COMMIT,
+                    ObjectType::Tree => OBJ_TREE,
+                    ObjectType::Blob => OBJ_BLOB,
+                    ObjectType::Tag => OBJ_TAG,
+                };
+                let compressed = compress_data(&entry.data)?;
+                Ok((type_byte, entry.data.len(), compressed))
+            })
+            .collect();
+        let compressed_entries = compressed_entries?;
 
+        let mut buf = BytesMut::new();
         if self.include_header {
             buf.put_slice(PACK_SIGNATURE);
             buf.put_u32(PACK_VERSION);
             buf.put_u32(self.entries.len() as u32);
         }
 
-        for entry in &self.entries {
-            let type_byte = match entry.object_type {
-                ObjectType::Commit => OBJ_COMMIT,
-                ObjectType::Tree => OBJ_TREE,
-                ObjectType::Blob => OBJ_BLOB,
-                ObjectType::Tag => OBJ_TAG,
-            };
-
-            let compressed = compress_data(&entry.data)?;
-            write_object_header(&mut buf, type_byte, entry.data.len());
+        for (type_byte, uncompressed_size, compressed) in compressed_entries {
+            write_object_header(&mut buf, type_byte, uncompressed_size);
             buf.put_slice(&compressed);
         }
 
@@ -273,23 +295,31 @@ impl PackWriter {
     }
 
     pub fn build_streaming<W: Write>(self, writer: &mut W) -> Result<()> {
+        let compressed_entries: Result<Vec<_>> = self
+            .entries
+            .par_iter()
+            .map(|entry| {
+                let type_byte = match entry.object_type {
+                    ObjectType::Commit => OBJ_COMMIT,
+                    ObjectType::Tree => OBJ_TREE,
+                    ObjectType::Blob => OBJ_BLOB,
+                    ObjectType::Tag => OBJ_TAG,
+                };
+                let compressed = compress_data(&entry.data)?;
+                Ok((type_byte, entry.data.len(), compressed))
+            })
+            .collect();
+        let compressed_entries = compressed_entries?;
+
         if self.include_header {
             writer.write_all(PACK_SIGNATURE)?;
             writer.write_all(&PACK_VERSION.to_be_bytes())?;
             writer.write_all(&(self.entries.len() as u32).to_be_bytes())?;
         }
 
-        for entry in &self.entries {
-            let type_byte = match entry.object_type {
-                ObjectType::Commit => OBJ_COMMIT,
-                ObjectType::Tree => OBJ_TREE,
-                ObjectType::Blob => OBJ_BLOB,
-                ObjectType::Tag => OBJ_TAG,
-            };
-
-            let compressed = compress_data(&entry.data)?;
+        for (type_byte, uncompressed_size, compressed) in compressed_entries {
             let mut header_buf = BytesMut::new();
-            write_object_header(&mut header_buf, type_byte, entry.data.len());
+            write_object_header(&mut header_buf, type_byte, uncompressed_size);
             writer.write_all(&header_buf)?;
             writer.write_all(&compressed)?;
         }
@@ -406,7 +436,7 @@ impl PackReader {
                     OBJ_TREE => ObjectType::Tree,
                     OBJ_BLOB => ObjectType::Blob,
                     OBJ_TAG => ObjectType::Tag,
-                    _ => unreachable!(),
+                    _ => unreachable!("type_byte already matched to OBJ_COMMIT|TREE|BLOB|TAG"),
                 };
                 let oid = Oid::hash_object(object_type.as_str(), &decompressed);
                 PackEntry::new(oid, object_type, Bytes::from(decompressed))
@@ -432,7 +462,9 @@ impl PackReader {
         };
 
         self.objects_read += 1;
-        self.base_objects.insert(entry.oid, entry.clone());
+        if self.base_objects.len() < MAX_BASE_OBJECTS {
+            self.base_objects.insert(entry.oid, entry.clone());
+        }
         Ok(Some(entry))
     }
 
@@ -1131,23 +1163,12 @@ mod tests {
         assert!(read_delta_size(&[]).is_err());
 
         let base = b"hello world";
-        let mut delta = Vec::new();
-        delta.push(11);
-        delta.push(5);
-        delta.push(0x80 | 0x01 | 0x10);
-        delta.push(0);
-        delta.push(5);
+        let delta = vec![11, 5, 0x80 | 0x01 | 0x10, 0, 5];
         let result = apply_delta_instructions(base, &delta).unwrap();
         assert_eq!(result, b"hello");
 
         let base = b"hello";
-        let mut delta = Vec::new();
-        delta.push(5);
-        delta.push(11);
-        delta.push(0x80 | 0x01 | 0x10);
-        delta.push(0);
-        delta.push(5);
-        delta.push(6);
+        let mut delta = vec![5, 11, 0x80 | 0x01 | 0x10, 0, 5, 6];
         delta.extend_from_slice(b" world");
         let result = apply_delta_instructions(base, &delta).unwrap();
         assert_eq!(result, b"hello world");
@@ -1211,36 +1232,20 @@ mod tests {
         assert_eq!(result.len(), 0x10000);
 
         let base = b"small";
-        let mut delta = Vec::new();
-        delta.push(5);
-        delta.push(100);
-        delta.push(0x80 | 0x01 | 0x10);
-        delta.push(0);
-        delta.push(100);
+        let delta = vec![5, 100, 0x80 | 0x01 | 0x10, 0, 100];
         assert!(apply_delta_instructions(base, &delta).is_err());
 
         let base = b"base";
-        let mut delta = Vec::new();
-        delta.push(4);
-        delta.push(10);
-        delta.push(10);
+        let mut delta = vec![4, 10, 10];
         delta.extend_from_slice(b"short");
         assert!(apply_delta_instructions(base, &delta).is_err());
 
         let base = b"base";
-        let mut delta = Vec::new();
-        delta.push(4);
-        delta.push(4);
-        delta.push(0);
+        let delta = vec![4, 4, 0];
         assert!(apply_delta_instructions(base, &delta).is_err());
 
         let base = b"hello";
-        let mut delta = Vec::new();
-        delta.push(5);
-        delta.push(10);
-        delta.push(0x80 | 0x01 | 0x10);
-        delta.push(0);
-        delta.push(5);
+        let delta = vec![5, 10, 0x80 | 0x01 | 0x10, 0, 5];
         assert!(apply_delta_instructions(base, &delta).is_err());
     }
 

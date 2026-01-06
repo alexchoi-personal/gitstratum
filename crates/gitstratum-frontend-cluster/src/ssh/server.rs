@@ -119,7 +119,7 @@ pub fn load_host_key(path: &std::path::Path) -> Result<PrivateKey, std::io::Erro
 mod tests {
     use super::*;
     use crate::auth::rate_limit::AuthRateLimiter;
-    use crate::auth::types::{SshKey, StoredToken, TokenScopes, User};
+    use crate::auth::types::{SshKey, StoredToken, User};
     use crate::auth::AuthError;
     use russh::keys::ssh_key;
     use std::collections::HashMap;

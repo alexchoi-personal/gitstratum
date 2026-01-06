@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use gitstratum_core::Oid;
 
 use crate::error::{ObjectStoreError, Result};
@@ -14,6 +16,11 @@ pub enum DeltaInstruction {
     Copy { offset: u64, length: u64 },
     Insert { data: Vec<u8> },
 }
+
+const HASH_WINDOW: usize = 16;
+const HASH_PRIME: u64 = 31;
+const HASH_MOD: u64 = 1_000_000_007;
+const MAX_COLLISION_LIST_SIZE: usize = 64;
 
 pub struct DeltaComputer {
     max_delta_size: usize,
@@ -56,26 +63,45 @@ impl DeltaComputer {
     }
 
     fn compute_instructions(&self, base: &[u8], target: &[u8]) -> Vec<DeltaInstruction> {
-        let mut instructions = Vec::new();
+        let window = self.min_match_length.min(HASH_WINDOW);
+
+        if base.len() < window || target.len() < window {
+            return vec![DeltaInstruction::Insert {
+                data: target.to_vec(),
+            }];
+        }
+
+        let base_index = self.build_hash_index(base, window);
+
+        let estimated_instructions = (target.len() / self.min_match_length).max(1);
+        let mut instructions = Vec::with_capacity(estimated_instructions);
         let mut target_pos = 0;
 
         while target_pos < target.len() {
-            if let Some((offset, length)) = self.find_match(base, target, target_pos) {
-                if length >= self.min_match_length {
-                    instructions.push(DeltaInstruction::Copy {
-                        offset: offset as u64,
-                        length: length as u64,
-                    });
-                    target_pos += length;
-                    continue;
+            if target_pos + window <= target.len() {
+                if let Some((offset, length)) =
+                    self.find_match_hash(&base_index, base, target, target_pos, window)
+                {
+                    if length >= self.min_match_length {
+                        instructions.push(DeltaInstruction::Copy {
+                            offset: offset as u64,
+                            length: length as u64,
+                        });
+                        target_pos += length;
+                        continue;
+                    }
                 }
             }
 
             let mut insert_end = target_pos + 1;
             while insert_end < target.len() {
-                if let Some((_, length)) = self.find_match(base, target, insert_end) {
-                    if length >= self.min_match_length {
-                        break;
+                if insert_end + window <= target.len() {
+                    if let Some((_, length)) =
+                        self.find_match_hash(&base_index, base, target, insert_end, window)
+                    {
+                        if length >= self.min_match_length {
+                            break;
+                        }
                     }
                 }
                 insert_end += 1;
@@ -90,17 +116,50 @@ impl DeltaComputer {
         instructions
     }
 
-    fn find_match(&self, base: &[u8], target: &[u8], target_pos: usize) -> Option<(usize, usize)> {
-        let remaining = target.len() - target_pos;
-        if remaining < self.min_match_length {
+    fn build_hash_index(&self, data: &[u8], window: usize) -> HashMap<u64, Vec<usize>> {
+        if data.len() < window {
+            return HashMap::new();
+        }
+
+        let estimated_entries = (data.len() - window + 1).min(HASH_MOD as usize);
+        let mut index: HashMap<u64, Vec<usize>> = HashMap::with_capacity(estimated_entries);
+
+        for i in 0..=data.len() - window {
+            let hash = Self::compute_hash(&data[i..i + window]);
+            let bucket = index.entry(hash % HASH_MOD).or_default();
+            if bucket.len() < MAX_COLLISION_LIST_SIZE {
+                bucket.push(i);
+            }
+        }
+
+        index
+    }
+
+    fn find_match_hash(
+        &self,
+        base_index: &HashMap<u64, Vec<usize>>,
+        base: &[u8],
+        target: &[u8],
+        target_pos: usize,
+        window: usize,
+    ) -> Option<(usize, usize)> {
+        if target_pos + window > target.len() {
             return None;
         }
+
+        let target_hash = Self::compute_hash(&target[target_pos..target_pos + window]);
+
+        let positions = base_index.get(&(target_hash % HASH_MOD))?;
 
         let mut best_offset = 0;
         let mut best_length = 0;
 
-        for base_pos in 0..base.len().saturating_sub(self.min_match_length) {
-            let mut length = 0;
+        for &base_pos in positions {
+            if base[base_pos..base_pos + window] != target[target_pos..target_pos + window] {
+                continue;
+            }
+
+            let mut length = window;
             while target_pos + length < target.len()
                 && base_pos + length < base.len()
                 && target[target_pos + length] == base[base_pos + length]
@@ -119,6 +178,14 @@ impl DeltaComputer {
         } else {
             None
         }
+    }
+
+    fn compute_hash(data: &[u8]) -> u64 {
+        let mut hash = 0u64;
+        for &byte in data {
+            hash = hash.wrapping_mul(HASH_PRIME).wrapping_add(byte as u64);
+        }
+        hash
     }
 
     pub fn apply(&self, base: &[u8], delta: &Delta) -> Result<Vec<u8>> {
@@ -210,6 +277,23 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_delta_with_copy() {
+        let computer = DeltaComputer::with_config(1024, 4);
+        let base = b"AAAA this is a common substring BBBB";
+        let target = b"CCCC this is a common substring DDDD";
+
+        let delta = computer.compute(base, target).unwrap();
+        let result = computer.apply(base, &delta).unwrap();
+        assert_eq!(result, target);
+
+        let has_copy = delta
+            .instructions
+            .iter()
+            .any(|i| matches!(i, DeltaInstruction::Copy { .. }));
+        assert!(has_copy, "Expected at least one Copy instruction");
+    }
+
+    #[test]
     fn test_delta_too_large() {
         let computer = DeltaComputer::with_config(10, 4);
         let base = b"short";
@@ -257,5 +341,36 @@ mod tests {
     fn test_delta_computer_default() {
         let computer = DeltaComputer::default();
         assert_eq!(computer.max_delta_size, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_small_base_and_target() {
+        let computer = DeltaComputer::with_config(1024, 4);
+        let base = b"ab";
+        let target = b"cd";
+        let delta = computer.compute(base, target).unwrap();
+        let result = computer.apply(base, &delta).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn test_empty_target() {
+        let computer = DeltaComputer::with_config(1024, 4);
+        let base = b"hello world";
+        let target = b"";
+        let delta = computer.compute(base, target).unwrap();
+        let result = computer.apply(base, &delta).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn test_hash_collision_handling() {
+        let computer = DeltaComputer::with_config(1024, 4);
+        let base = b"AAAABBBBCCCCDDDDEEEEFFFFGGGG";
+        let target = b"XXXXAAAABBBBCCCCDDDDEEEEYYYYZZZZ";
+
+        let delta = computer.compute(base, target).unwrap();
+        let result = computer.apply(base, &delta).unwrap();
+        assert_eq!(result, target);
     }
 }

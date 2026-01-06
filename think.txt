@@ -1,0 +1,1956 @@
+
+╭─── Claude Code v2.0.76 ──────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                 Welcome back Alex!                 │ started                 │
+│                                                    │ Run /init to create a … │
+│                     * ▐▛███▜▌ *                    │ ─────────────────────── │
+│                    * ▝▜█████▛▘ *                   │ Recent activity         │
+│                     *  ▘▘ ▝▝  *                    │ No recent activity      │
+│                                                    │                         │
+│   Opus 4.5 · Claude Max · wanchoi211@gmail.com's   │                         │
+│   Organization                                     │                         │
+│          ~/Desktop/git/gitstratum-cluster          │                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+══════════════════ Conversation compacted · ctrl+o for history ═════════════════
+  ⎿  Read ../k8s-operator/src/raft/storage/mod.rs (24 lines)
+  ⎿  Read ../k8s-operator/src/raft/node.rs (409 lines)
+  ⎿  Read ../k8s-operator/src/raft/network/client.rs (328 lines)
+  ⎿  Read crates/gitstratum-coordinator/src/server.rs (244 lines)
+  ⎿  Read crates/gitstratum-coordinator/src/client.rs (119 lines)
+  ⎿  Plan file referenced (~/.claude/plans/fluttering-petting-unicorn.md)
+
+⏺ Coordinator Workflow
+
+  Here's how the gitstratum-coordinator works:
+
+  Startup Flow
+
+  1. Binary starts (bins/gitstratum-coordinator/main.rs)
+     │
+     ├─► Create RaftConfig with node_id, service_name, namespace
+     │
+     ├─► RaftNodeManager::<KeyValueStateMachine>::new(config)
+     │   └─► Creates in-memory Raft storage + gRPC network factory
+     │
+     ├─► bootstrap() or bootstrap_or_join()
+     │   └─► Initializes Raft cluster membership
+     │
+     ├─► start_grpc_server(raft_port)
+     │   └─► Starts Raft consensus gRPC (AppendEntries, Vote, InstallSnapshot)
+     │
+     └─► Server::builder().add_service(CoordinatorServiceServer)
+         └─► Starts CoordinatorService gRPC on grpc_addr
+
+  Write Path (AddNode, RemoveNode, SetNodeState)
+
+  Client                    CoordinatorServer               Raft Cluster
+    │                              │                              │
+    ├─► AddNode(NodeInfo) ────────►│                              │
+    │                              ├─► ensure_leader()            │
+    │                              │   (reject if not leader)     │
+    │                              │                              │
+    │                              ├─► read_topology()            │
+    │                              │   └─► raft.mem_store().data()│
+    │                              │                              │
+    │                              ├─► apply_command(&mut topo)   │
+    │                              │   └─► Insert node into       │
+    │                              │       object_nodes/metadata  │
+    │                              │       Increment version      │
+    │                              │                              │
+    │                              ├─► write_topology(&topo) ────►│
+    │                              │   └─► raft.client_write(     │
+    │                              │         RaftRequest {        │
+    │                              │           key: "__cluster_topology__",
+    │                              │           value: JSON(topo)  │
+    │                              │         })                   │
+    │                              │                              │
+    │                              │◄─────────── replicated ──────│
+    │                              │                              │
+    │◄── AddNodeResponse ─────────│                              │
+
+  Read Path (GetClusterState, GetHashRing)
+
+  Client                    CoordinatorServer
+    │                              │
+    ├─► GetClusterState() ────────►│
+    │                              ├─► read_topology()
+    │                              │   └─► mem_store().data().get("__cluster_topology__")
+    │                              │   └─► deserialize_topology(JSON)
+    │                              │
+    │◄── GetClusterStateResponse ──│
+    │    (metadata_nodes,          │
+    │     object_nodes,            │
+    │     version,                 │
+    │     leader_id)               │
+
+  Watch Path (WatchTopology)
+
+  Client                    CoordinatorServer
+    │                              │
+    ├─► WatchTopology() ──────────►│
+    │                              ├─► topology_updates.subscribe()
+    │                              │   └─► Returns BroadcastStream
+    │                              │
+    │◄── Stream<TopologyUpdate> ───│
+    │                              │
+    │    (on any write:)           │
+    │                              ├─► topology_updates.send(TopologyUpdate)
+    │◄── TopologyUpdate ───────────│
+
+  Key Points
+
+  1. Leader-only writes: All mutations (add_node, remove_node, set_node_state) are rejected on followers with NotLeader error
+  2. JSON serialization: Topology is stored as a single JSON blob under key __cluster_topology__ in the KeyValueStateMachine's HashMap
+  3. Raft replication: Writes go through raft.client_write() which replicates the key-value pair to all nodes before returning
+  4. Local reads: Reads hit the local mem_store() directly - eventually consistent but fast
+  5. Hash ring conversion: topology.to_hash_ring() converts object nodes to a ConsistentHashRing for data distribution
+
+> walk me through the code and their snippet on the workflow 
+
+⏺ Let me read the relevant files to walk you through the code:
+
+⏺ Read(crates/gitstratum-coordinator/src/state_machine.rs)
+  ⎿  Read 125 lines
+
+⏺ Read(crates/gitstratum-coordinator/src/commands.rs)
+  ⎿  Read 38 lines
+
+⏺ Read(crates/gitstratum-coordinator/src/topology.rs)
+  ⎿  Read 77 lines
+
+⏺ Read(bins/gitstratum-coordinator/src/main.rs)
+  ⎿  Read 82 lines
+
+⏺ Now let me also read the hash ring conversion:
+
+⏺ Read(crates/gitstratum-coordinator/src/convert.rs)
+  ⎿  Read 73 lines
+
+⏺ Code Walkthrough: Coordinator Workflow
+
+  1. Startup (main.rs)
+
+  // bins/gitstratum-coordinator/src/main.rs:54-69
+
+  // Step 1: Create Raft configuration
+  let config = RaftConfig::new("coordinator")
+      .node_id(node_id)
+      .service_name(&args.service_name)
+      .namespace(&args.namespace);
+
+  // Step 2: Create Raft node manager with KeyValueStateMachine
+  let raft = RaftNodeManager::<KeyValueStateMachine>::new(config).await?;
+
+  // Step 3: Bootstrap (if first node) or join existing cluster
+  if args.bootstrap {
+      raft.bootstrap().await?;
+  } else {
+      raft.bootstrap_or_join().await?;
+  }
+
+  // Step 4: Start Raft consensus gRPC server (AppendEntries, Vote, InstallSnapshot)
+  raft.start_grpc_server(args.raft_addr.port()).await?;
+
+  // Step 5: Create coordinator server and start CoordinatorService gRPC
+  let server = CoordinatorServer::new(Arc::new(raft));
+  Server::builder()
+      .add_service(CoordinatorServiceServer::new(server))
+      .serve(args.grpc_addr)
+      .await?;
+
+  ---
+  2. Data Types
+
+  Topology (topology.rs:6-12):
+  #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+  pub struct ClusterTopology {
+      pub object_nodes: HashMap<String, NodeEntry>,   // Object storage nodes
+      pub metadata_nodes: HashMap<String, NodeEntry>, // Metadata nodes
+      pub hash_ring_config: HashRingConfig,           // Ring configuration
+      pub version: u64,                               // Monotonic version
+  }
+
+  Commands (commands.rs:5-12):
+  #[derive(Clone, Debug, Serialize, Deserialize)]
+  pub enum ClusterCommand {
+      AddObjectNode(NodeEntry),
+      AddMetadataNode(NodeEntry),
+      RemoveNode { node_id: String },
+      SetNodeState { node_id: String, state: i32 },
+      UpdateHashRingConfig(HashRingConfig),
+  }
+
+  ---
+  3. Write Path: AddNode RPC
+
+  Step 1: gRPC handler receives request (server.rs:127-158):
+  async fn add_node(&self, request: Request<AddNodeRequest>) -> Result<Response<AddNodeResponse>, Status> {
+      // Only leader can accept writes
+      self.ensure_leader()?;
+
+      let req = request.into_inner();
+      let node = req.node.ok_or_else(|| Status::invalid_argument("Missing node"))?;
+
+      // Convert proto to internal type
+      let entry = NodeEntry::from_proto(&node);
+      let node_type = NodeType::try_from(node.r#type).unwrap_or(NodeType::Unknown);
+
+      // Create appropriate command based on node type
+      let cmd = match node_type {
+          NodeType::Object => ClusterCommand::AddObjectNode(entry),
+          NodeType::Metadata => ClusterCommand::AddMetadataNode(entry),
+          _ => return Err(CoordinatorError::InvalidNodeType.into()),
+      };
+
+      // Apply command and write to Raft
+      let resp = self.apply_and_write(cmd).await?;
+
+      // Broadcast update to watchers
+      let _ = self.topology_updates.send(TopologyUpdate {
+          version: resp.version,
+          update: Some(topology_update::Update::NodeAdded(node)),
+      });
+
+      Ok(Response::new(AddNodeResponse {
+          success: resp.success,
+          error: resp.error.unwrap_or_default(),
+      }))
+  }
+
+  Step 2: Apply command locally and write to Raft (server.rs:75-88):
+  async fn apply_and_write(&self, cmd: ClusterCommand) -> Result<ClusterResponse, CoordinatorError> {
+      // Read current topology from Raft state machine
+      let mut topology = self.read_topology().await;
+
+      // Apply command to topology (in-memory mutation)
+      let response = apply_command(&mut topology, &cmd);
+
+      if response.success {
+          // Write updated topology to Raft (replicates to all nodes)
+          self.write_topology(&topology).await?;
+          // Update local cache
+          *self.topology_cache.write() = topology;
+      }
+
+      Ok(response)
+  }
+
+  Step 3: Apply command to topology (state_machine.rs:6-51):
+  pub fn apply_command(topology: &mut ClusterTopology, cmd: &ClusterCommand) -> ClusterResponse {
+      let result = match cmd {
+          ClusterCommand::AddObjectNode(node) => {
+              // Insert into object_nodes HashMap
+              topology.object_nodes.insert(node.id.clone(), node.clone());
+              Ok(())
+          }
+          ClusterCommand::AddMetadataNode(node) => {
+              topology.metadata_nodes.insert(node.id.clone(), node.clone());
+              Ok(())
+          }
+          ClusterCommand::RemoveNode { node_id } => {
+              // Try removing from both maps
+              let removed_object = topology.object_nodes.remove(node_id);
+              let removed_metadata = topology.metadata_nodes.remove(node_id);
+              if removed_object.is_some() || removed_metadata.is_some() {
+                  Ok(())
+              } else {
+                  Err(format!("Node not found: {}", node_id))
+              }
+          }
+          // ... other commands
+      };
+
+      match result {
+          Ok(()) => {
+              topology.version += 1;  // Increment version on success
+              ClusterResponse::success(topology.version)
+          }
+          Err(e) => ClusterResponse::error(e, topology.version),
+      }
+  }
+
+  Step 4: Write to Raft (server.rs:53-63):
+  async fn write_topology(&self, topology: &ClusterTopology) -> Result<(), CoordinatorError> {
+      let raft = self.raft.raft();
+
+      // Create RaftRequest (key-value pair)
+      let request = RaftRequest {
+          key: topology_key().to_string(),   // "__cluster_topology__"
+          value: serialize_topology(topology), // JSON string
+      };
+
+      // client_write() replicates to majority, then returns
+      raft.client_write(request)
+          .await
+          .map_err(|e| CoordinatorError::Raft(format!("{:?}", e)))?;
+      Ok(())
+  }
+
+  Serialization (state_machine.rs:53-63):
+  pub fn topology_key() -> &'static str {
+      "__cluster_topology__"  // Single key stores entire topology
+  }
+
+  pub fn serialize_topology(topology: &ClusterTopology) -> String {
+      serde_json::to_string(topology).unwrap_or_default()
+  }
+
+  pub fn deserialize_topology(data: &str) -> ClusterTopology {
+      serde_json::from_str(data).unwrap_or_default()
+  }
+
+  ---
+  4. Read Path: GetClusterState RPC
+
+  gRPC handler (server.rs:93-125):
+  async fn get_cluster_state(&self, _request: Request<GetClusterStateRequest>)
+      -> Result<Response<GetClusterStateResponse>, Status>
+  {
+      // Read topology from local Raft state machine
+      let topo = self.read_topology().await;
+
+      // Convert to proto types
+      let metadata_nodes = topo.metadata_nodes.values()
+          .map(|n| n.to_proto(NodeType::Metadata))
+          .collect();
+
+      let object_nodes = topo.object_nodes.values()
+          .map(|n| n.to_proto(NodeType::Object))
+          .collect();
+
+      // Get leader info
+      let leader = self.raft.leader_election();
+      let leader_id = if leader.is_leader() {
+          leader.node_id().to_string()
+      } else {
+          String::new()
+      };
+
+      Ok(Response::new(GetClusterStateResponse {
+          metadata_nodes,
+          object_nodes,
+          leader_id,
+          version: topo.version,
+          hash_ring_config: Some(topo.hash_ring_config.to_proto()),
+      }))
+  }
+
+  Read from Raft state machine (server.rs:65-73):
+  async fn read_topology(&self) -> ClusterTopology {
+      // Get MemStore from RaftNodeManager
+      if let Some(store) = self.raft.mem_store() {
+          // data() returns HashMap<String, String>
+          let data = store.data().await;
+          // Look up topology by key
+          if let Some(value) = data.get(topology_key()) {
+              return deserialize_topology(value);
+          }
+      }
+      ClusterTopology::default()
+  }
+
+  ---
+  5. Hash Ring Conversion
+
+  Get hash ring RPC (server.rs:206-230):
+  async fn get_hash_ring(&self, _request: Request<GetHashRingRequest>)
+      -> Result<Response<GetHashRingResponse>, Status>
+  {
+      let topo = self.read_topology().await;
+
+      // Convert topology to ConsistentHashRing
+      let ring = topo.to_hash_ring()
+          .map_err(|e| Status::internal(format!("Failed to build hash ring: {}", e)))?;
+
+      // Extract ring entries (position -> node_id mapping)
+      let entries: Vec<HashRingEntry> = ring.get_ring_entries()
+          .into_iter()
+          .map(|(position, node_id)| HashRingEntry {
+              position,
+              node_id: node_id.to_string(),
+          })
+          .collect();
+
+      Ok(Response::new(GetHashRingResponse {
+          entries,
+          replication_factor: topo.hash_ring_config.replication_factor,
+          version: topo.version,
+      }))
+  }
+
+  Conversion implementation (convert.rs:5-18):
+  impl ClusterTopology {
+      pub fn to_hash_ring(&self) -> Result<ConsistentHashRing, HashRingError> {
+          let mut builder = HashRingBuilder::new()
+              .virtual_nodes(self.hash_ring_config.virtual_nodes_per_physical)
+              .replication_factor(self.hash_ring_config.replication_factor as usize);
+
+          // Only object nodes participate in hash ring
+          for node in self.object_nodes.values() {
+              let node_info = NodeInfo::new(&node.id, &node.address, node.port as u16)
+                  .with_state(convert_state(node.state));
+              builder = builder.add_node(node_info);
+          }
+
+          builder.build()
+      }
+  }
+
+  ---
+  6. Watch Path: WatchTopology RPC
+
+  Streaming handler (server.rs:232-242):
+  type WatchTopologyStream = Pin<Box<dyn Stream<Item = Result<TopologyUpdate, Status>> + Send>>;
+
+  async fn watch_topology(&self, _request: Request<WatchTopologyRequest>)
+      -> Result<Response<Self::WatchTopologyStream>, Status>
+  {
+      // Subscribe to broadcast channel
+      let rx = self.topology_updates.subscribe();
+
+      // Wrap in stream, map errors to Status
+      let stream = BroadcastStream::new(rx)
+          .map(|result| result.map_err(|e| Status::internal(format!("Stream error: {}", e))));
+
+      Ok(Response::new(Box::pin(stream)))
+  }
+
+  Broadcast on write (back in add_node, server.rs:149-152):
+  // After successful write, broadcast to all watchers
+  let _ = self.topology_updates.send(TopologyUpdate {
+      version: resp.version,
+      update: Some(topology_update::Update::NodeAdded(node)),
+  });
+
+  ---
+  7. Client Usage (client.rs)
+
+  // Connect to coordinator
+  let mut client = CoordinatorClient::connect("http://coordinator:9000").await?;
+
+  // Add a node
+  client.add_node(NodeInfo {
+      id: "object-1".to_string(),
+      address: "10.0.0.5".to_string(),
+      port: 9000,
+      r#type: NodeType::Object as i32,
+      state: NodeState::Active as i32,
+  }).await?;
+
+  // Get current topology
+  let topology = client.get_topology().await?;
+
+  // Get hash ring for data routing
+  let ring = client.get_hash_ring().await?;
+  let nodes = ring.get_nodes_for_key("my-key");
+
+  ---
+  Summary Flow
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ Client calls AddNode(NodeInfo)                                          │
+  └─────────────────────────────────────────────┬───────────────────────────┘
+                                                │
+                                                ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ server.rs:add_node()                                                    │
+  │   1. ensure_leader() - reject if not leader                             │
+  │   2. NodeEntry::from_proto(&node)                                       │
+  │   3. ClusterCommand::AddObjectNode(entry)                               │
+  └─────────────────────────────────────────────┬───────────────────────────┘
+                                                │
+                                                ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ server.rs:apply_and_write()                                             │
+  │   1. read_topology() -> ClusterTopology                                 │
+  │   2. apply_command(&mut topology, &cmd) -> version++                    │
+  │   3. write_topology(&topology)                                          │
+  └─────────────────────────────────────────────┬───────────────────────────┘
+                                                │
+                                                ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ server.rs:write_topology()                                              │
+  │   RaftRequest { key: "__cluster_topology__", value: JSON(topology) }    │
+  │   raft.client_write(request).await                                      │
+  └─────────────────────────────────────────────┬───────────────────────────┘
+                                                │
+                                                ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ k8s-operator Raft Consensus                                             │
+  │   - Replicate to majority of nodes                                      │
+  │   - Apply to KeyValueStateMachine::apply()                              │
+  │   - Store in HashMap<String, String>                                    │
+  └─────────────────────────────────────────────┬───────────────────────────┘
+                                                │
+                                                ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ Broadcast TopologyUpdate to watchers                                    │
+  │ Return AddNodeResponse { success: true }                                │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+> Which design is more reliable and easier to understand? the frontend uses 
+the coordinator client int their library or expose grpc endpoint for 
+computing topology? 
+
+⏺ Good design question. Let me compare both approaches:
+
+  Option A: Frontend uses CoordinatorClient as library
+
+  ┌──────────────┐      ┌──────────────────┐      ┌─────────────────┐
+  │ External     │ gRPC │ Frontend         │      │ Coordinator     │
+  │ Client       │─────►│ (has Coordinator │─────►│ (Raft cluster)  │
+  │              │      │  Client inside)  │      │                 │
+  └──────────────┘      └──────────────────┘      └─────────────────┘
+                                │
+                                │ routes to
+                                ▼
+                        ┌─────────────────┐
+                        │ Object/Metadata │
+                        │ Nodes           │
+                        └─────────────────┘
+
+  // Frontend code
+  pub struct Frontend {
+      coordinator: CoordinatorClient,
+      cached_ring: RwLock<ConsistentHashRing>,
+  }
+
+  impl Frontend {
+      pub async fn handle_request(&self, key: &str, data: &[u8]) -> Result<()> {
+          let ring = self.cached_ring.read();
+          let nodes = ring.get_nodes_for_key(key);
+          // Route to nodes...
+      }
+  }
+
+  Option B: Frontend exposes its own topology gRPC endpoint
+
+  ┌──────────────┐      ┌──────────────────┐      ┌─────────────────┐
+  │ External     │ gRPC │ Frontend         │ gRPC │ Coordinator     │
+  │ Client       │─────►│ FrontendService  │─────►│ (Raft cluster)  │
+  │              │      │                  │      │                 │
+  └──────────────┘      └──────────────────┘      └─────────────────┘
+         │
+         │ GetTopology() / GetHashRing()
+         │ (client computes routing)
+         ▼
+  ┌─────────────────┐
+  │ Object/Metadata │
+  │ Nodes           │
+  └─────────────────┘
+
+  // Frontend exposes its own service
+  impl FrontendService for Frontend {
+      async fn get_topology(&self, _req: Request<()>) -> Result<Response<TopologyResponse>> {
+          // Fetch from coordinator and transform/cache
+          let topo = self.coordinator.get_topology().await?;
+          Ok(Response::new(topo.into()))
+      }
+  }
+
+  ---
+  Comparison
+
+  | Aspect            | Option A (Library)                      | Option B (Expose gRPC)           |
+  |-------------------|-----------------------------------------|----------------------------------|
+  | Hops              | Frontend → Coordinator                  | Client → Frontend → Coordinator  |
+  | Coupling          | Frontend tightly coupled to coordinator | Client coupled to frontend API   |
+  | Caching           | Frontend caches internally              | Frontend caches, can serve stale |
+  | Client complexity | Client only talks to frontend           | Client must understand topology  |
+  | Failure modes     | Frontend fails if coordinator down      | Can serve cached data            |
+  | Consistency       | Always fresh from coordinator           | Potentially stale                |
+
+  ---
+  My Recommendation: Option A (Library) with WatchTopology
+
+  Reasons:
+
+  1. Simpler architecture - External clients shouldn't need to understand topology. They send requests to frontend, frontend routes internally.
+  2. Single responsibility - Frontend's job is to route requests. Exposing topology to external clients means they need to implement routing logic too.
+  3. Use WatchTopology for freshness - Frontend subscribes to topology updates via streaming:
+
+  pub struct Frontend {
+      coordinator: CoordinatorClient,
+      topology: Arc<RwLock<ClusterTopology>>,
+      ring: Arc<RwLock<ConsistentHashRing>>,
+  }
+
+  impl Frontend {
+      pub async fn start_topology_watcher(&self) {
+          let mut stream = self.coordinator.watch_topology().await.unwrap();
+
+          while let Some(update) = stream.next().await {
+              match update {
+                  Ok(topo_update) => {
+                      // Refresh full topology
+                      let topo = self.coordinator.get_topology().await.unwrap();
+                      *self.topology.write() = topo.clone();
+                      *self.ring.write() = topo.to_hash_ring().unwrap();
+                      tracing::info!("Topology updated to version {}", topo_update.version);
+                  }
+                  Err(e) => {
+                      tracing::warn!("Topology watch error: {}", e);
+                      // Reconnect logic...
+                  }
+              }
+          }
+      }
+
+      pub fn route_key(&self, key: &str) -> Vec<NodeInfo> {
+          self.ring.read().get_nodes_for_key(key)
+      }
+  }
+
+  4. Clear data flow:
+  Client → Frontend → (cached ring) → Object Node
+                  ↑
+                  └── WatchTopology stream from Coordinator
+
+  ---
+  When Option B makes sense
+
+  Only if external clients need direct access to object nodes (bypassing frontend):
+
+  ┌──────────────┐                          ┌─────────────────┐
+  │ External     │──── GetTopology ────────►│ Frontend        │
+  │ Client       │                          └─────────────────┘
+  │              │
+  │              │──── Direct read/write ──►┌─────────────────┐
+  │              │                          │ Object Node     │
+  └──────────────┘                          └─────────────────┘
+
+  This is useful for high-throughput scenarios where frontend becomes a bottleneck. But it adds complexity - clients must:
+  - Cache topology themselves
+  - Handle node failures and re-routing
+  - Subscribe to topology changes
+
+  ---
+  Summary
+
+  | Use Case                          | Recommendation                                |
+  |-----------------------------------|-----------------------------------------------|
+  | Frontend routes all traffic       | Option A - Library with WatchTopology         |
+  | Clients need direct node access   | Option B - Expose topology endpoint           |
+  | Hybrid (some direct, some routed) | Both - Library internally + optional endpoint |
+
+  For most cases, Option A is simpler and more reliable. The frontend is the routing layer - external clients shouldn't need to understand the cluster topology.
+
+> This is a distributed system. How can every cluster be in sync. Right now,
+ there's frontend, coordinator, metadata, and object clusters that are 
+syncing on its own 
+
+⏺ Excellent question, Alex. You've identified a critical architectural gap. Let me break down the problem and propose a solution.
+
+  Current Problem
+
+  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+  │ Frontend        │     │ Coordinator     │     │ Metadata        │
+  │ Cluster         │     │ Cluster         │     │ Cluster         │
+  │ (own sync?)     │     │ (Raft sync)     │     │ (own sync?)     │
+  └─────────────────┘     └─────────────────┘     └─────────────────┘
+          ?                       ?                       ?
+          └───────────────────────┴───────────────────────┘
+                      How do these sync?
+
+  ┌─────────────────┐
+  │ Object          │
+  │ Cluster         │
+  │ (own sync?)     │
+  └─────────────────┘
+
+  Issues:
+  1. How do object/metadata nodes register with coordinator?
+  2. How do frontends learn about topology changes?
+  3. How does coordinator detect node failures?
+  4. What happens during network partitions?
+
+  ---
+  Solution: Coordinator as Single Source of Truth
+
+                           ┌─────────────────────────────────┐
+                           │      COORDINATOR CLUSTER        │
+                           │      (Raft - Strong Consensus)  │
+                           │                                 │
+                           │  • Node registry                │
+                           │  • Topology versions            │
+                           │  • Health status                │
+                           └─────────────────────────────────┘
+                                          │
+             ┌────────────────────────────┼────────────────────────────┐
+             │                            │                            │
+             ▼                            ▼                            ▼
+      ┌─────────────┐              ┌─────────────┐              ┌─────────────┐
+      │  Frontend   │              │  Metadata   │              │   Object    │
+      │  Nodes      │              │  Nodes      │              │   Nodes     │
+      │             │              │             │              │             │
+      │ • Watch     │              │ • Register  │              │ • Register  │
+      │ • Cache     │              │ • Heartbeat │              │ • Heartbeat │
+      │ • Route     │              │ • Watch     │              │ • Watch     │
+      └─────────────┘              └─────────────┘              └─────────────┘
+
+  ---
+  Three Synchronization Mechanisms
+
+  1. Registration (Node → Coordinator)
+
+  When a node starts, it registers itself:
+
+  // Object/Metadata node startup
+  async fn register_with_coordinator(coordinator_addr: &str, node_info: NodeInfo) -> Result<()> {
+      let mut client = CoordinatorClient::connect(coordinator_addr).await?;
+
+      loop {
+          match client.add_node(node_info.clone()).await {
+              Ok(_) => {
+                  tracing::info!("Registered with coordinator");
+                  return Ok(());
+              }
+              Err(CoordinatorError::NotLeader) => {
+                  // Retry with backoff - coordinator will redirect or we find leader
+                  tokio::time::sleep(Duration::from_secs(1)).await;
+              }
+              Err(e) => return Err(e.into()),
+          }
+      }
+  }
+
+  2. Heartbeat (Node → Coordinator)
+
+  Nodes send periodic heartbeats; coordinator marks nodes as down if missed:
+
+  // New RPC in coordinator.proto
+  service CoordinatorService {
+      // Existing
+      rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+
+      // New: Heartbeat
+      rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  }
+
+  message HeartbeatRequest {
+      string node_id = 1;
+      NodeStatus status = 2;  // load, capacity, etc.
+  }
+
+  message HeartbeatResponse {
+      uint64 topology_version = 1;  // "You should have this version"
+      bool should_refresh = 2;       // "Your topology is stale"
+  }
+
+  // Coordinator side - track last heartbeat
+  pub struct CoordinatorServer {
+      raft: Arc<RaftNodeManager<KeyValueStateMachine>>,
+      last_heartbeat: RwLock<HashMap<String, Instant>>,
+  }
+
+  impl CoordinatorServer {
+      // Background task checks for dead nodes
+      async fn failure_detector(&self) {
+          loop {
+              tokio::time::sleep(Duration::from_secs(5)).await;
+
+              let now = Instant::now();
+              let timeout = Duration::from_secs(30);
+
+              let dead_nodes: Vec<String> = {
+                  let heartbeats = self.last_heartbeat.read();
+                  heartbeats.iter()
+                      .filter(|(_, last)| now.duration_since(**last) > timeout)
+                      .map(|(id, _)| id.clone())
+                      .collect()
+              };
+
+              for node_id in dead_nodes {
+                  tracing::warn!("Node {} missed heartbeat, marking as down", node_id);
+                  let cmd = ClusterCommand::SetNodeState {
+                      node_id,
+                      state: NodeState::Down as i32,
+                  };
+                  let _ = self.apply_and_write(cmd).await;
+              }
+          }
+      }
+  }
+
+  3. Watch (Coordinator → Node)
+
+  All nodes subscribe to topology changes:
+
+  // Frontend/Object/Metadata node
+  pub struct TopologyWatcher {
+      coordinator_addrs: Vec<String>,  // Multiple coordinator addresses for HA
+      current_version: AtomicU64,
+      topology: Arc<RwLock<ClusterTopology>>,
+      ring: Arc<RwLock<ConsistentHashRing>>,
+  }
+
+  impl TopologyWatcher {
+      pub async fn run(&self) {
+          loop {
+              if let Err(e) = self.watch_loop().await {
+                  tracing::error!("Watch disconnected: {}, reconnecting...", e);
+                  tokio::time::sleep(Duration::from_secs(1)).await;
+              }
+          }
+      }
+
+      async fn watch_loop(&self) -> Result<()> {
+          let mut client = self.connect_to_coordinator().await?;
+
+          // Get initial state
+          let initial = client.get_topology().await?;
+          self.update_topology(initial);
+
+          // Watch for changes
+          let mut stream = client.watch_topology().await?;
+
+          while let Some(update) = stream.next().await {
+              let update = update?;
+
+              if update.version > self.current_version.load(Ordering::Relaxed) {
+                  // Fetch full topology on change
+                  let topo = client.get_topology().await?;
+                  self.update_topology(topo);
+              }
+          }
+
+          Err(anyhow!("Stream ended"))
+      }
+
+      fn update_topology(&self, topo: ClusterTopology) {
+          self.current_version.store(topo.version, Ordering::Relaxed);
+          *self.topology.write() = topo.clone();
+          if let Ok(ring) = topo.to_hash_ring() {
+              *self.ring.write() = ring;
+          }
+          tracing::info!("Topology updated to version {}", topo.version);
+      }
+  }
+
+  ---
+  Complete Node Lifecycle
+
+  ┌────────────────────────────────────────────────────────────────────────────┐
+  │                           NODE LIFECYCLE                                    │
+  └────────────────────────────────────────────────────────────────────────────┘
+
+  1. STARTUP
+     ┌──────────┐    Register(NodeInfo)     ┌─────────────┐
+     │  Node    │ ─────────────────────────►│ Coordinator │
+     │ Starting │                           │             │
+     └──────────┘                           └─────────────┘
+          │
+          │ AddNode persisted via Raft
+          ▼
+     ┌──────────┐    WatchTopology()        ┌─────────────┐
+     │  Node    │ ─────────────────────────►│ Coordinator │
+     │ Running  │◄───── Stream ─────────────│             │
+     └──────────┘                           └─────────────┘
+
+  2. RUNNING
+     ┌──────────┐    Heartbeat (every 10s)  ┌─────────────┐
+     │  Node    │ ─────────────────────────►│ Coordinator │
+     │ Running  │◄─── HeartbeatResponse ────│             │
+     └──────────┘                           └─────────────┘
+          │
+          │ Receives TopologyUpdate when other nodes change
+          ▼
+     ┌──────────┐◄─── TopologyUpdate ───────┌─────────────┐
+     │  Node    │                           │ Coordinator │
+     │ Updated  │                           │             │
+     └──────────┘                           └─────────────┘
+
+  3. FAILURE DETECTION
+     ┌──────────┐    (no heartbeat)         ┌─────────────┐
+     │  Node    │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│ Coordinator │
+     │  Dead    │                           │ detects     │
+     └──────────┘                           └─────────────┘
+                                                  │
+                                                  │ SetNodeState(Down)
+                                                  ▼
+                                            ┌─────────────┐
+     All other nodes ◄── TopologyUpdate ────│ Coordinator │
+     remove dead node from routing          │             │
+                                            └─────────────┘
+
+  4. GRACEFUL SHUTDOWN
+     ┌──────────┐    SetNodeState(Draining) ┌─────────────┐
+     │  Node    │ ─────────────────────────►│ Coordinator │
+     │ Draining │                           │             │
+     └──────────┘                           └─────────────┘
+          │
+          │ Wait for in-flight requests
+          ▼
+     ┌──────────┐    RemoveNode()           ┌─────────────┐
+     │  Node    │ ─────────────────────────►│ Coordinator │
+     │ Shutdown │                           │             │
+     └──────────┘                           └─────────────┘
+
+  ---
+  Consistency Guarantees
+
+  | Scenario          | Guarantee                            | Mechanism                         |
+  |-------------------|--------------------------------------|-----------------------------------|
+  | Node joins        | Eventually consistent                | Register → Raft → Watch broadcast |
+  | Node fails        | Detected within 30s                  | Heartbeat timeout                 |
+  | Topology read     | Eventually consistent                | Watch stream + local cache        |
+  | Topology write    | Strongly consistent                  | Raft consensus                    |
+  | Network partition | Coordinator available if majority up | Raft quorum                       |
+
+  ---
+  Updated Proto Definition
+
+  service CoordinatorService {
+      // Existing
+      rpc GetClusterState(GetClusterStateRequest) returns (GetClusterStateResponse);
+      rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+      rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+      rpc SetNodeState(SetNodeStateRequest) returns (SetNodeStateResponse);
+      rpc GetHashRing(GetHashRingRequest) returns (GetHashRingResponse);
+      rpc WatchTopology(WatchTopologyRequest) returns (stream TopologyUpdate);
+
+      // New: Heartbeat for failure detection
+      rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  }
+
+  message HeartbeatRequest {
+      string node_id = 1;
+      uint64 known_topology_version = 2;  // Version node has cached
+      NodeMetrics metrics = 3;            // Optional: load, capacity
+  }
+
+  message HeartbeatResponse {
+      uint64 current_topology_version = 1;
+      bool refresh_required = 2;  // True if node's version is stale
+  }
+
+  message NodeMetrics {
+      double cpu_usage = 1;
+      double memory_usage = 2;
+      uint64 active_connections = 3;
+  }
+
+  ---
+  Summary
+
+  | Component              | Syncs With            | Mechanism                    |
+  |------------------------|-----------------------|------------------------------|
+  | Coordinator (internal) | Other coordinators    | Raft consensus               |
+  | Frontend → Coordinator | Topology              | WatchTopology stream         |
+  | Metadata → Coordinator | Registration + Health | Register + Heartbeat + Watch |
+  | Object → Coordinator   | Registration + Health | Register + Heartbeat + Watch |
+
+  Key principles:
+  1. Single source of truth - Coordinator owns topology
+  2. Push notifications - WatchTopology for changes
+  3. Pull verification - Heartbeat returns version for staleness check
+  4. Failure detection - Heartbeat timeout triggers state change
+  5. Crashing recovery - Re-register on startup, watch stream reconnects
+
+  Would you like me to implement the heartbeat mechanism and failure detector?
+
+> /export think.md 
+  ⎿  Conversation exported to: think.txt
+
+> /remote-env 
+  ⎿  (no content)
+
+> ok what should be api for coordinator that other clusters will depend on? 
+What is the contract that coordinator that keep throughout changeS? 
+
+⏺ Coordinator API Contract
+
+  Design Principles
+
+  1. Minimal surface area - Only expose what's necessary
+  2. Version everything - Clients can detect staleness
+  3. Idempotent operations - Safe to retry
+  4. Clear ownership - Coordinator owns topology, nodes own their status
+
+  ---
+  Core Contract
+
+  service CoordinatorService {
+      // ═══════════════════════════════════════════════════════════════════
+      // READ OPERATIONS (Available on any coordinator node)
+      // ═══════════════════════════════════════════════════════════════════
+
+      // Get current cluster topology
+      // Returns: Full topology snapshot with version
+      // Guarantee: Returns committed state (may be slightly stale on followers)
+      rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);
+
+      // Subscribe to topology changes
+      // Returns: Stream of incremental updates
+      // Guarantee: Ordered by version, no gaps (client must reconnect if gap detected)
+      rpc WatchTopology(WatchTopologyRequest) returns (stream TopologyUpdate);
+
+      // ═══════════════════════════════════════════════════════════════════
+      // WRITE OPERATIONS (Leader only - returns NOT_LEADER error otherwise)
+      // ═══════════════════════════════════════════════════════════════════
+
+      // Register a new node or update existing node info
+      // Idempotent: Re-registering with same info is a no-op
+      // Returns: Current topology version after registration
+      rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+      // Remove a node from topology
+      // Idempotent: Removing non-existent node returns success
+      // Returns: Current topology version after removal
+      rpc DeregisterNode(DeregisterNodeRequest) returns (DeregisterNodeResponse);
+
+      // Node heartbeat - keeps node alive and reports status
+      // Returns: Current topology version (client can detect if stale)
+      rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  }
+
+  ---
+  Message Definitions
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TOPOLOGY
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  message GetTopologyRequest {
+      // Optional: Only return if version > min_version (reduces bandwidth)
+      uint64 min_version = 1;
+  }
+
+  message GetTopologyResponse {
+      Topology topology = 1;
+  }
+
+  message Topology {
+      uint64 version = 1;                           // Monotonically increasing
+      repeated NodeInfo object_nodes = 2;
+      repeated NodeInfo metadata_nodes = 3;
+      HashRingConfig hash_ring_config = 4;
+      string leader_id = 5;                         // Current coordinator leader
+  }
+
+  message NodeInfo {
+      string id = 1;                                // Unique node identifier
+      string address = 2;                           // Host/IP
+      uint32 port = 3;                              // Port
+      NodeType type = 4;                            // OBJECT or METADATA
+      NodeState state = 5;                          // ACTIVE, JOINING, DRAINING, DOWN
+      map<string, string> labels = 6;               // Extensible metadata (zone, rack, etc.)
+  }
+
+  enum NodeType {
+      NODE_TYPE_UNKNOWN = 0;
+      NODE_TYPE_OBJECT = 1;
+      NODE_TYPE_METADATA = 2;
+  }
+
+  enum NodeState {
+      NODE_STATE_UNKNOWN = 0;
+      NODE_STATE_JOINING = 1;                       // Node is starting up
+      NODE_STATE_ACTIVE = 2;                        // Node is healthy and serving
+      NODE_STATE_DRAINING = 3;                      // Node is shutting down gracefully
+      NODE_STATE_DOWN = 4;                          // Node is unreachable
+  }
+
+  message HashRingConfig {
+      uint32 virtual_nodes = 1;                     // Virtual nodes per physical node
+      uint32 replication_factor = 2;                // Number of replicas
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // WATCH
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  message WatchTopologyRequest {
+      uint64 start_version = 1;                     // Resume from this version
+  }
+
+  message TopologyUpdate {
+      uint64 version = 1;
+      oneof update {
+          NodeInfo node_added = 2;
+          string node_removed = 3;                  // node_id
+          NodeStateChange state_changed = 4;
+          HashRingConfig config_changed = 5;
+          Topology full_sync = 6;                   // Sent on reconnect or gap
+      }
+  }
+
+  message NodeStateChange {
+      string node_id = 1;
+      NodeState old_state = 2;
+      NodeState new_state = 3;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // REGISTRATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  message RegisterNodeRequest {
+      NodeInfo node = 1;
+  }
+
+  message RegisterNodeResponse {
+      uint64 topology_version = 1;
+      bool already_registered = 2;                  // True if node already existed
+  }
+
+  message DeregisterNodeRequest {
+      string node_id = 1;
+  }
+
+  message DeregisterNodeResponse {
+      uint64 topology_version = 1;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HEARTBEAT
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  message HeartbeatRequest {
+      string node_id = 1;
+      uint64 known_version = 2;                     // Topology version node has
+      NodeState state = 3;                          // Node's self-reported state
+  }
+
+  message HeartbeatResponse {
+      uint64 current_version = 1;                   // Latest topology version
+      bool refresh_required = 2;                    // True if known_version is stale
+      Duration heartbeat_interval = 3;             // How often to heartbeat
+      Duration heartbeat_timeout = 4;               // When coordinator marks node down
+  }
+
+  message Duration {
+      int64 seconds = 1;
+  }
+
+  ---
+  Contract Guarantees
+
+  1. Version Monotonicity
+
+  GUARANTEE: Topology version NEVER decreases
+             version(t1) < version(t2) for all t1 < t2
+
+  WHY: Clients use version to detect staleness and order updates
+
+  2. Registration Idempotency
+
+  GUARANTEE: RegisterNode(node) called N times = RegisterNode(node) called once
+             (if node info is identical)
+
+  WHY: Clients can safely retry on timeout without duplicating state
+
+  3. Watch Ordering
+
+  GUARANTEE: Updates delivered in version order
+             If client receives v5, next update is v6 (no gaps)
+
+  EXCEPTION: On reconnect, client may receive full_sync to catch up
+
+  WHY: Clients can apply updates incrementally without missing changes
+
+  4. Leader Forwarding
+
+  GUARANTEE: Write operations return NOT_LEADER error with leader hint
+             Client should retry on leader
+
+  ALTERNATIVE: Coordinator can auto-forward to leader (simpler for clients)
+
+  5. Heartbeat Timeout
+
+  GUARANTEE: If node misses heartbeats for > heartbeat_timeout,
+             coordinator sets node state to DOWN
+
+  CONFIGURABLE: heartbeat_interval (default 10s), heartbeat_timeout (default 30s)
+
+  ---
+  Client Usage Patterns
+
+  Frontend (Read-only)
+
+  impl Frontend {
+      async fn start(&self) -> Result<()> {
+          // 1. Get initial topology
+          let topo = self.coordinator.get_topology(0).await?;
+          self.update_cache(topo);
+
+          // 2. Watch for changes
+          tokio::spawn(self.watch_topology());
+
+          Ok(())
+      }
+
+      async fn watch_topology(&self) {
+          loop {
+              let version = self.current_version();
+              match self.coordinator.watch_topology(version).await {
+                  Ok(mut stream) => {
+                      while let Some(update) = stream.next().await {
+                          self.apply_update(update?);
+                      }
+                  }
+                  Err(e) => {
+                      tracing::warn!("Watch failed: {}, reconnecting", e);
+                      tokio::time::sleep(Duration::from_secs(1)).await;
+                  }
+              }
+          }
+      }
+  }
+
+  Object/Metadata Node (Read + Write)
+
+  impl ObjectNode {
+      async fn start(&self) -> Result<()> {
+          // 1. Register with coordinator
+          self.register().await?;
+
+          // 2. Start heartbeat loop
+          tokio::spawn(self.heartbeat_loop());
+
+          // 3. Watch topology (for peer awareness)
+          tokio::spawn(self.watch_topology());
+
+          Ok(())
+      }
+
+      async fn register(&self) -> Result<()> {
+          let node = NodeInfo {
+              id: self.node_id.clone(),
+              address: self.address.clone(),
+              port: self.port,
+              r#type: NodeType::Object,
+              state: NodeState::Joining,
+              labels: self.labels.clone(),
+          };
+
+          loop {
+              match self.coordinator.register_node(node.clone()).await {
+                  Ok(resp) => {
+                      tracing::info!("Registered, topology version {}", resp.topology_version);
+                      return Ok(());
+                  }
+                  Err(CoordinatorError::NotLeader(leader)) => {
+                      self.coordinator.connect_to(&leader).await?;
+                  }
+                  Err(e) => {
+                      tracing::warn!("Registration failed: {}, retrying", e);
+                      tokio::time::sleep(Duration::from_secs(1)).await;
+                  }
+              }
+          }
+      }
+
+      async fn heartbeat_loop(&self) {
+          let mut interval = tokio::time::interval(Duration::from_secs(10));
+
+          loop {
+              interval.tick().await;
+
+              let req = HeartbeatRequest {
+                  node_id: self.node_id.clone(),
+                  known_version: self.current_version(),
+                  state: self.current_state(),
+              };
+
+              match self.coordinator.heartbeat(req).await {
+                  Ok(resp) => {
+                      if resp.refresh_required {
+                          self.refresh_topology().await;
+                      }
+                      // Adjust interval if coordinator suggests different timing
+                      interval = tokio::time::interval(resp.heartbeat_interval);
+                  }
+                  Err(e) => {
+                      tracing::warn!("Heartbeat failed: {}", e);
+                  }
+              }
+          }
+      }
+
+      async fn shutdown(&self) -> Result<()> {
+          // 1. Set state to draining
+          self.set_state(NodeState::Draining).await?;
+
+          // 2. Wait for in-flight requests
+          self.drain_connections().await;
+
+          // 3. Deregister
+          self.coordinator.deregister_node(&self.node_id).await?;
+
+          Ok(())
+      }
+  }
+
+  ---
+  What Can Change vs What's Stable
+
+  | Aspect            | Stable (Contract)                  | Can Change (Implementation) |
+  |-------------------|------------------------------------|-----------------------------|
+  | RPC names         | GetTopology, RegisterNode, etc.    | Internal Raft commands      |
+  | Message fields    | NodeInfo.id, NodeInfo.address      | NodeInfo.labels contents    |
+  | Version semantics | Monotonic, no gaps                 | Version number format       |
+  | State machine     | JOINING → ACTIVE → DRAINING → DOWN | Timeout values              |
+  | Error codes       | NOT_LEADER, NODE_NOT_FOUND         | Error message strings       |
+  | Idempotency       | Registration, deregistration       | Heartbeat frequency         |
+
+  ---
+  Error Contract
+
+  // Standard gRPC status codes used:
+  //
+  // NOT_FOUND        - Node doesn't exist (for deregister, heartbeat)
+  // ALREADY_EXISTS   - Node already registered (optional, can be success)
+  // UNAVAILABLE      - Coordinator cluster unavailable
+  // FAILED_PRECONDITION - Not leader (include leader hint in details)
+  // INVALID_ARGUMENT - Bad request (missing required fields)
+  // INTERNAL         - Unexpected error
+
+  // Custom error details
+  message CoordinatorError {
+      oneof error {
+          NotLeaderError not_leader = 1;
+          NodeNotFoundError node_not_found = 2;
+      }
+  }
+
+  message NotLeaderError {
+      string leader_id = 1;      // Node ID of current leader
+      string leader_address = 2; // Address to connect to
+  }
+
+  message NodeNotFoundError {
+      string node_id = 1;
+  }
+
+  ---
+  Summary: Minimal Stable API
+
+  | RPC            | Used By          | Purpose                    |
+  |----------------|------------------|----------------------------|
+  | GetTopology    | All              | Get current state          |
+  | WatchTopology  | All              | Subscribe to changes       |
+  | RegisterNode   | Object, Metadata | Join cluster               |
+  | DeregisterNode | Object, Metadata | Leave cluster              |
+  | Heartbeat      | Object, Metadata | Stay alive + report status |
+
+  5 RPCs total - This is the stable contract that all clusters depend on. Everything else (internal Raft, failure detection logic, hash ring computation) is implementation detail.
+
+> Ok this looks great - let's go into plan mode and write this 
+                                                                   
+⏺ Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+⏺ Let me first read the existing plan and explore the current codebase to understand what we have.
+
+⏺ Reading Plan(~/.claude/plans/fluttering-petting-unicorn.md)
+  ⎿  Read 253 lines
+
+⏺ Read(crates/gitstratum-proto/proto/gitstratum.proto)
+  ⎿  Read 491 lines
+
+⏺ Read(crates/gitstratum-coordinator/src/lib.rs)
+  ⎿  Read 16 lines
+
+⏺ Let me explore the current implementation to understand what needs to change:
+
+⏺ Explore(Explore coordinator crate)
+  ⎿  Done (15 tool uses · 33.0k tokens · 38s)                              
+
+⏺ Now I have a clear understanding. Let me write the plan for refactoring the coordinator API to match our designed contract.
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ I've written the plan. Before I finalize, I have a few clarifying questions:
+                                                                           
+⏺ User answered Claude's questions:
+  ⎿  · Should SetNodeState RPC be kept in the public API or removed (since 
+     Heartbeat can report state)? → Remove it
+     · How should heartbeats work with non-leader coordinators? → Let's do 
+     leader-only but also expose an RPC endpoint to find the dns / ip 
+     address of the leader to communicate to
+     · When a node misses heartbeats, should we mark it DOWN immediately or 
+     use a grace period? → Mark SUSPECT first
+
+
+⏺ Let me update the plan with these decisions:
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Let me read the final plan to verify it's complete:
+
+⏺ Reading Plan(~/.claude/plans/fluttering-petting-unicorn.md)
+  ⎿  Read 440 lines
+
+⏺ The plan is complete. Here's a summary:
+
+  Plan Summary
+
+  Goal: Refactor the coordinator API to a stable contract with heartbeat-based failure detection.
+
+  Key Changes:
+  1. Rename RPCs: GetClusterState → GetTopology, AddNode → RegisterNode, RemoveNode → DeregisterNode
+  2. Add new RPCs: GetLeader (leader discovery), Heartbeat (keep-alive)
+  3. Remove SetNodeState from public API (state managed via Heartbeat)
+  4. Add SUSPECT state: ACTIVE → SUSPECT (30s) → DOWN (60s)
+  5. Add labels field to NodeInfo for extensibility
+  6. Implement failure detector background task
+  7. Add SmartCoordinatorClient for automatic leader discovery
+
+  Files to modify: 10 files (proto, server, client, error, topology, config, main, lib)
+  ⎿  User rejected Claude's plan:
+     ╭─────────────────────────────────────────────────────────────────────────╮
+     │ Plan: Refactor Coordinator API to Stable Contract                       │
+     │                                                                         │
+     │ Goal                                                                    │
+     │                                                                         │
+     │ Refactor the gitstratum-coordinator API to implement the stable contract│
+     │  that all clusters (frontend, metadata, object) will depend on. Add     │
+     │ heartbeat-based failure detection.                                      │
+     │                                                                         │
+     │ Current State → Target State                                            │
+     │                                                                         │
+     │ | Current         | Target         | Change                             │
+     │              |                                                          │
+     │ |-----------------|----------------|------------------------------------│
+     │ -------------|                                                          │
+     │ | GetClusterState | GetTopology    | Rename, add min_version filter     │
+     │              |                                                          │
+     │ | AddNode         | RegisterNode   | Idempotent, returns                │
+     │ already_registered          |                                           │
+     │ | RemoveNode      | DeregisterNode | Idempotent (removing non-existent =│
+     │  success)    |                                                          │
+     │ | -               | Heartbeat      | NEW: Keep-alive + staleness check  │
+     │ (leader-only) |                                                         │
+     │ | -               | GetLeader      | NEW: Returns current leader address│
+     │              |                                                          │
+     │ | SetNodeState    | REMOVED        | State changes via Heartbeat only   │
+     │              |                                                          │
+     │ | GetHashRing     | GetHashRing    | Keep as-is                         │
+     │              |                                                          │
+     │ | WatchTopology   | WatchTopology  | Implement since_version filtering  │
+     │              |                                                          │
+     │                                                                         │
+     │ Design Decisions                                                        │
+     │                                                                         │
+     │ 1. SetNodeState removed - Nodes report state via Heartbeat, no manual   │
+     │ override                                                                │
+     │ 2. Leader-only heartbeats - Heartbeat returns NOT_LEADER with leader    │
+     │ hint, client must retry on leader                                       │
+     │ 3. GetLeader RPC - Simple RPC to discover leader address (works on any  │
+     │ node)                                                                   │
+     │ 4. SUSPECT state - Before DOWN, nodes go through SUSPECT (configurable  │
+     │ grace period)                                                           │
+     │                                                                         │
+     │ Architecture                                                            │
+     │                                                                         │
+     │ ┌─────────────────────────────────────────────────────────────────────┐ │
+     │ │                     COORDINATOR SERVER                               ││
+     │ ├─────────────────────────────────────────────────────────────────────┤ │
+     │ │  RPCs:                                                              │ │
+     │ │  ├─ GetTopology (read, any node)                                    │ │
+     │ │  ├─ WatchTopology (read, any node)                                  │ │
+     │ │  ├─ RegisterNode (write, leader only)                               │ │
+     │ │  ├─ DeregisterNode (write, leader only)                             │ │
+     │ │  ├─ Heartbeat (write, leader only)                                  │ │
+     │ │  └─ GetHashRing (read, any node)                                    │ │
+     │ ├─────────────────────────────────────────────────────────────────────┤ │
+     │ │  Background Tasks:                                                   ││
+     │ │  └─ FailureDetector (checks heartbeat timeouts, marks nodes DOWN)   │ │
+     │ ├─────────────────────────────────────────────────────────────────────┤ │
+     │ │  State:                                                              ││
+     │ │  ├─ topology: ClusterTopology (via Raft)                            │ │
+     │ │  ├─ last_heartbeat: HashMap<String, Instant> (in-memory)            │ │
+     │ │  └─ topology_updates: broadcast::Sender (for watch)                 │ │
+     │ └─────────────────────────────────────────────────────────────────────┘ │
+     │                                                                         │
+     │ Implementation Steps                                                    │
+     │                                                                         │
+     │ Step 1: Update Proto (gitstratum.proto)                                 │
+     │                                                                         │
+     │ service CoordinatorService {                                            │
+     │   // READ (any node)                                                    │
+     │   rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);    │
+     │   rpc WatchTopology(WatchTopologyRequest) returns (stream               │
+     │ TopologyUpdate);                                                        │
+     │   rpc GetHashRing(GetHashRingRequest) returns (GetHashRingResponse);    │
+     │   rpc GetLeader(GetLeaderRequest) returns (GetLeaderResponse);  // NEW  │
+     │                                                                         │
+     │   // WRITE (leader only)                                                │
+     │   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse); │
+     │   rpc DeregisterNode(DeregisterNodeRequest) returns                     │
+     │ (DeregisterNodeResponse);                                               │
+     │   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);          │
+     │ }                                                                       │
+     │                                                                         │
+     │ message GetLeaderRequest {}                                             │
+     │                                                                         │
+     │ message GetLeaderResponse {                                             │
+     │   string leader_id = 1;                                                 │
+     │   string leader_address = 2;  // DNS or IP:port                         │
+     │   bool is_leader = 3;         // True if this node is the leader        │
+     │ }                                                                       │
+     │                                                                         │
+     │ // New/modified messages                                                │
+     │ message GetTopologyRequest {                                            │
+     │   uint64 min_version = 1;  // Only return if version > min_version      │
+     │ }                                                                       │
+     │                                                                         │
+     │ message GetTopologyResponse {                                           │
+     │   Topology topology = 1;                                                │
+     │ }                                                                       │
+     │                                                                         │
+     │ message Topology {                                                      │
+     │   uint64 version = 1;                                                   │
+     │   repeated NodeInfo metadata_nodes = 2;                                 │
+     │   repeated NodeInfo object_nodes = 3;                                   │
+     │   HashRingConfig hash_ring_config = 4;                                  │
+     │   string leader_id = 5;                                                 │
+     │ }                                                                       │
+     │                                                                         │
+     │ message NodeInfo {                                                      │
+     │   string id = 1;                                                        │
+     │   string address = 2;                                                   │
+     │   uint32 port = 3;                                                      │
+     │   NodeState state = 4;                                                  │
+     │   NodeType type = 5;                                                    │
+     │   map<string, string> labels = 6;  // NEW: extensible metadata          │
+     │ }                                                                       │
+     │                                                                         │
+     │ // Updated enum with SUSPECT state                                      │
+     │ enum NodeState {                                                        │
+     │   NODE_STATE_UNKNOWN = 0;                                               │
+     │   NODE_STATE_JOINING = 1;                                               │
+     │   NODE_STATE_ACTIVE = 2;                                                │
+     │   NODE_STATE_SUSPECT = 3;   // NEW: missed heartbeats, may recover      │
+     │   NODE_STATE_DRAINING = 4;                                              │
+     │   NODE_STATE_DOWN = 5;                                                  │
+     │ }                                                                       │
+     │                                                                         │
+     │ message RegisterNodeRequest {                                           │
+     │   NodeInfo node = 1;                                                    │
+     │ }                                                                       │
+     │                                                                         │
+     │ message RegisterNodeResponse {                                          │
+     │   uint64 topology_version = 1;                                          │
+     │   bool already_registered = 2;                                          │
+     │ }                                                                       │
+     │                                                                         │
+     │ message DeregisterNodeRequest {                                         │
+     │   string node_id = 1;                                                   │
+     │ }                                                                       │
+     │                                                                         │
+     │ message DeregisterNodeResponse {                                        │
+     │   uint64 topology_version = 1;                                          │
+     │ }                                                                       │
+     │                                                                         │
+     │ message HeartbeatRequest {                                              │
+     │   string node_id = 1;                                                   │
+     │   uint64 known_version = 2;                                             │
+     │   NodeState state = 3;  // Self-reported state                          │
+     │ }                                                                       │
+     │                                                                         │
+     │ message HeartbeatResponse {                                             │
+     │   uint64 current_version = 1;                                           │
+     │   bool refresh_required = 2;                                            │
+     │   uint32 heartbeat_interval_secs = 3;                                   │
+     │   uint32 heartbeat_timeout_secs = 4;                                    │
+     │ }                                                                       │
+     │                                                                         │
+     │ // TopologyUpdate - add full_sync variant                               │
+     │ message TopologyUpdate {                                                │
+     │   uint64 version = 1;                                                   │
+     │   oneof update {                                                        │
+     │     NodeInfo node_added = 2;                                            │
+     │     NodeInfo node_updated = 3;                                          │
+     │     string node_removed = 4;                                            │
+     │     HashRingConfig hash_ring_config_updated = 5;                        │
+     │     Topology full_sync = 6;  // NEW: sent on reconnect                  │
+     │   }                                                                     │
+     │ }                                                                       │
+     │                                                                         │
+     │ Step 2: Update topology types (topology.rs)                             │
+     │                                                                         │
+     │ Add labels field to NodeEntry:                                          │
+     │                                                                         │
+     │ #[derive(Clone, Debug, Serialize, Deserialize)]                         │
+     │ pub struct NodeEntry {                                                  │
+     │     pub id: String,                                                     │
+     │     pub address: String,                                                │
+     │     pub port: u32,                                                      │
+     │     pub state: i32,                                                     │
+     │     pub labels: HashMap<String, String>,  // NEW                        │
+     │ }                                                                       │
+     │                                                                         │
+     │ Step 3: Update server (server.rs)                                       │
+     │                                                                         │
+     │ New struct fields:                                                      │
+     │ pub struct CoordinatorServer {                                          │
+     │     raft: Arc<RaftNodeManager<KeyValueStateMachine>>,                   │
+     │     topology_cache: RwLock<ClusterTopology>,                            │
+     │     topology_updates: broadcast::Sender<TopologyUpdate>,                │
+     │     last_heartbeat: RwLock<HashMap<String, Instant>>,  // NEW           │
+     │     config: CoordinatorConfig,  // NEW                                  │
+     │ }                                                                       │
+     │                                                                         │
+     │ pub struct CoordinatorConfig {                                          │
+     │     pub heartbeat_interval: Duration,  // default 10s                   │
+     │     pub heartbeat_timeout: Duration,   // default 30s                   │
+     │ }                                                                       │
+     │                                                                         │
+     │ New/updated RPCs:                                                       │
+     │                                                                         │
+     │ | RPC            | Implementation                                       │
+     │   |                                                                     │
+     │ |----------------|------------------------------------------------------│
+     │ --|                                                                     │
+     │ | GetTopology    | Return topology if version > min_version, else empty │
+     │   |                                                                     │
+     │ | RegisterNode   | Check if exists, set already_registered, write to    │
+     │ Raft |                                                                  │
+     │ | DeregisterNode | Remove node, return success even if not found        │
+     │   |                                                                     │
+     │ | Heartbeat      | Update last_heartbeat, return version + staleness    │
+     │   |                                                                     │
+     │ | WatchTopology  | Send full_sync if client's version is behind         │
+     │   |                                                                     │
+     │                                                                         │
+     │ New background task (with SUSPECT state):                               │
+     │ pub struct CoordinatorConfig {                                          │
+     │     pub heartbeat_interval: Duration,   // default 10s                  │
+     │     pub suspect_timeout: Duration,      // default 30s - ACTIVE ->      │
+     │ SUSPECT                                                                 │
+     │     pub down_timeout: Duration,         // default 60s - SUSPECT -> DOWN│
+     │ }                                                                       │
+     │                                                                         │
+     │ async fn failure_detector(&self) {                                      │
+     │     let mut interval = tokio::time::interval(Duration::from_secs(5));   │
+     │                                                                         │
+     │     loop {                                                              │
+     │         interval.tick().await;                                          │
+     │                                                                         │
+     │         if !self.is_leader() {                                          │
+     │             continue;  // Only leader runs failure detection            │
+     │         }                                                               │
+     │                                                                         │
+     │         let now = Instant::now();                                       │
+     │         let suspect_timeout = self.config.suspect_timeout;              │
+     │         let down_timeout = self.config.down_timeout;                    │
+     │                                                                         │
+     │         let state_changes: Vec<(String, NodeState)> = {                 │
+     │             let heartbeats = self.last_heartbeat.read();                │
+     │             let topo = self.topology_cache.read();                      │
+     │                                                                         │
+     │             topo.all_nodes()                                            │
+     │                 .filter_map(|(id, node)| {                              │
+     │                     let last_hb = heartbeats.get(id)?;                  │
+     │                     let elapsed = now.duration_since(*last_hb);         │
+     │                                                                         │
+     │                     match node.state() {                                │
+     │                         NodeState::Active if elapsed > suspect_timeout  │
+     │ => {                                                                    │
+     │                             Some((id.clone(), NodeState::Suspect))      │
+     │                         }                                               │
+     │                         NodeState::Suspect if elapsed > down_timeout => │
+     │ {                                                                       │
+     │                             Some((id.clone(), NodeState::Down))         │
+     │                         }                                               │
+     │                         _ => None,                                      │
+     │                     }                                                   │
+     │                 })                                                      │
+     │                 .collect()                                              │
+     │         };                                                              │
+     │                                                                         │
+     │         for (node_id, new_state) in state_changes {                     │
+     │             tracing::warn!("Node {} transitioning to {:?}", node_id,    │
+     │ new_state);                                                             │
+     │             let cmd = ClusterCommand::SetNodeState {                    │
+     │                 node_id,                                                │
+     │                 state: new_state as i32,                                │
+     │             };                                                          │
+     │             let _ = self.apply_and_write(cmd).await;                    │
+     │         }                                                               │
+     │     }                                                                   │
+     │ }                                                                       │
+     │                                                                         │
+     │ State transition diagram:                                               │
+     │ JOINING ──heartbeat──► ACTIVE ──30s no heartbeat──► SUSPECT ──30s       │
+     │ more──► DOWN                                                            │
+     │     ▲                     ▲                            │                │
+     │     │                     └────────heartbeat───────────┘                │
+     │     │                                                                   │
+     │     └── RegisterNode (initial state)                                    │
+     │                                                                         │
+     │ Step 4: Update client (client.rs)                                       │
+     │                                                                         │
+     │ impl CoordinatorClient {                                                │
+     │     // Connection                                                       │
+     │     pub async fn connect(addr: &str) -> Result<Self>;                   │
+     │     pub async fn get_leader(&mut self) -> Result<GetLeaderResponse>;    │
+     │                                                                         │
+     │     // Read operations                                                  │
+     │     pub async fn get_topology(&mut self, min_version: u64) ->           │
+     │ Result<Option<Topology>>;                                               │
+     │     pub async fn get_hash_ring(&mut self) -> Result<ConsistentHashRing>;│
+     │                                                                         │
+     │     // Write operations (will return NOT_LEADER error if not on leader) │
+     │     pub async fn register_node(&mut self, node: NodeInfo) ->            │
+     │ Result<RegisterNodeResponse>;                                           │
+     │     pub async fn deregister_node(&mut self, node_id: &str) ->           │
+     │ Result<DeregisterNodeResponse>;                                         │
+     │     pub async fn heartbeat(&mut self, req: HeartbeatRequest) ->         │
+     │ Result<HeartbeatResponse>;                                              │
+     │                                                                         │
+     │     // Streaming                                                        │
+     │     pub async fn watch_topology(&mut self, since_version: u64)          │
+     │         -> Result<impl Stream<Item = Result<TopologyUpdate, Status>>>;  │
+     │ }                                                                       │
+     │                                                                         │
+     │ Smart client with leader discovery:                                     │
+     │ pub struct SmartCoordinatorClient {                                     │
+     │     endpoints: Vec<String>,                                             │
+     │     current_leader: Option<String>,                                     │
+     │     client: Option<CoordinatorClient>,                                  │
+     │ }                                                                       │
+     │                                                                         │
+     │ impl SmartCoordinatorClient {                                           │
+     │     pub async fn new(endpoints: Vec<String>) -> Result<Self>;           │
+     │                                                                         │
+     │     // Automatically finds and connects to leader for write operations  │
+     │     pub async fn register_node(&mut self, node: NodeInfo) ->            │
+     │ Result<RegisterNodeResponse> {                                          │
+     │         loop {                                                          │
+     │             match                                                       │
+     │ self.ensure_leader_connection().await?.register_node(node.clone()).await│
+     │  {                                                                      │
+     │                 Ok(resp) => return Ok(resp),                            │
+     │                 Err(CoordinatorError::NotLeader { leader_address, .. }) │
+     │ => {                                                                    │
+     │                     self.current_leader = leader_address;               │
+     │                     self.client = None;  // Force reconnect             │
+     │                 }                                                       │
+     │                 Err(e) => return Err(e),                                │
+     │             }                                                           │
+     │         }                                                               │
+     │     }                                                                   │
+     │ }                                                                       │
+     │                                                                         │
+     │ Step 5: Update error types (error.rs)                                   │
+     │                                                                         │
+     │ Add leader hint to NotLeader error:                                     │
+     │                                                                         │
+     │ pub enum CoordinatorError {                                             │
+     │     NotLeader { leader_id: Option<String>, leader_address:              │
+     │ Option<String> },                                                       │
+     │     NodeNotFound(String),                                               │
+     │     InvalidNodeType,                                                    │
+     │     Raft(String),                                                       │
+     │     Grpc(#[from] tonic::Status),                                        │
+     │     Internal(String),                                                   │
+     │ }                                                                       │
+     │                                                                         │
+     │ Step 6: Add integration tests                                           │
+     │                                                                         │
+     │ Test scenarios:                                                         │
+     │ - Register node → verify topology updated                               │
+     │ - Register same node twice → already_registered = true                  │
+     │ - Deregister non-existent → success                                     │
+     │ - Heartbeat → verify refresh_required when stale                        │
+     │ - Failure detection → node marked DOWN after timeout                    │
+     │ - WatchTopology → receives updates in order                             │
+     │                                                                         │
+     │ Files to Modify                                                         │
+     │                                                                         │
+     │ | File                                               | Changes          │
+     │                                                                |        │
+     │ |----------------------------------------------------|------------------│
+     │ ---------------------------------------------------------------|        │
+     │ | crates/gitstratum-proto/proto/gitstratum.proto     | Update service + │
+     │ messages (remove SetNodeState, add GetLeader, Heartbeat, etc.) |        │
+     │ | crates/gitstratum-coordinator/src/topology.rs      | Add labels to    │
+     │ NodeEntry, add SUSPECT to state handling                          |     │
+     │ | crates/gitstratum-coordinator/src/commands.rs      | Keep SetNodeState│
+     │  internal (for failure detector)                               |        │
+     │ | crates/gitstratum-coordinator/src/state_machine.rs | No changes needed│
+     │                                                                |        │
+     │ | crates/gitstratum-coordinator/src/server.rs        | Implement new    │
+     │ RPCs, add failure detector, remove SetNodeState RPC               |     │
+     │ | crates/gitstratum-coordinator/src/client.rs        | Update method    │
+     │ signatures, add SmartCoordinatorClient                            |     │
+     │ | crates/gitstratum-coordinator/src/error.rs         | Add leader hint  │
+     │ to NotLeader                                                    |       │
+     │ | crates/gitstratum-coordinator/src/lib.rs           | Export new types │
+     │ (CoordinatorConfig, SmartCoordinatorClient)                    |        │
+     │ | bins/gitstratum-coordinator/src/main.rs            | Start failure    │
+     │ detector task                                                     |     │
+     │ | crates/gitstratum-coordinator/src/config.rs        | NEW:             │
+     │ CoordinatorConfig struct                                                │
+     │    |                                                                    │
+     │                                                                         │
+     │ Backward Compatibility                                                  │
+     │                                                                         │
+     │ Breaking changes:                                                       │
+     │ - GetClusterState → GetTopology (rename)                                │
+     │ - AddNode → RegisterNode (rename + response change)                     │
+     │ - RemoveNode → DeregisterNode (rename)                                  │
+     │                                                                         │
+     │ Migration: Since this is pre-production, we'll make breaking changes    │
+     │ directly.                                                               │
+     │                                                                         │
+     │ Contract Guarantees (Reference)                                         │
+     │                                                                         │
+     │ | Guarantee                  | Implementation                           │
+     │   |                                                                     │
+     │ |----------------------------|------------------------------------------│
+     │ --|                                                                     │
+     │ | Version monotonicity       | topology.version += 1 on every change    │
+     │   |                                                                     │
+     │ | Registration idempotency   | Check existing.contains(id) before insert│
+     │   |                                                                     │
+     │ | Deregistration idempotency | Return success even if not found         │
+     │   |                                                                     │
+     │ | Watch ordering             | Send full_sync if client version <       │
+     │ current |                                                               │
+     │ | Suspect timeout            | 30s (ACTIVE → SUSPECT)                   │
+     │   |                                                                     │
+     │ | Down timeout               | 60s (SUSPECT → DOWN)                     │
+     │   |                                                                     │
+     │ | Leader discovery           | GetLeader RPC available on any node      │
+     │   |                                                                     │
+     │                                                                         │
+     │ Final API Summary                                                       │
+     │                                                                         │
+     │ ┌───────────────────────────────────────────────────────────────────────│
+     │ ──┐                                                                     │
+     │ │                      CoordinatorService RPCs                          │
+     │    │                                                                    │
+     │ ├───────────────────────────────────────────────────────────────────────│
+     │ ──┤                                                                     │
+     │ │  READ (any node):                                                     │
+     │    │                                                                    │
+     │ │    GetTopology(min_version) → Topology                                │
+     │   │                                                                     │
+     │ │    GetHashRing() → HashRingResponse                                   │
+     │   │                                                                     │
+     │ │    GetLeader() → LeaderInfo                                           │
+     │   │                                                                     │
+     │ │    WatchTopology(since_version) → stream TopologyUpdate               │
+     │   │                                                                     │
+     │ ├───────────────────────────────────────────────────────────────────────│
+     │ ──┤                                                                     │
+     │ │  WRITE (leader only):                                                 │
+     │    │                                                                    │
+     │ │    RegisterNode(NodeInfo) → {version, already_registered}             │
+     │   │                                                                     │
+     │ │    DeregisterNode(node_id) → {version}                                │
+     │   │                                                                     │
+     │ │    Heartbeat(node_id, known_version) → {version, refresh_required}    │
+     │   │                                                                     │
+     │ └───────────────────────────────────────────────────────────────────────│
+     │ ──┘                                                                     │
+     │                                                                         │
+     │ Execution Order                                                         │
+     │                                                                         │
+     │ 1. Proto changes - Update gitstratum.proto:                             │
+     │   - Add SUSPECT to NodeState enum                                       │
+     │   - Add labels to NodeInfo                                              │
+     │   - Remove SetNodeState RPC                                             │
+     │   - Add GetLeader RPC                                                   │
+     │   - Add RegisterNode, DeregisterNode, Heartbeat RPCs                    │
+     │   - Rename GetClusterState → GetTopology                                │
+     │   - Add Topology message (new wrapper)                                  │
+     │ 2. Build proto - Run cargo build -p gitstratum-proto                    │
+     │ 3. Config - Create config.rs with CoordinatorConfig                     │
+     │ 4. Topology - Update topology.rs:                                       │
+     │   - Add labels: HashMap<String, String> to NodeEntry                    │
+     │   - Update from_proto/to_proto for labels                               │
+     │   - Add all_nodes() iterator method                                     │
+     │ 5. Error - Update error.rs:                                             │
+     │   - Change NotLeader to struct variant with leader_id/leader_address    │
+     │ 6. Server - Update server.rs:                                           │
+     │   - Remove SetNodeState RPC handler                                     │
+     │   - Rename get_cluster_state → get_topology                             │
+     │   - Rename add_node → register_node (with idempotency check)            │
+     │   - Rename remove_node → deregister_node (with idempotency)             │
+     │   - Add get_leader handler                                              │
+     │   - Add heartbeat handler                                               │
+     │   - Add last_heartbeat HashMap                                          │
+     │   - Add failure_detector background task                                │
+     │   - Update WatchTopology to respect since_version                       │
+     │ 7. Client - Update client.rs:                                           │
+     │   - Rename methods to match new RPCs                                    │
+     │   - Add get_leader method                                               │
+     │   - Add watch_topology streaming method                                 │
+     │   - Create SmartCoordinatorClient wrapper                               │
+     │ 8. Binary - Update main.rs:                                             │
+     │   - Add config parsing                                                  │
+     │   - Start failure detector task                                         │
+     │ 9. Tests - Write integration tests                                      │
+     │ 10. Verify - Run cargo test, cargo clippy, cargo fmt                    │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     ╰─────────────────────────────────────────────────────────────────────────╯
+
+
+

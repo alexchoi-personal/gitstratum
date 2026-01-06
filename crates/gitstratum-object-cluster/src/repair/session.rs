@@ -847,6 +847,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_position_range_clone() {
         let range = PositionRange::new(10, 20);
         let cloned = range.clone();
@@ -863,6 +864,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_repair_session_status_clone() {
         let status = RepairSessionStatus::InProgress;
         let cloned = status.clone();
@@ -870,6 +872,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_repair_type_clone() {
         let repair_type = RepairType::crash_recovery(1000, 2000);
         let cloned = repair_type.clone();
@@ -910,6 +913,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_repair_checkpoint_clone() {
         let oid = Oid::hash(b"test");
         let checkpoint = RepairCheckpoint::new(100, oid, 12345);

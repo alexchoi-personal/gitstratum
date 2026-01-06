@@ -1,0 +1,25 @@
+[package]
+name = "gitstratum-admin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "gitstratum-admin"
+path = "src/main.rs"
+
+[dependencies]
+gitstratum-frontend-cluster = { path = "../../crates/gitstratum-frontend-cluster" }
+gitstratum-proto = { path = "../../crates/gitstratum-proto" }
+tokio = { workspace = true }
+clap = { version = "4.4", features = ["derive"] }
+tonic = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+ssh-key = "0.6"
+
+[lints]
+workspace = true
