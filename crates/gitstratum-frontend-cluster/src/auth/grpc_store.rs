@@ -6,7 +6,7 @@ use gitstratum_proto::auth_service_client::AuthServiceClient;
 use gitstratum_proto::{ValidateSshKeyRequest, ValidateTokenRequest};
 
 use super::error::AuthError;
-use super::types::{StoredToken, TokenScopes, User, UserStatus};
+use super::types::{SshKey, StoredToken, TokenScopes, User, UserStatus};
 use super::validator::AuthStore;
 
 pub struct GrpcAuthStore {
@@ -61,7 +61,7 @@ impl GrpcAuthStore {
         }
     }
 
-    pub async fn validate_ssh_key(&self, fingerprint: &str) -> Result<Option<String>, AuthError> {
+    pub async fn validate_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
         let request = ValidateSshKeyRequest {
             fingerprint: fingerprint.to_string(),
         };
@@ -74,7 +74,19 @@ impl GrpcAuthStore {
             .into_inner();
 
         if response.valid {
-            Ok(Some(response.user_id))
+            Ok(Some(SshKey {
+                key_id: String::new(),
+                user_id: response.user_id,
+                fingerprint: fingerprint.to_string(),
+                public_key: String::new(),
+                title: String::new(),
+                scopes: TokenScopes {
+                    read: true,
+                    write: true,
+                    admin: false,
+                },
+                created_at: 0,
+            }))
         } else {
             Ok(None)
         }
@@ -127,7 +139,7 @@ impl AuthStore for BlockingGrpcAuthStore {
         }))
     }
 
-    fn get_ssh_key_user(&self, fingerprint: &str) -> Result<Option<String>, AuthError> {
+    fn get_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
         let inner = Arc::clone(&self.inner);
         let fingerprint = fingerprint.to_string();
 
@@ -190,10 +202,7 @@ mod tests {
                     }))
                 }
 
-                fn get_ssh_key_user(
-                    &self,
-                    _fingerprint: &str,
-                ) -> Result<Option<String>, AuthError> {
+                fn get_ssh_key(&self, _fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
                     Ok(None)
                 }
             }
@@ -221,10 +230,7 @@ mod tests {
                     Ok(None)
                 }
 
-                fn get_ssh_key_user(
-                    &self,
-                    _fingerprint: &str,
-                ) -> Result<Option<String>, AuthError> {
+                fn get_ssh_key(&self, _fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
                     Ok(None)
                 }
             }
@@ -236,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_grpc_auth_store_get_ssh_key_user_none() {
+    fn test_blocking_grpc_auth_store_get_ssh_key_none() {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         rt.block_on(async {
@@ -251,16 +257,13 @@ mod tests {
                     Ok(None)
                 }
 
-                fn get_ssh_key_user(
-                    &self,
-                    _fingerprint: &str,
-                ) -> Result<Option<String>, AuthError> {
+                fn get_ssh_key(&self, _fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
                     Ok(None)
                 }
             }
 
             let store = TestBlockingStore;
-            let result = store.get_ssh_key_user("SHA256:test").unwrap();
+            let result = store.get_ssh_key("SHA256:test").unwrap();
             assert!(result.is_none());
         });
     }

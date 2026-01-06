@@ -119,7 +119,7 @@ pub fn load_host_key(path: &std::path::Path) -> Result<PrivateKey, std::io::Erro
 mod tests {
     use super::*;
     use crate::auth::rate_limit::AuthRateLimiter;
-    use crate::auth::types::{StoredToken, User};
+    use crate::auth::types::{SshKey, StoredToken, User};
     use crate::auth::AuthError;
     use russh::keys::ssh_key;
     use std::collections::HashMap;
@@ -129,7 +129,7 @@ mod tests {
 
     struct MockAuthStore {
         users: RwLock<HashMap<String, User>>,
-        ssh_keys: RwLock<HashMap<String, String>>,
+        ssh_keys: RwLock<HashMap<String, SshKey>>,
     }
 
     impl MockAuthStore {
@@ -150,7 +150,7 @@ mod tests {
             Ok(self.users.read().unwrap().get(user_id).cloned())
         }
 
-        fn get_ssh_key_user(&self, fingerprint: &str) -> Result<Option<String>, AuthError> {
+        fn get_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
             Ok(self.ssh_keys.read().unwrap().get(fingerprint).cloned())
         }
     }

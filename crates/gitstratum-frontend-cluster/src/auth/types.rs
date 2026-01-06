@@ -23,6 +23,7 @@ pub struct SshKey {
     pub fingerprint: String,
     pub public_key: String,
     pub title: String,
+    pub scopes: TokenScopes,
     pub created_at: i64,
 }
 
@@ -80,6 +81,11 @@ mod tests {
             fingerprint: "SHA256:abc123".to_string(),
             public_key: "ssh-ed25519 AAAA...".to_string(),
             title: "My Laptop".to_string(),
+            scopes: TokenScopes {
+                read: true,
+                write: false,
+                admin: false,
+            },
             created_at: 1704067200,
         };
 
@@ -88,6 +94,8 @@ mod tests {
 
         assert_eq!(deserialized.key_id, "key123");
         assert_eq!(deserialized.fingerprint, "SHA256:abc123");
+        assert!(deserialized.scopes.read);
+        assert!(!deserialized.scopes.write);
     }
 
     #[test]

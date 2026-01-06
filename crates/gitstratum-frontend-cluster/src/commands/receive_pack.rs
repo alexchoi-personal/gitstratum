@@ -350,19 +350,6 @@ where
     }
 
     async fn apply_ref_update(&self, update: &RefUpdate) -> Result<()> {
-        if !update.force && update.is_update() {
-            let current = self
-                .metadata_writer
-                .get_ref(&self.repo_id, &update.ref_name)
-                .await?;
-            if current != Some(update.old_oid) {
-                return Err(FrontendError::RefUpdateRejected(format!(
-                    "ref {} is at {:?}, expected {}",
-                    update.ref_name, current, update.old_oid
-                )));
-            }
-        }
-
         let success = self
             .metadata_writer
             .update_ref(
@@ -605,17 +592,28 @@ mod tests {
             &self,
             _repo_id: &str,
             ref_name: &str,
-            _old_oid: Oid,
+            old_oid: Oid,
             new_oid: Oid,
-            _force: bool,
+            force: bool,
         ) -> Result<bool> {
+            let mut refs = self.refs.lock().unwrap();
+            let current = refs.get(ref_name).copied();
+
+            if !force {
+                let expected = if old_oid.is_zero() {
+                    None
+                } else {
+                    Some(old_oid)
+                };
+                if current != expected {
+                    return Ok(false);
+                }
+            }
+
             if new_oid.is_zero() {
-                self.refs.lock().unwrap().remove(ref_name);
+                refs.remove(ref_name);
             } else {
-                self.refs
-                    .lock()
-                    .unwrap()
-                    .insert(ref_name.to_string(), new_oid);
+                refs.insert(ref_name.to_string(), new_oid);
             }
             Ok(true)
         }
@@ -1138,6 +1136,6 @@ mod tests {
             .error
             .as_ref()
             .unwrap()
-            .contains("expected"));
+            .contains("rejected"));
     }
 }

@@ -51,7 +51,7 @@ impl AuthResult {
 pub trait AuthStore: Send + Sync {
     fn get_token_by_hash(&self, hash: &str) -> Result<Option<StoredToken>, AuthError>;
     fn get_user(&self, user_id: &str) -> Result<Option<User>, AuthError>;
-    fn get_ssh_key_user(&self, fingerprint: &str) -> Result<Option<String>, AuthError>;
+    fn get_ssh_key(&self, fingerprint: &str) -> Result<Option<super::types::SshKey>, AuthError>;
 }
 
 pub struct LocalValidator<S: AuthStore> {
@@ -69,7 +69,7 @@ impl<S: AuthStore> LocalValidator<S> {
 
     pub fn validate_token(&self, token: &str) -> Result<AuthResult, AuthError> {
         let start = Instant::now();
-        let token_key = format!("token:{}", &token[..token.len().min(8)]);
+        let token_key = format!("token:{}", rate_limit_key_hash(token));
 
         if !self.rate_limiter.check(&token_key) {
             record_auth_attempt("pat", false);
@@ -132,8 +132,8 @@ impl<S: AuthStore> LocalValidator<S> {
             return Err(AuthError::RateLimitExceeded);
         }
 
-        let user_id = match self.store.get_ssh_key_user(fingerprint)? {
-            Some(uid) => uid,
+        let ssh_key = match self.store.get_ssh_key(fingerprint)? {
+            Some(key) => key,
             None => {
                 self.rate_limiter.record_failure(&key_id);
                 record_auth_attempt("ssh", false);
@@ -143,7 +143,7 @@ impl<S: AuthStore> LocalValidator<S> {
 
         let user = self
             .store
-            .get_user(&user_id)?
+            .get_user(&ssh_key.user_id)?
             .ok_or(AuthError::UserNotFound)?;
 
         if user.status != UserStatus::Active {
@@ -153,9 +153,16 @@ impl<S: AuthStore> LocalValidator<S> {
 
         self.rate_limiter.clear(&key_id);
 
-        let result = AuthResult::authenticated(user_id)
-            .with_permission("read")
-            .with_permission("write");
+        let mut result = AuthResult::authenticated(ssh_key.user_id);
+        if ssh_key.scopes.read {
+            result = result.with_permission("read");
+        }
+        if ssh_key.scopes.write {
+            result = result.with_permission("write");
+        }
+        if ssh_key.scopes.admin {
+            result = result.with_permission("admin");
+        }
 
         record_auth_duration("ssh", start.elapsed().as_secs_f64());
         record_auth_attempt("ssh", true);
@@ -171,17 +178,24 @@ fn sha2_hash(input: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn rate_limit_key_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::types::TokenScopes;
+    use crate::auth::types::{SshKey, TokenScopes};
     use std::collections::HashMap;
     use std::sync::RwLock;
 
     struct MockAuthStore {
         tokens: RwLock<HashMap<String, StoredToken>>,
         users: RwLock<HashMap<String, User>>,
-        ssh_keys: RwLock<HashMap<String, String>>,
+        ssh_keys: RwLock<HashMap<String, SshKey>>,
     }
 
     impl MockAuthStore {
@@ -204,11 +218,20 @@ mod tests {
             self.tokens.write().unwrap().insert(hash.to_string(), token);
         }
 
-        fn add_ssh_key(&self, fingerprint: &str, user_id: &str) {
+        fn add_ssh_key(&self, fingerprint: &str, user_id: &str, scopes: TokenScopes) {
+            let key = SshKey {
+                key_id: format!("key_{}", fingerprint),
+                user_id: user_id.to_string(),
+                fingerprint: fingerprint.to_string(),
+                public_key: "ssh-ed25519 AAAA...".to_string(),
+                title: "Test Key".to_string(),
+                scopes,
+                created_at: 0,
+            };
             self.ssh_keys
                 .write()
                 .unwrap()
-                .insert(fingerprint.to_string(), user_id.to_string());
+                .insert(fingerprint.to_string(), key);
         }
     }
 
@@ -221,7 +244,7 @@ mod tests {
             Ok(self.users.read().unwrap().get(user_id).cloned())
         }
 
-        fn get_ssh_key_user(&self, fingerprint: &str) -> Result<Option<String>, AuthError> {
+        fn get_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
             Ok(self.ssh_keys.read().unwrap().get(fingerprint).cloned())
         }
     }
@@ -360,7 +383,15 @@ mod tests {
         let rate_limiter = Arc::new(AuthRateLimiter::new(5, 300, 900));
 
         store.add_user(create_test_user("user1", UserStatus::Active));
-        store.add_ssh_key("SHA256:abc123", "user1");
+        store.add_ssh_key(
+            "SHA256:abc123",
+            "user1",
+            TokenScopes {
+                read: true,
+                write: true,
+                admin: false,
+            },
+        );
 
         let validator = LocalValidator::new(store, rate_limiter);
         let result = validator.validate_ssh_key("SHA256:abc123").unwrap();
@@ -372,6 +403,30 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_ssh_key_read_only_cannot_write() {
+        let store = Arc::new(MockAuthStore::new());
+        let rate_limiter = Arc::new(AuthRateLimiter::new(5, 300, 900));
+
+        store.add_user(create_test_user("user1", UserStatus::Active));
+        store.add_ssh_key(
+            "SHA256:readonly",
+            "user1",
+            TokenScopes {
+                read: true,
+                write: false,
+                admin: false,
+            },
+        );
+
+        let validator = LocalValidator::new(store, rate_limiter);
+        let result = validator.validate_ssh_key("SHA256:readonly").unwrap();
+
+        assert!(result.authenticated);
+        assert!(result.can_read());
+        assert!(!result.can_write());
+    }
+
+    #[test]
     fn test_validate_ssh_key_not_found() {
         let store = Arc::new(MockAuthStore::new());
         let rate_limiter = Arc::new(AuthRateLimiter::new(5, 300, 900));
@@ -380,5 +435,21 @@ mod tests {
         let result = validator.validate_ssh_key("SHA256:unknown");
 
         assert!(matches!(result, Err(AuthError::SshKeyNotFound)));
+    }
+
+    #[test]
+    fn test_rate_limit_key_tokens_with_same_prefix_get_different_keys() {
+        let token1 = "gst_AAAA_suffix1";
+        let token2 = "gst_AAAA_suffix2";
+
+        assert_eq!(&token1[..8], &token2[..8]);
+
+        let key1 = rate_limit_key_hash(token1);
+        let key2 = rate_limit_key_hash(token2);
+
+        assert_ne!(
+            key1, key2,
+            "tokens with same 8-char prefix must produce different rate limit keys"
+        );
     }
 }

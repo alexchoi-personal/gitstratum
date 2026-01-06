@@ -235,14 +235,14 @@ impl<S: AuthStore + 'static> russh::server::Handler for GitSshHandler<S> {
 mod tests {
     use super::*;
     use crate::auth::rate_limit::AuthRateLimiter;
-    use crate::auth::types::{StoredToken, User, UserStatus};
+    use crate::auth::types::{SshKey, StoredToken, TokenScopes, User, UserStatus};
     use crate::auth::AuthError;
     use std::collections::HashMap;
     use std::sync::RwLock;
 
     struct MockAuthStore {
         users: RwLock<HashMap<String, User>>,
-        ssh_keys: RwLock<HashMap<String, String>>,
+        ssh_keys: RwLock<HashMap<String, SshKey>>,
     }
 
     impl MockAuthStore {
@@ -261,10 +261,23 @@ mod tests {
         }
 
         fn add_ssh_key(&self, fingerprint: &str, user_id: &str) {
+            let key = SshKey {
+                key_id: format!("key_{}", fingerprint),
+                user_id: user_id.to_string(),
+                fingerprint: fingerprint.to_string(),
+                public_key: "ssh-ed25519 AAAA...".to_string(),
+                title: "Test Key".to_string(),
+                scopes: TokenScopes {
+                    read: true,
+                    write: true,
+                    admin: false,
+                },
+                created_at: 0,
+            };
             self.ssh_keys
                 .write()
                 .unwrap()
-                .insert(fingerprint.to_string(), user_id.to_string());
+                .insert(fingerprint.to_string(), key);
         }
     }
 
@@ -277,7 +290,7 @@ mod tests {
             Ok(self.users.read().unwrap().get(user_id).cloned())
         }
 
-        fn get_ssh_key_user(&self, fingerprint: &str) -> Result<Option<String>, AuthError> {
+        fn get_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKey>, AuthError> {
             Ok(self.ssh_keys.read().unwrap().get(fingerprint).cloned())
         }
     }
