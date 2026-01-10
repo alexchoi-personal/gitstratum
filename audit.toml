@@ -1,5 +1,9 @@
 [advisories]
 ignore = [
+    # rkyv: UB on OOM - transitive dep from openraft, fix requires openraft upgrade
+    # https://rustsec.org/advisories/RUSTSEC-2026-0001
+    "RUSTSEC-2026-0001",
+
     # rsa: Marvin Attack - no fix available, transitive dep from russh
     # https://rustsec.org/advisories/RUSTSEC-2023-0071
     "RUSTSEC-2023-0071",
