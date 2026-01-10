@@ -49,7 +49,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: operator
-          image: gitstratum/operator:latest
+          image: gitstratum/operator:%IMAGE_TAG%
           imagePullPolicy: IfNotPresent
           args:
             - --leader-elect=true
@@ -91,13 +91,13 @@ spec:
             - name: RUST_BACKTRACE
               value: "1"
             - name: FRONTEND_IMAGE
-              value: "gitstratum/frontend:latest"
+              value: "gitstratum/frontend:%IMAGE_TAG%"
             - name: CONTROL_PLANE_IMAGE
-              value: "gitstratum/control-plane:latest"
+              value: "gitstratum/control-plane:%IMAGE_TAG%"
             - name: METADATA_IMAGE
-              value: "gitstratum/metadata:latest"
+              value: "gitstratum/metadata:%IMAGE_TAG%"
             - name: OBJECT_IMAGE
-              value: "gitstratum/object:latest"
+              value: "gitstratum/object:%IMAGE_TAG%"
           resources:
             requests:
               cpu: "100m"

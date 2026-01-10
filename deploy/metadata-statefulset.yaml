@@ -60,7 +60,7 @@ spec:
               app.kubernetes.io/component: metadata
       containers:
         - name: metadata
-          image: gitstratum/metadata:latest
+          image: gitstratum/metadata:%IMAGE_TAG%
           imagePullPolicy: IfNotPresent
           ports:
             - name: grpc

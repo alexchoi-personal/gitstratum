@@ -134,6 +134,21 @@ impl PartitionRouter {
         }
     }
 
+    pub fn remove_replica(&self, partition_id: PartitionId, node_id: &str) {
+        let mut partitions = self.partitions.write();
+        if let Some(partition) = partitions.get_mut(&partition_id) {
+            let was_present = partition.replica_nodes.contains(&node_id.to_string());
+            partition.replica_nodes.retain(|n| n != node_id);
+
+            if was_present {
+                let mut node_partitions = self.node_partitions.write();
+                if let Some(pids) = node_partitions.get_mut(node_id) {
+                    pids.retain(|&pid| pid != partition_id);
+                }
+            }
+        }
+    }
+
     pub fn remove_node(&self, node_id: &str) {
         let partition_ids: Vec<PartitionId> = self
             .node_partitions

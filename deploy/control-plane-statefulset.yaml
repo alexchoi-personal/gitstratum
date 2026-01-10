@@ -60,7 +60,7 @@ spec:
               app.kubernetes.io/component: control-plane
       containers:
         - name: control-plane
-          image: gitstratum/control-plane:latest
+          image: gitstratum/control-plane:%IMAGE_TAG%
           imagePullPolicy: IfNotPresent
           ports:
             - name: grpc

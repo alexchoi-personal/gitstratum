@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gitstratum_core::Oid;
 use parking_lot::RwLock;
@@ -16,6 +16,7 @@ pub(crate) struct VirtualNode {
 struct RingState {
     ring: BTreeMap<u64, VirtualNode>,
     nodes: BTreeMap<NodeId, NodeInfo>,
+    node_positions: HashMap<NodeId, Vec<u64>>,
     version: u64,
 }
 
@@ -24,6 +25,7 @@ impl RingState {
         Self {
             ring: BTreeMap::new(),
             nodes: BTreeMap::new(),
+            node_positions: HashMap::new(),
             version: 0,
         }
     }
@@ -86,10 +88,10 @@ impl ConsistentHashRing {
 
     pub fn add_node(&self, node: NodeInfo) -> Result<()> {
         let node_id = node.id.clone();
-
         let mut state = self.state.write();
         state.nodes.insert(node_id.clone(), node);
 
+        let mut positions = Vec::with_capacity(self.virtual_nodes_per_physical as usize);
         for i in 0..self.virtual_nodes_per_physical {
             let position = Self::hash_position(&node_id, i);
             state.ring.insert(
@@ -98,31 +100,25 @@ impl ConsistentHashRing {
                     node_id: node_id.clone(),
                 },
             );
+            positions.push(position);
         }
-
+        state.node_positions.insert(node_id, positions);
         state.version = state.version.wrapping_add(1);
         Ok(())
     }
 
     pub fn remove_node(&self, node_id: &NodeId) -> Result<NodeInfo> {
         let mut state = self.state.write();
-
         let node = state
             .nodes
             .remove(node_id)
             .ok_or_else(|| HashRingError::NodeNotFound(node_id.to_string()))?;
 
-        let positions_to_remove: Vec<u64> = state
-            .ring
-            .iter()
-            .filter(|(_, vnode)| &vnode.node_id == node_id)
-            .map(|(pos, _)| *pos)
-            .collect();
-
-        for pos in positions_to_remove {
-            state.ring.remove(&pos);
+        if let Some(positions) = state.node_positions.remove(node_id) {
+            for pos in positions {
+                state.ring.remove(&pos);
+            }
         }
-
         state.version = state.version.wrapping_add(1);
         Ok(node)
     }

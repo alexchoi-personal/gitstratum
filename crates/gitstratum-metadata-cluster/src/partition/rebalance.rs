@@ -184,9 +184,7 @@ impl RebalancePlanner {
                     partition_id,
                     node_id,
                 } => {
-                    if let Some(mut partition) = router.get_partition(*partition_id) {
-                        partition.replica_nodes.retain(|n| n != node_id);
-                    }
+                    router.remove_replica(*partition_id, node_id);
                 }
                 RebalanceAction::MovePrimary {
                     partition_id,
@@ -524,7 +522,7 @@ mod tests {
         planner.apply(&router, &plan);
 
         let partition = router.get_partition(0).unwrap();
-        assert!(partition.replica_nodes.contains(&"node3".to_string()));
+        assert!(!partition.replica_nodes.contains(&"node3".to_string()));
     }
 
     #[test]

@@ -1,11 +1,17 @@
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gitstratum_core::{Blob, Oid};
 use gitstratum_hashring::{ConsistentHashRing, NodeInfo};
-use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use gitstratum_proto::object_service_client::ObjectServiceClient;
+use gitstratum_proto::{Blob as ProtoBlob, Oid as ProtoOid, PutBlobRequest};
+use lru::LruCache;
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::timeout;
+use tonic::transport::Channel;
+use tracing::{debug, error, warn};
 
 use crate::error::{ObjectStoreError, Result};
 
@@ -236,21 +242,27 @@ pub struct QuorumWriter {
     async_writes_queued: AtomicU64,
     repairs_dropped: AtomicU64,
     repair_tx: Option<mpsc::Sender<(Oid, Vec<String>)>>,
+    client_pool: Mutex<LruCache<String, ObjectServiceClient<Channel>>>,
+    connection_timeout: Duration,
+    #[cfg(any(test, feature = "testing"))]
+    simulate_writes: bool,
 }
 
 impl QuorumWriter {
     pub fn new(nodes: Vec<NodeClient>, replication_factor: usize) -> crate::Result<Self> {
         let quorum_size = (replication_factor / 2) + 1;
         let ring = gitstratum_hashring::ConsistentHashRing::new(16, replication_factor)?;
+        let default_config = QuorumWriteConfig {
+            quorum_size,
+            replication_factor,
+            ..Default::default()
+        };
+        let connection_timeout = Duration::from_millis(default_config.timeout_ms);
         Ok(Self {
             nodes,
             quorum_size,
             replication_factor,
-            config: QuorumWriteConfig {
-                quorum_size,
-                replication_factor,
-                ..Default::default()
-            },
+            config: default_config,
             ring: Arc::new(ring),
             writes_attempted: AtomicU64::new(0),
             writes_succeeded: AtomicU64::new(0),
@@ -258,7 +270,17 @@ impl QuorumWriter {
             async_writes_queued: AtomicU64::new(0),
             repairs_dropped: AtomicU64::new(0),
             repair_tx: None,
+            client_pool: Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())),
+            connection_timeout,
+            #[cfg(any(test, feature = "testing"))]
+            simulate_writes: true,
         })
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_real_writes(mut self) -> Self {
+        self.simulate_writes = false;
+        self
     }
 
     pub fn with_ring(mut self, ring: Arc<ConsistentHashRing>) -> Self {
@@ -269,6 +291,7 @@ impl QuorumWriter {
     pub fn with_config(mut self, config: QuorumWriteConfig) -> Self {
         self.quorum_size = config.quorum_size;
         self.replication_factor = config.replication_factor;
+        self.connection_timeout = Duration::from_millis(config.timeout_ms);
         self.config = config;
         self
     }
@@ -340,7 +363,7 @@ impl QuorumWriter {
         let mut failed_nodes: Vec<String> = Vec::new();
 
         for node in target_nodes.iter().take(self.quorum_size) {
-            if self.simulate_write_to_node(node, oid, data).await {
+            if self.write_to_node(node, oid, data).await {
                 sync_success += 1;
             } else {
                 failed_nodes.push(node.node_id.clone());
@@ -405,8 +428,132 @@ impl QuorumWriter {
         })
     }
 
-    async fn simulate_write_to_node(&self, _node: &NodeClient, _oid: &Oid, _data: &[u8]) -> bool {
-        true
+    async fn get_or_create_client(&self, endpoint: &str) -> Option<ObjectServiceClient<Channel>> {
+        {
+            let mut pool = self.client_pool.lock().await;
+            if let Some(client) = pool.get(endpoint) {
+                return Some(client.clone());
+            }
+        }
+
+        let uri = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            endpoint.to_string()
+        } else {
+            format!("http://{}", endpoint)
+        };
+
+        let endpoint_builder = match tonic::transport::Channel::from_shared(uri) {
+            Ok(e) => e,
+            Err(e) => {
+                error!(endpoint = %endpoint, error = %e, "invalid endpoint URI");
+                return None;
+            }
+        };
+
+        let channel = match endpoint_builder
+            .connect_timeout(self.connection_timeout)
+            .connect()
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                error!(endpoint = %endpoint, error = %e, "failed to connect to endpoint");
+                return None;
+            }
+        };
+
+        let client = ObjectServiceClient::new(channel);
+
+        {
+            let mut pool = self.client_pool.lock().await;
+            pool.put(endpoint.to_string(), client.clone());
+        }
+
+        Some(client)
+    }
+
+    async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool {
+        #[cfg(any(test, feature = "testing"))]
+        if self.simulate_writes {
+            debug!(
+                node_id = %node.node_id,
+                oid = %oid,
+                data_len = data.len(),
+                "simulated write to node"
+            );
+            return true;
+        }
+
+        let write_timeout = Duration::from_millis(self.config.timeout_ms);
+
+        let result = timeout(write_timeout, async {
+            let mut client = match self.get_or_create_client(&node.endpoint).await {
+                Some(c) => c,
+                None => {
+                    error!(
+                        node_id = %node.node_id,
+                        endpoint = %node.endpoint,
+                        "failed to connect to node"
+                    );
+                    return false;
+                }
+            };
+
+            let request = tonic::Request::new(PutBlobRequest {
+                blob: Some(ProtoBlob {
+                    oid: Some(ProtoOid {
+                        bytes: oid.as_bytes().to_vec(),
+                    }),
+                    data: data.to_vec(),
+                    compressed: false,
+                }),
+            });
+
+            match client.put_blob(request).await {
+                Ok(response) => {
+                    let inner = response.into_inner();
+                    if inner.success {
+                        debug!(
+                            node_id = %node.node_id,
+                            oid = %oid,
+                            "successfully wrote blob to node"
+                        );
+                        true
+                    } else {
+                        warn!(
+                            node_id = %node.node_id,
+                            oid = %oid,
+                            error = %inner.error,
+                            "node rejected blob write"
+                        );
+                        false
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        node_id = %node.node_id,
+                        oid = %oid,
+                        error = %e,
+                        "gRPC error writing blob to node"
+                    );
+                    false
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(success) => success,
+            Err(_) => {
+                warn!(
+                    node_id = %node.node_id,
+                    oid = %oid,
+                    timeout_ms = self.config.timeout_ms,
+                    "write to node timed out"
+                );
+                false
+            }
+        }
     }
 
     pub fn quorum_size(&self) -> usize {

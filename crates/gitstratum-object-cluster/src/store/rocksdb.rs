@@ -264,11 +264,8 @@ impl RocksDbStore {
     }
 
     fn oid_position(&self, oid: &Oid) -> u64 {
-        u64::from_le_bytes(
-            oid.as_bytes()[..8]
-                .try_into()
-                .expect("OID is always 32 bytes"),
-        )
+        let bytes: [u8; 8] = oid.as_bytes()[..8].try_into().unwrap_or([0u8; 8]);
+        u64::from_le_bytes(bytes)
     }
 
     fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {

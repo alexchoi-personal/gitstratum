@@ -134,12 +134,6 @@ impl HotObjectsCache {
     }
 }
 
-impl Default for HotObjectsCache {
-    fn default() -> Self {
-        Self::new(HotObjectsCacheConfig::default()).expect("default config should always be valid")
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct HotObjectsCacheStats {
     pub entries: usize,
@@ -166,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_cache_put_get() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         let blob = create_test_blob(b"hello world");
 
         cache.put(blob.clone());
@@ -177,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_cache_miss() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         let oid = Oid::hash(b"nonexistent");
 
         let result = cache.get(&oid);
@@ -186,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_cache_remove() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         let blob = create_test_blob(b"test data");
 
         cache.put(blob.clone());
@@ -199,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_cache_contains() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         let blob = create_test_blob(b"test");
 
         assert!(!cache.contains(&blob.oid));
@@ -209,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_cache_clear() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         let blob = create_test_blob(b"test");
 
         cache.put(blob);
@@ -222,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_cache_len() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         assert_eq!(cache.len(), 0);
 
         let blob = create_test_blob(b"test");
@@ -232,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_cache_stats() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         let blob = create_test_blob(b"test data");
 
         cache.put(blob.clone());
@@ -247,20 +241,14 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_default() {
-        let cache = HotObjectsCache::default();
-        assert!(cache.is_empty());
-    }
-
-    #[test]
     fn test_cache_hit_rate_no_access() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         assert_eq!(cache.hit_rate(), 0.0);
     }
 
     #[test]
     fn test_cache_size_bytes() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         let blob = create_test_blob(b"12345678901234567890");
         cache.put(blob);
         assert_eq!(cache.size_bytes(), 20);
@@ -268,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_cache_update_existing() {
-        let cache = HotObjectsCache::default();
+        let cache = HotObjectsCache::new(HotObjectsCacheConfig::default()).unwrap();
         let blob1 = create_test_blob(b"first version");
         let oid = blob1.oid;
 

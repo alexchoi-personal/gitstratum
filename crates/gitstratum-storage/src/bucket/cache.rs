@@ -1,31 +1,29 @@
 use super::disk::DiskBucket;
-use lru::LruCache;
-use parking_lot::Mutex;
-use std::num::NonZeroUsize;
+use moka::sync::Cache;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub struct BucketCache {
-    cache: Mutex<LruCache<u32, Arc<DiskBucket>>>,
+    cache: Cache<u32, Arc<DiskBucket>>,
     hits: AtomicU64,
     misses: AtomicU64,
 }
 
 impl BucketCache {
     pub fn new(capacity: usize) -> Self {
-        let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
+        let cache = Cache::builder().max_capacity(capacity as u64).build();
+
         Self {
-            cache: Mutex::new(LruCache::new(cap)),
+            cache,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         }
     }
 
     pub fn get(&self, bucket_id: u32) -> Option<Arc<DiskBucket>> {
-        let mut cache = self.cache.lock();
-        if let Some(bucket) = cache.get(&bucket_id) {
+        if let Some(bucket) = self.cache.get(&bucket_id) {
             self.hits.fetch_add(1, Ordering::Relaxed);
-            Some(Arc::clone(bucket))
+            Some(bucket)
         } else {
             self.misses.fetch_add(1, Ordering::Relaxed);
             None
@@ -33,13 +31,11 @@ impl BucketCache {
     }
 
     pub fn put(&self, bucket_id: u32, bucket: DiskBucket) {
-        let mut cache = self.cache.lock();
-        cache.put(bucket_id, Arc::new(bucket));
+        self.cache.insert(bucket_id, Arc::new(bucket));
     }
 
     pub fn invalidate(&self, bucket_id: u32) {
-        let mut cache = self.cache.lock();
-        cache.pop(&bucket_id);
+        self.cache.invalidate(&bucket_id);
     }
 
     pub fn hit_rate(&self) -> f64 {
@@ -54,15 +50,16 @@ impl BucketCache {
     }
 
     pub fn len(&self) -> usize {
-        self.cache.lock().len()
+        self.cache.run_pending_tasks();
+        self.cache.entry_count() as usize
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cache.lock().is_empty()
+        self.len() == 0
     }
 
     pub fn clear(&self) {
-        self.cache.lock().clear();
+        self.cache.invalidate_all();
     }
 }
 
@@ -106,6 +103,7 @@ mod tests {
         assert_eq!(cache.len(), 1);
 
         cache.invalidate(0);
+        cache.cache.run_pending_tasks();
         assert_eq!(cache.len(), 0);
 
         let retrieved = cache.get(0);
@@ -135,10 +133,20 @@ mod tests {
         cache.put(1, DiskBucket::new());
         cache.put(2, DiskBucket::new());
 
+        cache.cache.run_pending_tasks();
         assert_eq!(cache.len(), 2);
-        assert!(cache.get(0).is_none());
-        assert!(cache.get(1).is_some());
-        assert!(cache.get(2).is_some());
+
+        let mut present_count = 0;
+        if cache.get(0).is_some() {
+            present_count += 1;
+        }
+        if cache.get(1).is_some() {
+            present_count += 1;
+        }
+        if cache.get(2).is_some() {
+            present_count += 1;
+        }
+        assert_eq!(present_count, 2);
     }
 
     #[test]
@@ -148,6 +156,7 @@ mod tests {
         cache.put(1, DiskBucket::new());
 
         cache.clear();
+        cache.cache.run_pending_tasks();
         assert_eq!(cache.len(), 0);
     }
 }
