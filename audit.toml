@@ -1,0 +1,18 @@
+[advisories]
+ignore = [
+    # rsa: Marvin Attack - no fix available, transitive dep from russh
+    # https://rustsec.org/advisories/RUSTSEC-2023-0071
+    "RUSTSEC-2023-0071",
+
+    # bincode: unmaintained - used for serialization, no security impact
+    # https://rustsec.org/advisories/RUSTSEC-2025-0141
+    "RUSTSEC-2025-0141",
+
+    # rustls-pemfile: unmaintained - transitive from tonic, no security impact
+    # https://rustsec.org/advisories/RUSTSEC-2025-0134
+    "RUSTSEC-2025-0134",
+
+    # lru: unsound IterMut - we don't use IterMut, only get/put operations
+    # https://rustsec.org/advisories/RUSTSEC-2026-0002
+    "RUSTSEC-2026-0002",
+]
