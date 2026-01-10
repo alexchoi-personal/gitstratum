@@ -1326,4 +1326,173 @@ mod tests {
         let selected = writer.select_nodes(&oid);
         assert!(selected.len() <= 3);
     }
+
+    #[test]
+    fn test_quorum_writer_with_real_writes() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+        ];
+        let writer = QuorumWriter::new(nodes, 2).unwrap().with_real_writes();
+        assert!(!writer.simulate_writes);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_get_or_create_client_invalid_uri() {
+        let nodes = vec![NodeClient::new("node-1", "not a valid uri!")];
+        let writer = QuorumWriter::new(nodes, 1).unwrap().with_real_writes();
+        let result = writer.get_or_create_client(":::invalid:::").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_write_timeout_handling() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:59001"),
+            NodeClient::new("node-2", "127.0.0.1:59002"),
+        ];
+        let config = QuorumWriteConfig {
+            quorum_size: 1,
+            replication_factor: 2,
+            timeout_ms: 100,
+            async_replication: false,
+        };
+        let writer = QuorumWriter::new(nodes, 2)
+            .unwrap()
+            .with_config(config)
+            .with_real_writes();
+
+        let oid = Oid::hash(b"timeout-test");
+        let result = writer.write(&oid, b"data").await;
+        assert!(result.is_err());
+
+        let stats = writer.stats();
+        assert_eq!(stats.writes_attempted, 1);
+        assert_eq!(stats.writes_failed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_client_pool_reuse() {
+        let nodes = vec![NodeClient::new("node-1", "127.0.0.1:9001")];
+        let writer = QuorumWriter::new(nodes, 1).unwrap();
+
+        {
+            let pool = writer.client_pool.lock().await;
+            assert_eq!(pool.len(), 0);
+        }
+
+        let oid1 = Oid::hash(b"test1");
+        let _ = writer.write(&oid1, b"data1").await;
+
+        let oid2 = Oid::hash(b"test2");
+        let _ = writer.write(&oid2, b"data2").await;
+
+        let stats = writer.stats();
+        assert_eq!(stats.writes_attempted, 2);
+        assert_eq!(stats.writes_succeeded, 2);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_stats_repairs_dropped() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+            NodeClient::new("node-3", "127.0.0.1:9003"),
+        ];
+        let (tx, rx) = mpsc::channel::<(Oid, Vec<String>)>(1);
+        drop(rx);
+        let config = QuorumWriteConfig {
+            quorum_size: 2,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(3)
+                .build()
+                .unwrap(),
+        );
+
+        let writer = QuorumWriter::new(nodes, 3)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_config(config)
+            .with_repair_channel(tx);
+
+        let oid = Oid::hash(b"test");
+        let _ = writer.write(&oid, b"data").await;
+
+        let stats = writer.stats();
+        assert_eq!(stats.repairs_dropped, 0);
+    }
+
+    #[test]
+    fn test_write_result_accessors() {
+        let result_zero = WriteResult::QuorumAchieved {
+            sync_replicas: 0,
+            async_replicas: 0,
+        };
+        assert_eq!(result_zero.total_replicas(), 0);
+        assert_eq!(result_zero.sync_count(), 0);
+        assert_eq!(result_zero.async_count(), 0);
+
+        let result_sync_only = WriteResult::QuorumAchieved {
+            sync_replicas: 5,
+            async_replicas: 0,
+        };
+        assert_eq!(result_sync_only.total_replicas(), 5);
+        assert_eq!(result_sync_only.sync_count(), 5);
+        assert_eq!(result_sync_only.async_count(), 0);
+
+        let result_async_only = WriteResult::QuorumAchieved {
+            sync_replicas: 0,
+            async_replicas: 3,
+        };
+        assert_eq!(result_async_only.total_replicas(), 3);
+        assert_eq!(result_async_only.sync_count(), 0);
+        assert_eq!(result_async_only.async_count(), 3);
+
+        let result_mixed = WriteResult::QuorumAchieved {
+            sync_replicas: 2,
+            async_replicas: 3,
+        };
+        assert_eq!(result_mixed.total_replicas(), 5);
+        assert_eq!(result_mixed.sync_count(), 2);
+        assert_eq!(result_mixed.async_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_concurrent_writes() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+            NodeClient::new("node-3", "127.0.0.1:9003"),
+        ];
+        let writer = Arc::new(QuorumWriter::new(nodes, 3).unwrap());
+
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let writer_clone = Arc::clone(&writer);
+            let handle = tokio::spawn(async move {
+                let oid = Oid::hash(format!("concurrent-{}", i).as_bytes());
+                writer_clone.write(&oid, b"concurrent data").await
+            });
+            handles.push(handle);
+        }
+
+        let mut success_count = 0;
+        for handle in handles {
+            if let Ok(Ok(_)) = handle.await {
+                success_count += 1;
+            }
+        }
+        assert_eq!(success_count, 10);
+
+        let stats = writer.stats();
+        assert_eq!(stats.writes_attempted, 10);
+        assert_eq!(stats.writes_succeeded, 10);
+        assert_eq!(stats.writes_failed, 0);
+    }
 }

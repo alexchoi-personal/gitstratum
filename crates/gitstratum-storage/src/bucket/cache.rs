@@ -159,4 +159,132 @@ mod tests {
         cache.cache.run_pending_tasks();
         assert_eq!(cache.len(), 0);
     }
+
+    #[test]
+    fn test_cache_is_empty() {
+        let cache = BucketCache::new(16);
+        assert!(cache.is_empty());
+
+        cache.put(0, DiskBucket::new());
+        cache.cache.run_pending_tasks();
+        assert!(!cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_concurrent_puts() {
+        use std::thread;
+
+        let cache = Arc::new(BucketCache::new(100));
+        let mut handles = vec![];
+
+        for i in 0..10 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                for j in 0..10 {
+                    let bucket_id = i * 10 + j;
+                    cache_clone.put(bucket_id, DiskBucket::new());
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        cache.cache.run_pending_tasks();
+        assert_eq!(cache.len(), 100);
+    }
+
+    #[test]
+    fn test_cache_concurrent_gets() {
+        use std::thread;
+
+        let cache = Arc::new(BucketCache::new(100));
+
+        for i in 0..50 {
+            cache.put(i, DiskBucket::new());
+        }
+        cache.cache.run_pending_tasks();
+
+        let mut handles = vec![];
+
+        for _ in 0..10 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                for i in 0..50 {
+                    let _ = cache_clone.get(i);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        let hits = cache.hits.load(Ordering::Relaxed);
+        assert_eq!(hits, 500);
+    }
+
+    #[test]
+    fn test_cache_put_overwrites() {
+        let cache = BucketCache::new(16);
+
+        cache.put(0, DiskBucket::new());
+        cache.cache.run_pending_tasks();
+        let first = cache.get(0).expect("Should exist");
+
+        cache.put(0, DiskBucket::new());
+        cache.cache.run_pending_tasks();
+        let second = cache.get(0).expect("Should exist");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_cache_invalidate_nonexistent() {
+        let cache = BucketCache::new(16);
+
+        cache.invalidate(999);
+        cache.cache.run_pending_tasks();
+
+        assert!(cache.is_empty());
+        assert!(cache.get(999).is_none());
+    }
+
+    #[test]
+    fn test_cache_zero_capacity() {
+        let cache = BucketCache::new(0);
+
+        cache.put(0, DiskBucket::new());
+        cache.cache.run_pending_tasks();
+
+        assert_eq!(cache.len(), 0);
+        assert!(cache.get(0).is_none());
+    }
+
+    #[test]
+    fn test_cache_stats_after_operations() {
+        let cache = BucketCache::new(16);
+
+        assert_eq!(cache.hits.load(Ordering::Relaxed), 0);
+        assert_eq!(cache.misses.load(Ordering::Relaxed), 0);
+        assert_eq!(cache.hit_rate(), 0.0);
+
+        cache.get(0);
+        assert_eq!(cache.misses.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.hit_rate(), 0.0);
+
+        cache.put(0, DiskBucket::new());
+        cache.get(0);
+        assert_eq!(cache.hits.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.misses.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.hit_rate(), 0.5);
+
+        cache.get(0);
+        cache.get(0);
+        assert_eq!(cache.hits.load(Ordering::Relaxed), 3);
+        assert_eq!(cache.misses.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.hit_rate(), 0.75);
+    }
 }

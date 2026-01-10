@@ -254,4 +254,107 @@ mod tests {
         assert_eq!(store.get_permission("repo1", "user1").unwrap(), Some(0x01));
         assert_eq!(store.get_permission("repo2", "user1").unwrap(), Some(0x07));
     }
+
+    #[test]
+    fn test_auth_store_error_display() {
+        let cf_error = AuthStoreError::ColumnFamilyNotFound("auth".to_string());
+        assert_eq!(cf_error.to_string(), "column family not found: auth");
+
+        let rocksdb_error = AuthStoreError::RocksDb("connection failed".to_string());
+        assert_eq!(
+            rocksdb_error.to_string(),
+            "rocksdb error: connection failed"
+        );
+    }
+
+    #[test]
+    fn test_auth_store_error_debug() {
+        let cf_error = AuthStoreError::ColumnFamilyNotFound("acl".to_string());
+        let debug_str = format!("{:?}", cf_error);
+        assert!(debug_str.contains("ColumnFamilyNotFound"));
+        assert!(debug_str.contains("acl"));
+
+        let rocksdb_error = AuthStoreError::RocksDb("io error".to_string());
+        let debug_str = format!("{:?}", rocksdb_error);
+        assert!(debug_str.contains("RocksDb"));
+        assert!(debug_str.contains("io error"));
+    }
+
+    #[test]
+    fn test_auth_store_error_clone() {
+        let cf_error = AuthStoreError::ColumnFamilyNotFound("auth".to_string());
+        let cloned = cf_error.clone();
+        assert_eq!(cf_error.to_string(), cloned.to_string());
+
+        let rocksdb_error = AuthStoreError::RocksDb("disk full".to_string());
+        let cloned = rocksdb_error.clone();
+        assert_eq!(rocksdb_error.to_string(), cloned.to_string());
+    }
+
+    fn create_db_without_auth_cf() -> (TempDir, Arc<DB>) {
+        let tmp_dir = TempDir::new().unwrap();
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let cf_descriptors = vec![rocksdb::ColumnFamilyDescriptor::new(
+            "acl",
+            Options::default(),
+        )];
+        let db = DB::open_cf_descriptors(&opts, tmp_dir.path(), cf_descriptors).unwrap();
+        (tmp_dir, Arc::new(db))
+    }
+
+    fn create_db_without_acl_cf() -> (TempDir, Arc<DB>) {
+        let tmp_dir = TempDir::new().unwrap();
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let cf_descriptors = vec![rocksdb::ColumnFamilyDescriptor::new(
+            "auth",
+            Options::default(),
+        )];
+        let db = DB::open_cf_descriptors(&opts, tmp_dir.path(), cf_descriptors).unwrap();
+        (tmp_dir, Arc::new(db))
+    }
+
+    #[test]
+    fn test_auth_store_new_missing_auth_cf() {
+        let (_tmp, db) = create_db_without_auth_cf();
+        let result = AuthStore::new(db);
+
+        assert!(result.is_err());
+        match result {
+            Err(AuthStoreError::ColumnFamilyNotFound(cf_name)) => {
+                assert_eq!(cf_name, "auth");
+            }
+            Err(_) => panic!("expected ColumnFamilyNotFound error"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_auth_store_new_missing_acl_cf() {
+        let (_tmp, db) = create_db_without_acl_cf();
+        let result = AuthStore::new(db);
+
+        assert!(result.is_err());
+        match result {
+            Err(AuthStoreError::ColumnFamilyNotFound(cf_name)) => {
+                assert_eq!(cf_name, "acl");
+            }
+            Err(_) => panic!("expected ColumnFamilyNotFound error"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_get_user_by_email_not_found() {
+        let (_tmp, db) = create_test_db();
+        let store = AuthStore::new(db).unwrap();
+
+        let result = store.get_user_by_email("nonexistent@example.com").unwrap();
+        assert!(result.is_none());
+    }
 }
