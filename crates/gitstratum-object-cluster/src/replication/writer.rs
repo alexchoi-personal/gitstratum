@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -8,12 +9,22 @@ use gitstratum_hashring::{ConsistentHashRing, NodeInfo};
 use gitstratum_proto::object_service_client::ObjectServiceClient;
 use gitstratum_proto::{Blob as ProtoBlob, Oid as ProtoOid, PutBlobRequest};
 use lru::LruCache;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::timeout;
 use tonic::transport::Channel;
 use tracing::{debug, error, warn};
 
 use crate::error::{ObjectStoreError, Result};
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ConnectionError {
+    #[error("invalid endpoint URI: {0}")]
+    InvalidUri(String),
+    #[error("connection failed: {0}")]
+    ConnectionFailed(String),
+    #[error("connection timeout")]
+    Timeout,
+}
 
 #[derive(Debug, Clone)]
 pub struct WriteConfig {
@@ -242,11 +253,16 @@ pub struct QuorumWriter {
     async_writes_queued: AtomicU64,
     repairs_dropped: AtomicU64,
     repair_tx: Option<mpsc::Sender<(Oid, Vec<String>)>>,
-    client_pool: Mutex<LruCache<String, ObjectServiceClient<Channel>>>,
+    client_pool: Mutex<LruCache<String, (ObjectServiceClient<Channel>, Instant)>>,
+    pending_connections:
+        Mutex<HashMap<String, broadcast::Sender<Option<ObjectServiceClient<Channel>>>>>,
     connection_timeout: Duration,
+    connection_ttl: Duration,
     #[cfg(any(test, feature = "testing"))]
     simulate_writes: bool,
 }
+
+const DEFAULT_CONNECTION_TTL_SECS: u64 = 300;
 
 impl QuorumWriter {
     pub fn new(nodes: Vec<NodeClient>, replication_factor: usize) -> crate::Result<Self> {
@@ -271,7 +287,9 @@ impl QuorumWriter {
             repairs_dropped: AtomicU64::new(0),
             repair_tx: None,
             client_pool: Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())),
+            pending_connections: Mutex::new(HashMap::new()),
             connection_timeout,
+            connection_ttl: Duration::from_secs(DEFAULT_CONNECTION_TTL_SECS),
             #[cfg(any(test, feature = "testing"))]
             simulate_writes: true,
         })
@@ -428,14 +446,55 @@ impl QuorumWriter {
         })
     }
 
-    async fn get_or_create_client(&self, endpoint: &str) -> Option<ObjectServiceClient<Channel>> {
+    async fn get_or_create_client(
+        &self,
+        endpoint: &str,
+    ) -> std::result::Result<ObjectServiceClient<Channel>, ConnectionError> {
         {
             let mut pool = self.client_pool.lock().await;
-            if let Some(client) = pool.get(endpoint) {
-                return Some(client.clone());
+            if let Some((client, created_at)) = pool.get(endpoint) {
+                if created_at.elapsed() < self.connection_ttl {
+                    return Ok(client.clone());
+                }
+                pool.pop(endpoint);
             }
         }
 
+        let mut rx = {
+            let mut pending = self.pending_connections.lock().await;
+            if let Some(tx) = pending.get(endpoint) {
+                tx.subscribe()
+            } else {
+                let (tx, _) = broadcast::channel(1);
+                pending.insert(endpoint.to_string(), tx);
+                drop(pending);
+
+                let result = self.connect_to_endpoint(endpoint).await;
+
+                let mut pending = self.pending_connections.lock().await;
+                if let Some(tx) = pending.remove(endpoint) {
+                    let _ = tx.send(result.clone().ok());
+                }
+
+                return result;
+            }
+        };
+
+        match rx.recv().await {
+            Ok(Some(client)) => Ok(client),
+            Ok(None) => Err(ConnectionError::ConnectionFailed(
+                "connection attempt failed".to_string(),
+            )),
+            Err(_) => Err(ConnectionError::ConnectionFailed(
+                "connection broadcast dropped".to_string(),
+            )),
+        }
+    }
+
+    async fn connect_to_endpoint(
+        &self,
+        endpoint: &str,
+    ) -> std::result::Result<ObjectServiceClient<Channel>, ConnectionError> {
         let uri = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
             endpoint.to_string()
         } else {
@@ -446,19 +505,22 @@ impl QuorumWriter {
             Ok(e) => e,
             Err(e) => {
                 error!(endpoint = %endpoint, error = %e, "invalid endpoint URI");
-                return None;
+                return Err(ConnectionError::InvalidUri(e.to_string()));
             }
         };
 
-        let channel = match endpoint_builder
-            .connect_timeout(self.connection_timeout)
-            .connect()
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => {
+        let endpoint_with_timeout = endpoint_builder.connect_timeout(self.connection_timeout);
+        let connect_future = endpoint_with_timeout.connect();
+
+        let channel = match timeout(self.connection_timeout, connect_future).await {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
                 error!(endpoint = %endpoint, error = %e, "failed to connect to endpoint");
-                return None;
+                return Err(ConnectionError::ConnectionFailed(e.to_string()));
+            }
+            Err(_) => {
+                error!(endpoint = %endpoint, "connection timeout");
+                return Err(ConnectionError::Timeout);
             }
         };
 
@@ -466,10 +528,10 @@ impl QuorumWriter {
 
         {
             let mut pool = self.client_pool.lock().await;
-            pool.put(endpoint.to_string(), client.clone());
+            pool.put(endpoint.to_string(), (client.clone(), Instant::now()));
         }
 
-        Some(client)
+        Ok(client)
     }
 
     async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool {
@@ -488,11 +550,12 @@ impl QuorumWriter {
 
         let result = timeout(write_timeout, async {
             let mut client = match self.get_or_create_client(&node.endpoint).await {
-                Some(c) => c,
-                None => {
+                Ok(c) => c,
+                Err(e) => {
                     error!(
                         node_id = %node.node_id,
                         endpoint = %node.endpoint,
+                        error = %e,
                         "failed to connect to node"
                     );
                     return false;
@@ -1342,7 +1405,11 @@ mod tests {
         let nodes = vec![NodeClient::new("node-1", "not a valid uri!")];
         let writer = QuorumWriter::new(nodes, 1).unwrap().with_real_writes();
         let result = writer.get_or_create_client(":::invalid:::").await;
-        assert!(result.is_none());
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConnectionError::InvalidUri(_)
+        ));
     }
 
     #[tokio::test]
