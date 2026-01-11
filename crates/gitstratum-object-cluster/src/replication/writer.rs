@@ -18,6 +18,28 @@ use tracing::{debug, error, warn};
 
 use crate::error::{ObjectStoreError, Result};
 
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ConfigError {
+    #[error("quorum_size ({quorum}) must be <= replication_factor ({replication})")]
+    QuorumExceedsReplication { quorum: usize, replication: usize },
+    #[error("quorum_size must be > 0")]
+    ZeroQuorum,
+    #[error("replication_factor must be > 0")]
+    ZeroReplication,
+    #[error("timeout must be > 0")]
+    ZeroTimeout,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ConnectionError {
+    #[error("invalid endpoint URI: {0}")]
+    InvalidUri(String),
+    #[error("connection failed: {0}")]
+    ConnectionFailed(String),
+    #[error("connection timeout")]
+    Timeout,
+}
+
 #[async_trait]
 pub trait NodeWriter: Send + Sync {
     async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool;
@@ -238,11 +260,35 @@ impl Default for QuorumWriteConfig {
     }
 }
 
+impl QuorumWriteConfig {
+    pub fn build(self) -> std::result::Result<Self, ConfigError> {
+        if self.quorum_size == 0 {
+            return Err(ConfigError::ZeroQuorum);
+        }
+        if self.replication_factor == 0 {
+            return Err(ConfigError::ZeroReplication);
+        }
+        if self.timeout_ms == 0 {
+            return Err(ConfigError::ZeroTimeout);
+        }
+        if self.quorum_size > self.replication_factor {
+            return Err(ConfigError::QuorumExceedsReplication {
+                quorum: self.quorum_size,
+                replication: self.replication_factor,
+            });
+        }
+        Ok(self)
+    }
+}
+
+const DEFAULT_CONNECTION_TTL_SECS: u64 = 300;
+
 pub struct GrpcNodeWriter {
-    client_pool: Mutex<LruCache<String, ObjectServiceClient<Channel>>>,
+    client_pool: Mutex<LruCache<String, (ObjectServiceClient<Channel>, Instant)>>,
     node_semaphores: Mutex<HashMap<String, Arc<Semaphore>>>,
     max_concurrent_per_node: usize,
     connection_timeout: Duration,
+    connection_ttl: Duration,
     write_timeout: Duration,
 }
 
@@ -253,8 +299,14 @@ impl GrpcNodeWriter {
             node_semaphores: Mutex::new(HashMap::new()),
             max_concurrent_per_node: 10,
             connection_timeout,
+            connection_ttl: Duration::from_secs(DEFAULT_CONNECTION_TTL_SECS),
             write_timeout,
         }
+    }
+
+    pub fn with_connection_ttl(mut self, ttl: Duration) -> Self {
+        self.connection_ttl = ttl;
+        self
     }
 
     async fn get_node_semaphore(&self, endpoint: &str) -> Arc<Semaphore> {
@@ -265,11 +317,17 @@ impl GrpcNodeWriter {
             .clone()
     }
 
-    async fn get_or_create_client(&self, endpoint: &str) -> Option<ObjectServiceClient<Channel>> {
+    async fn get_or_create_client(
+        &self,
+        endpoint: &str,
+    ) -> std::result::Result<ObjectServiceClient<Channel>, ConnectionError> {
         {
             let mut pool = self.client_pool.lock().await;
-            if let Some(client) = pool.get(endpoint) {
-                return Some(client.clone());
+            if let Some((client, created_at)) = pool.get(endpoint) {
+                if created_at.elapsed() < self.connection_ttl {
+                    return Ok(client.clone());
+                }
+                pool.pop(endpoint);
             }
         }
 
@@ -283,19 +341,22 @@ impl GrpcNodeWriter {
             Ok(e) => e,
             Err(e) => {
                 error!(endpoint = %endpoint, error = %e, "invalid endpoint URI");
-                return None;
+                return Err(ConnectionError::InvalidUri(e.to_string()));
             }
         };
 
-        let channel = match endpoint_builder
-            .connect_timeout(self.connection_timeout)
-            .connect()
-            .await
+        let endpoint_with_timeout = endpoint_builder.connect_timeout(self.connection_timeout);
+
+        let channel = match timeout(self.connection_timeout, endpoint_with_timeout.connect()).await
         {
-            Ok(c) => c,
-            Err(e) => {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
                 error!(endpoint = %endpoint, error = %e, "failed to connect to endpoint");
-                return None;
+                return Err(ConnectionError::ConnectionFailed(e.to_string()));
+            }
+            Err(_) => {
+                error!(endpoint = %endpoint, "connection timeout");
+                return Err(ConnectionError::Timeout);
             }
         };
 
@@ -303,10 +364,10 @@ impl GrpcNodeWriter {
 
         {
             let mut pool = self.client_pool.lock().await;
-            pool.put(endpoint.to_string(), client.clone());
+            pool.put(endpoint.to_string(), (client.clone(), Instant::now()));
         }
 
-        Some(client)
+        Ok(client)
     }
 }
 
@@ -328,11 +389,12 @@ impl NodeWriter for GrpcNodeWriter {
 
         let result = timeout(self.write_timeout, async {
             let mut client = match self.get_or_create_client(&node.endpoint).await {
-                Some(c) => c,
-                None => {
+                Ok(c) => c,
+                Err(e) => {
                     error!(
                         node_id = %node.node_id,
                         endpoint = %node.endpoint,
+                        error = %e,
                         "failed to connect to node"
                     );
                     return false;
@@ -1718,5 +1780,133 @@ mod tests {
         assert_eq!(stats.writes_failed, 0);
 
         assert_eq!(recorder.call_count(), 20);
+    }
+
+    #[test]
+    fn test_config_error_zero_quorum() {
+        let config = QuorumWriteConfig {
+            quorum_size: 0,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let result = config.build();
+        assert!(matches!(result, Err(ConfigError::ZeroQuorum)));
+    }
+
+    #[test]
+    fn test_config_error_zero_replication() {
+        let config = QuorumWriteConfig {
+            quorum_size: 1,
+            replication_factor: 0,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let result = config.build();
+        assert!(matches!(result, Err(ConfigError::ZeroReplication)));
+    }
+
+    #[test]
+    fn test_config_error_zero_timeout() {
+        let config = QuorumWriteConfig {
+            quorum_size: 2,
+            replication_factor: 3,
+            timeout_ms: 0,
+            async_replication: true,
+        };
+        let result = config.build();
+        assert!(matches!(result, Err(ConfigError::ZeroTimeout)));
+    }
+
+    #[test]
+    fn test_config_error_quorum_exceeds_replication() {
+        let config = QuorumWriteConfig {
+            quorum_size: 5,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let result = config.build();
+        assert!(matches!(
+            result,
+            Err(ConfigError::QuorumExceedsReplication {
+                quorum: 5,
+                replication: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn test_config_build_valid() {
+        let config = QuorumWriteConfig {
+            quorum_size: 2,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let result = config.build();
+        assert!(result.is_ok());
+        let validated = result.unwrap();
+        assert_eq!(validated.quorum_size, 2);
+        assert_eq!(validated.replication_factor, 3);
+    }
+
+    #[test]
+    fn test_config_build_quorum_equals_replication() {
+        let config = QuorumWriteConfig {
+            quorum_size: 3,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: false,
+        };
+        let result = config.build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_error_display() {
+        let err = ConfigError::ZeroQuorum;
+        assert_eq!(format!("{}", err), "quorum_size must be > 0");
+
+        let err = ConfigError::ZeroReplication;
+        assert_eq!(format!("{}", err), "replication_factor must be > 0");
+
+        let err = ConfigError::ZeroTimeout;
+        assert_eq!(format!("{}", err), "timeout must be > 0");
+
+        let err = ConfigError::QuorumExceedsReplication {
+            quorum: 5,
+            replication: 3,
+        };
+        assert_eq!(
+            format!("{}", err),
+            "quorum_size (5) must be <= replication_factor (3)"
+        );
+    }
+
+    #[test]
+    fn test_connection_error_display() {
+        let err = ConnectionError::InvalidUri("bad uri".to_string());
+        assert_eq!(format!("{}", err), "invalid endpoint URI: bad uri");
+
+        let err = ConnectionError::ConnectionFailed("network error".to_string());
+        assert_eq!(format!("{}", err), "connection failed: network error");
+
+        let err = ConnectionError::Timeout;
+        assert_eq!(format!("{}", err), "connection timeout");
+    }
+
+    #[test]
+    fn test_config_error_clone() {
+        let err = ConfigError::ZeroQuorum;
+        let cloned = err.clone();
+        assert!(matches!(cloned, ConfigError::ZeroQuorum));
+    }
+
+    #[test]
+    fn test_connection_error_clone() {
+        let err = ConnectionError::Timeout;
+        let cloned = err.clone();
+        assert!(matches!(cloned, ConnectionError::Timeout));
     }
 }
