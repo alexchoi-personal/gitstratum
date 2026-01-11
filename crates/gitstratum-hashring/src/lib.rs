@@ -657,4 +657,182 @@ mod tests {
             assert_eq!(node_id.as_str(), "node-1");
         }
     }
+
+    #[test]
+    fn test_node_positions_populated_on_add() {
+        let ring = ConsistentHashRing::new(4, 1).unwrap();
+        ring.add_node(create_test_node("node-1")).unwrap();
+
+        let entries = ring.get_ring_entries();
+        assert_eq!(entries.len(), 4);
+
+        let positions: std::collections::HashSet<u64> =
+            entries.iter().map(|(pos, _)| *pos).collect();
+        assert_eq!(positions.len(), 4);
+
+        for (_, node_id) in &entries {
+            assert_eq!(node_id.as_str(), "node-1");
+        }
+    }
+
+    #[test]
+    fn test_node_positions_cleared_on_remove() {
+        let ring = ConsistentHashRing::new(4, 1).unwrap();
+        ring.add_node(create_test_node("node-1")).unwrap();
+        ring.add_node(create_test_node("node-2")).unwrap();
+
+        assert_eq!(ring.get_ring_entries().len(), 8);
+
+        ring.remove_node(&NodeId::new("node-1")).unwrap();
+
+        let entries = ring.get_ring_entries();
+        assert_eq!(entries.len(), 4);
+
+        for (_, node_id) in &entries {
+            assert_eq!(node_id.as_str(), "node-2");
+        }
+    }
+
+    #[test]
+    fn test_remove_node_uses_reverse_index() {
+        let ring = ConsistentHashRing::new(100, 1).unwrap();
+
+        for i in 0..10 {
+            ring.add_node(create_test_node(&format!("node-{}", i)))
+                .unwrap();
+        }
+
+        assert_eq!(ring.get_ring_entries().len(), 1000);
+
+        ring.remove_node(&NodeId::new("node-5")).unwrap();
+
+        assert_eq!(ring.get_ring_entries().len(), 900);
+
+        let entries = ring.get_ring_entries();
+        for (_, node_id) in &entries {
+            assert_ne!(node_id.as_str(), "node-5");
+        }
+
+        ring.remove_node(&NodeId::new("node-0")).unwrap();
+        ring.remove_node(&NodeId::new("node-9")).unwrap();
+
+        assert_eq!(ring.get_ring_entries().len(), 700);
+    }
+
+    #[test]
+    fn test_add_remove_add_same_node() {
+        let ring = ConsistentHashRing::new(4, 1).unwrap();
+        let node = create_test_node("node-1");
+
+        ring.add_node(node.clone()).unwrap();
+        let entries_after_first_add = ring.get_ring_entries();
+        assert_eq!(entries_after_first_add.len(), 4);
+
+        ring.remove_node(&NodeId::new("node-1")).unwrap();
+        assert_eq!(ring.get_ring_entries().len(), 0);
+        assert_eq!(ring.node_count(), 0);
+
+        ring.add_node(node.clone()).unwrap();
+        let entries_after_re_add = ring.get_ring_entries();
+        assert_eq!(entries_after_re_add.len(), 4);
+        assert_eq!(ring.node_count(), 1);
+
+        let positions_first: std::collections::HashSet<u64> = entries_after_first_add
+            .iter()
+            .map(|(pos, _)| *pos)
+            .collect();
+        let positions_second: std::collections::HashSet<u64> =
+            entries_after_re_add.iter().map(|(pos, _)| *pos).collect();
+        assert_eq!(positions_first, positions_second);
+    }
+
+    #[test]
+    fn test_multiple_nodes_positions_independent() {
+        let ring = ConsistentHashRing::new(4, 1).unwrap();
+
+        ring.add_node(create_test_node("node-1")).unwrap();
+        ring.add_node(create_test_node("node-2")).unwrap();
+        ring.add_node(create_test_node("node-3")).unwrap();
+
+        assert_eq!(ring.get_ring_entries().len(), 12);
+
+        let entries = ring.get_ring_entries();
+        let node1_positions: Vec<u64> = entries
+            .iter()
+            .filter(|(_, id)| id.as_str() == "node-1")
+            .map(|(pos, _)| *pos)
+            .collect();
+        let node2_positions: Vec<u64> = entries
+            .iter()
+            .filter(|(_, id)| id.as_str() == "node-2")
+            .map(|(pos, _)| *pos)
+            .collect();
+        let node3_positions: Vec<u64> = entries
+            .iter()
+            .filter(|(_, id)| id.as_str() == "node-3")
+            .map(|(pos, _)| *pos)
+            .collect();
+
+        assert_eq!(node1_positions.len(), 4);
+        assert_eq!(node2_positions.len(), 4);
+        assert_eq!(node3_positions.len(), 4);
+
+        ring.remove_node(&NodeId::new("node-2")).unwrap();
+
+        let entries_after = ring.get_ring_entries();
+        assert_eq!(entries_after.len(), 8);
+
+        let node1_positions_after: Vec<u64> = entries_after
+            .iter()
+            .filter(|(_, id)| id.as_str() == "node-1")
+            .map(|(pos, _)| *pos)
+            .collect();
+        let node3_positions_after: Vec<u64> = entries_after
+            .iter()
+            .filter(|(_, id)| id.as_str() == "node-3")
+            .map(|(pos, _)| *pos)
+            .collect();
+
+        assert_eq!(node1_positions, node1_positions_after);
+        assert_eq!(node3_positions, node3_positions_after);
+    }
+
+    #[test]
+    fn test_ring_state_clone_includes_positions() {
+        let ring = HashRingBuilder::new()
+            .virtual_nodes(4)
+            .replication_factor(1)
+            .add_node(create_test_node("node-1"))
+            .add_node(create_test_node("node-2"))
+            .build()
+            .unwrap();
+
+        let cloned = ring.clone();
+
+        assert_eq!(cloned.node_count(), ring.node_count());
+        assert_eq!(cloned.version(), ring.version());
+        assert_eq!(
+            cloned.get_ring_entries().len(),
+            ring.get_ring_entries().len()
+        );
+
+        let original_entries = ring.get_ring_entries();
+        let cloned_entries = cloned.get_ring_entries();
+        assert_eq!(original_entries, cloned_entries);
+
+        cloned.remove_node(&NodeId::new("node-1")).unwrap();
+
+        assert_eq!(ring.get_ring_entries().len(), 8);
+        assert_eq!(cloned.get_ring_entries().len(), 4);
+
+        let cloned_entries_after = cloned.get_ring_entries();
+        for (_, node_id) in &cloned_entries_after {
+            assert_eq!(node_id.as_str(), "node-2");
+        }
+
+        let ring_entries_after = ring.get_ring_entries();
+        assert!(ring_entries_after
+            .iter()
+            .any(|(_, id)| id.as_str() == "node-1"));
+    }
 }

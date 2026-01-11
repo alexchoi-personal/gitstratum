@@ -1,13 +1,27 @@
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
+use futures::future::join_all;
 use gitstratum_core::{Blob, Oid};
 use gitstratum_hashring::{ConsistentHashRing, NodeInfo};
-use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use gitstratum_proto::object_service_client::ObjectServiceClient;
+use gitstratum_proto::{Blob as ProtoBlob, Oid as ProtoOid, PutBlobRequest};
+use lru::LruCache;
+use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::time::timeout;
+use tonic::transport::Channel;
+use tracing::{debug, error, warn};
 
 use crate::error::{ObjectStoreError, Result};
+
+#[async_trait]
+pub trait NodeWriter: Send + Sync {
+    async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool;
+}
 
 #[derive(Debug, Clone)]
 pub struct WriteConfig {
@@ -224,6 +238,165 @@ impl Default for QuorumWriteConfig {
     }
 }
 
+pub struct GrpcNodeWriter {
+    client_pool: Mutex<LruCache<String, ObjectServiceClient<Channel>>>,
+    node_semaphores: Mutex<HashMap<String, Arc<Semaphore>>>,
+    max_concurrent_per_node: usize,
+    connection_timeout: Duration,
+    write_timeout: Duration,
+}
+
+impl GrpcNodeWriter {
+    pub fn new(connection_timeout: Duration, write_timeout: Duration) -> Self {
+        Self {
+            client_pool: Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())),
+            node_semaphores: Mutex::new(HashMap::new()),
+            max_concurrent_per_node: 10,
+            connection_timeout,
+            write_timeout,
+        }
+    }
+
+    async fn get_node_semaphore(&self, endpoint: &str) -> Arc<Semaphore> {
+        let mut semaphores = self.node_semaphores.lock().await;
+        semaphores
+            .entry(endpoint.to_string())
+            .or_insert_with(|| Arc::new(Semaphore::new(self.max_concurrent_per_node)))
+            .clone()
+    }
+
+    async fn get_or_create_client(&self, endpoint: &str) -> Option<ObjectServiceClient<Channel>> {
+        {
+            let mut pool = self.client_pool.lock().await;
+            if let Some(client) = pool.get(endpoint) {
+                return Some(client.clone());
+            }
+        }
+
+        let uri = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            endpoint.to_string()
+        } else {
+            format!("http://{}", endpoint)
+        };
+
+        let endpoint_builder = match tonic::transport::Channel::from_shared(uri) {
+            Ok(e) => e,
+            Err(e) => {
+                error!(endpoint = %endpoint, error = %e, "invalid endpoint URI");
+                return None;
+            }
+        };
+
+        let channel = match endpoint_builder
+            .connect_timeout(self.connection_timeout)
+            .connect()
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                error!(endpoint = %endpoint, error = %e, "failed to connect to endpoint");
+                return None;
+            }
+        };
+
+        let client = ObjectServiceClient::new(channel);
+
+        {
+            let mut pool = self.client_pool.lock().await;
+            pool.put(endpoint.to_string(), client.clone());
+        }
+
+        Some(client)
+    }
+}
+
+#[async_trait]
+impl NodeWriter for GrpcNodeWriter {
+    async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool {
+        let semaphore = self.get_node_semaphore(&node.endpoint).await;
+        let _permit = match semaphore.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                error!(
+                    node_id = %node.node_id,
+                    endpoint = %node.endpoint,
+                    "failed to acquire semaphore permit"
+                );
+                return false;
+            }
+        };
+
+        let result = timeout(self.write_timeout, async {
+            let mut client = match self.get_or_create_client(&node.endpoint).await {
+                Some(c) => c,
+                None => {
+                    error!(
+                        node_id = %node.node_id,
+                        endpoint = %node.endpoint,
+                        "failed to connect to node"
+                    );
+                    return false;
+                }
+            };
+
+            let request = tonic::Request::new(PutBlobRequest {
+                blob: Some(ProtoBlob {
+                    oid: Some(ProtoOid {
+                        bytes: oid.as_bytes().to_vec(),
+                    }),
+                    data: data.to_vec(),
+                    compressed: false,
+                }),
+            });
+
+            match client.put_blob(request).await {
+                Ok(response) => {
+                    let inner = response.into_inner();
+                    if inner.success {
+                        debug!(
+                            node_id = %node.node_id,
+                            oid = %oid,
+                            "successfully wrote blob to node"
+                        );
+                        true
+                    } else {
+                        warn!(
+                            node_id = %node.node_id,
+                            oid = %oid,
+                            error = %inner.error,
+                            "node rejected blob write"
+                        );
+                        false
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        node_id = %node.node_id,
+                        oid = %oid,
+                        error = %e,
+                        "gRPC error writing blob to node"
+                    );
+                    false
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(success) => success,
+            Err(_) => {
+                warn!(
+                    node_id = %node.node_id,
+                    oid = %oid,
+                    timeout_ms = self.write_timeout.as_millis() as u64,
+                    "write to node timed out"
+                );
+                false
+            }
+        }
+    }
+}
+
 pub struct QuorumWriter {
     nodes: Vec<NodeClient>,
     quorum_size: usize,
@@ -236,21 +409,25 @@ pub struct QuorumWriter {
     async_writes_queued: AtomicU64,
     repairs_dropped: AtomicU64,
     repair_tx: Option<mpsc::Sender<(Oid, Vec<String>)>>,
+    node_writer: Arc<dyn NodeWriter>,
 }
 
 impl QuorumWriter {
     pub fn new(nodes: Vec<NodeClient>, replication_factor: usize) -> crate::Result<Self> {
         let quorum_size = (replication_factor / 2) + 1;
         let ring = gitstratum_hashring::ConsistentHashRing::new(16, replication_factor)?;
+        let default_config = QuorumWriteConfig {
+            quorum_size,
+            replication_factor,
+            ..Default::default()
+        };
+        let timeout_duration = Duration::from_millis(default_config.timeout_ms);
+        let node_writer = Arc::new(GrpcNodeWriter::new(timeout_duration, timeout_duration));
         Ok(Self {
             nodes,
             quorum_size,
             replication_factor,
-            config: QuorumWriteConfig {
-                quorum_size,
-                replication_factor,
-                ..Default::default()
-            },
+            config: default_config,
             ring: Arc::new(ring),
             writes_attempted: AtomicU64::new(0),
             writes_succeeded: AtomicU64::new(0),
@@ -258,7 +435,13 @@ impl QuorumWriter {
             async_writes_queued: AtomicU64::new(0),
             repairs_dropped: AtomicU64::new(0),
             repair_tx: None,
+            node_writer,
         })
+    }
+
+    pub fn with_node_writer(mut self, writer: Arc<dyn NodeWriter>) -> Self {
+        self.node_writer = writer;
+        self
     }
 
     pub fn with_ring(mut self, ring: Arc<ConsistentHashRing>) -> Self {
@@ -269,6 +452,8 @@ impl QuorumWriter {
     pub fn with_config(mut self, config: QuorumWriteConfig) -> Self {
         self.quorum_size = config.quorum_size;
         self.replication_factor = config.replication_factor;
+        let timeout_duration = Duration::from_millis(config.timeout_ms);
+        self.node_writer = Arc::new(GrpcNodeWriter::new(timeout_duration, timeout_duration));
         self.config = config;
         self
     }
@@ -339,11 +524,22 @@ impl QuorumWriter {
         let mut sync_success = 0usize;
         let mut failed_nodes: Vec<String> = Vec::new();
 
-        for node in target_nodes.iter().take(self.quorum_size) {
-            if self.simulate_write_to_node(node, oid, data).await {
+        let write_futures: Vec<_> = target_nodes
+            .iter()
+            .take(self.quorum_size)
+            .map(|node| async {
+                let success = self.node_writer.write_to_node(node, oid, data).await;
+                (node.node_id.clone(), success)
+            })
+            .collect();
+
+        let results = join_all(write_futures).await;
+
+        for (node_id, success) in results {
+            if success {
                 sync_success += 1;
             } else {
-                failed_nodes.push(node.node_id.clone());
+                failed_nodes.push(node_id);
             }
         }
 
@@ -405,10 +601,6 @@ impl QuorumWriter {
         })
     }
 
-    async fn simulate_write_to_node(&self, _node: &NodeClient, _oid: &Oid, _data: &[u8]) -> bool {
-        true
-    }
-
     pub fn quorum_size(&self) -> usize {
         self.quorum_size
     }
@@ -445,6 +637,67 @@ pub struct QuorumWriterStats {
 mod tests {
     use super::*;
     use gitstratum_hashring::HashRingBuilder;
+    use std::sync::atomic::AtomicBool;
+
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    pub struct WriteRecord {
+        pub node_id: String,
+        pub oid: Oid,
+        pub data_len: usize,
+    }
+
+    pub struct RecordingNodeWriter {
+        writes: Mutex<Vec<WriteRecord>>,
+        should_succeed: AtomicBool,
+        call_count: AtomicU64,
+    }
+
+    impl RecordingNodeWriter {
+        pub fn new() -> Self {
+            Self {
+                writes: Mutex::new(Vec::new()),
+                should_succeed: AtomicBool::new(true),
+                call_count: AtomicU64::new(0),
+            }
+        }
+
+        #[allow(dead_code)]
+        pub fn set_success(&self, success: bool) {
+            self.should_succeed.store(success, Ordering::SeqCst);
+        }
+
+        pub async fn get_writes(&self) -> Vec<WriteRecord> {
+            self.writes.lock().await.clone()
+        }
+
+        pub fn call_count(&self) -> u64 {
+            self.call_count.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl NodeWriter for RecordingNodeWriter {
+        async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool {
+            self.call_count.fetch_add(1, Ordering::Relaxed);
+            let record = WriteRecord {
+                node_id: node.node_id.clone(),
+                oid: *oid,
+                data_len: data.len(),
+            };
+            self.writes.lock().await.push(record);
+            self.should_succeed.load(Ordering::SeqCst)
+        }
+    }
+
+    pub struct FailingNodeWriter;
+
+    #[async_trait]
+    impl NodeWriter for FailingNodeWriter {
+        async fn write_to_node(&self, _node: &NodeClient, _oid: &Oid, _data: &[u8]) -> bool {
+            false
+        }
+    }
 
     fn create_test_ring() -> Arc<ConsistentHashRing> {
         Arc::new(
@@ -665,7 +918,18 @@ mod tests {
             NodeClient::new("node-2", "127.0.0.1:9002"),
             NodeClient::new("node-3", "127.0.0.1:9003"),
         ];
-        let writer = QuorumWriter::new(nodes, 3).unwrap();
+        let recorder = Arc::new(RecordingNodeWriter::new());
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(3)
+                .build()
+                .unwrap(),
+        );
+        let writer = QuorumWriter::new(nodes, 3)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_node_writer(recorder.clone());
         let oid = Oid::hash(b"test");
         let data = b"test data";
 
@@ -679,6 +943,9 @@ mod tests {
         assert_eq!(stats.writes_attempted, 1);
         assert_eq!(stats.writes_succeeded, 1);
         assert_eq!(stats.writes_failed, 0);
+
+        let writes = recorder.get_writes().await;
+        assert_eq!(writes.len(), 2);
     }
 
     #[tokio::test]
@@ -713,8 +980,20 @@ mod tests {
             NodeClient::new("node-1", "127.0.0.1:9001"),
             NodeClient::new("node-2", "127.0.0.1:9002"),
         ];
+        let recorder = Arc::new(RecordingNodeWriter::new());
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(2)
+                .build()
+                .unwrap(),
+        );
         let (tx, _rx) = mpsc::channel(10);
-        let writer = QuorumWriter::new(nodes, 2).unwrap().with_repair_channel(tx);
+        let writer = QuorumWriter::new(nodes, 2)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_node_writer(recorder)
+            .with_repair_channel(tx);
 
         let oid = Oid::hash(b"test");
         let result = writer.write(&oid, b"data").await;
@@ -925,6 +1204,7 @@ mod tests {
             NodeClient::new("node-4", "127.0.0.1:9004"),
             NodeClient::new("node-5", "127.0.0.1:9005"),
         ];
+        let recorder = Arc::new(RecordingNodeWriter::new());
         let config = QuorumWriteConfig {
             quorum_size: 2,
             replication_factor: 5,
@@ -942,7 +1222,8 @@ mod tests {
         let writer = QuorumWriter::new(nodes, 5)
             .unwrap()
             .with_ring(empty_ring)
-            .with_config(config);
+            .with_config(config)
+            .with_node_writer(recorder);
 
         let oid = Oid::hash(b"test");
         let result = writer.write(&oid, b"data").await;
@@ -963,6 +1244,7 @@ mod tests {
             NodeClient::new("node-2", "127.0.0.1:9002"),
             NodeClient::new("node-3", "127.0.0.1:9003"),
         ];
+        let recorder = Arc::new(RecordingNodeWriter::new());
         let config = QuorumWriteConfig {
             quorum_size: 2,
             replication_factor: 3,
@@ -980,7 +1262,8 @@ mod tests {
         let writer = QuorumWriter::new(nodes, 3)
             .unwrap()
             .with_ring(empty_ring)
-            .with_config(config);
+            .with_config(config)
+            .with_node_writer(recorder);
 
         let oid = Oid::hash(b"test");
         let result = writer.write(&oid, b"data").await;
@@ -1074,7 +1357,18 @@ mod tests {
             NodeClient::new("node-1", "127.0.0.1:9001"),
             NodeClient::new("node-2", "127.0.0.1:9002"),
         ];
-        let writer = QuorumWriter::new(nodes, 2).unwrap();
+        let recorder = Arc::new(RecordingNodeWriter::new());
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(2)
+                .build()
+                .unwrap(),
+        );
+        let writer = QuorumWriter::new(nodes, 2)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_node_writer(recorder.clone());
 
         for i in 0..5 {
             let oid = Oid::hash(format!("test-{}", i).as_bytes());
@@ -1085,6 +1379,8 @@ mod tests {
         assert_eq!(stats.writes_attempted, 5);
         assert_eq!(stats.writes_succeeded, 5);
         assert_eq!(stats.writes_failed, 0);
+
+        assert_eq!(recorder.call_count(), 10);
     }
 
     #[test]
@@ -1178,5 +1474,249 @@ mod tests {
         let oid = Oid::hash(b"test");
         let selected = writer.select_nodes(&oid);
         assert!(selected.len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_with_recording_node_writer() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+        ];
+        let recorder = Arc::new(RecordingNodeWriter::new());
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(2)
+                .build()
+                .unwrap(),
+        );
+        let writer = QuorumWriter::new(nodes, 2)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_node_writer(recorder.clone());
+
+        let oid = Oid::hash(b"test-data");
+        let result = writer.write(&oid, b"test-data").await;
+        assert!(result.is_ok());
+
+        let writes = recorder.get_writes().await;
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].data_len, 9);
+        assert_eq!(writes[1].data_len, 9);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_with_failing_node_writer() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+        ];
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(2)
+                .build()
+                .unwrap(),
+        );
+        let writer = QuorumWriter::new(nodes, 2)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_node_writer(Arc::new(FailingNodeWriter));
+
+        let oid = Oid::hash(b"test-data");
+        let result = writer.write(&oid, b"test-data").await;
+        assert!(result.is_err());
+
+        let stats = writer.stats();
+        assert_eq!(stats.writes_attempted, 1);
+        assert_eq!(stats.writes_failed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_records_node_ids() {
+        let nodes = vec![
+            NodeClient::new("node-alpha", "127.0.0.1:9001"),
+            NodeClient::new("node-beta", "127.0.0.1:9002"),
+            NodeClient::new("node-gamma", "127.0.0.1:9003"),
+        ];
+        let recorder = Arc::new(RecordingNodeWriter::new());
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(3)
+                .build()
+                .unwrap(),
+        );
+        let writer = QuorumWriter::new(nodes, 3)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_node_writer(recorder.clone());
+
+        let oid = Oid::hash(b"test");
+        let _ = writer.write(&oid, b"data").await;
+
+        let writes = recorder.get_writes().await;
+        assert_eq!(writes.len(), 2);
+        let node_ids: Vec<_> = writes.iter().map(|w| w.node_id.as_str()).collect();
+        assert!(
+            node_ids.contains(&"node-alpha")
+                || node_ids.contains(&"node-beta")
+                || node_ids.contains(&"node-gamma")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_partial_failure() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+            NodeClient::new("node-3", "127.0.0.1:9003"),
+        ];
+        let recorder = Arc::new(RecordingNodeWriter::new());
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(3)
+                .build()
+                .unwrap(),
+        );
+        let config = QuorumWriteConfig {
+            quorum_size: 2,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: false,
+        };
+        let writer = QuorumWriter::new(nodes, 3)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_config(config)
+            .with_node_writer(recorder.clone());
+
+        let oid = Oid::hash(b"test");
+        let result = writer.write(&oid, b"data").await;
+        assert!(result.is_ok());
+
+        assert_eq!(recorder.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_stats_repairs_dropped() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+            NodeClient::new("node-3", "127.0.0.1:9003"),
+        ];
+        let recorder = Arc::new(RecordingNodeWriter::new());
+        let (tx, rx) = mpsc::channel::<(Oid, Vec<String>)>(1);
+        drop(rx);
+        let config = QuorumWriteConfig {
+            quorum_size: 2,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(3)
+                .build()
+                .unwrap(),
+        );
+
+        let writer = QuorumWriter::new(nodes, 3)
+            .unwrap()
+            .with_ring(empty_ring)
+            .with_config(config)
+            .with_node_writer(recorder)
+            .with_repair_channel(tx);
+
+        let oid = Oid::hash(b"test");
+        let _ = writer.write(&oid, b"data").await;
+
+        let stats = writer.stats();
+        assert_eq!(stats.repairs_dropped, 0);
+    }
+
+    #[test]
+    fn test_write_result_accessors() {
+        let result_zero = WriteResult::QuorumAchieved {
+            sync_replicas: 0,
+            async_replicas: 0,
+        };
+        assert_eq!(result_zero.total_replicas(), 0);
+        assert_eq!(result_zero.sync_count(), 0);
+        assert_eq!(result_zero.async_count(), 0);
+
+        let result_sync_only = WriteResult::QuorumAchieved {
+            sync_replicas: 5,
+            async_replicas: 0,
+        };
+        assert_eq!(result_sync_only.total_replicas(), 5);
+        assert_eq!(result_sync_only.sync_count(), 5);
+        assert_eq!(result_sync_only.async_count(), 0);
+
+        let result_async_only = WriteResult::QuorumAchieved {
+            sync_replicas: 0,
+            async_replicas: 3,
+        };
+        assert_eq!(result_async_only.total_replicas(), 3);
+        assert_eq!(result_async_only.sync_count(), 0);
+        assert_eq!(result_async_only.async_count(), 3);
+
+        let result_mixed = WriteResult::QuorumAchieved {
+            sync_replicas: 2,
+            async_replicas: 3,
+        };
+        assert_eq!(result_mixed.total_replicas(), 5);
+        assert_eq!(result_mixed.sync_count(), 2);
+        assert_eq!(result_mixed.async_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_concurrent_writes() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+            NodeClient::new("node-3", "127.0.0.1:9003"),
+        ];
+        let recorder = Arc::new(RecordingNodeWriter::new());
+        let empty_ring = Arc::new(
+            HashRingBuilder::new()
+                .virtual_nodes(16)
+                .replication_factor(3)
+                .build()
+                .unwrap(),
+        );
+        let writer = Arc::new(
+            QuorumWriter::new(nodes, 3)
+                .unwrap()
+                .with_ring(empty_ring)
+                .with_node_writer(recorder.clone()),
+        );
+
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let writer_clone = Arc::clone(&writer);
+            let handle = tokio::spawn(async move {
+                let oid = Oid::hash(format!("concurrent-{}", i).as_bytes());
+                writer_clone.write(&oid, b"concurrent data").await
+            });
+            handles.push(handle);
+        }
+
+        let mut success_count = 0;
+        for handle in handles {
+            if let Ok(Ok(_)) = handle.await {
+                success_count += 1;
+            }
+        }
+        assert_eq!(success_count, 10);
+
+        let stats = writer.stats();
+        assert_eq!(stats.writes_attempted, 10);
+        assert_eq!(stats.writes_succeeded, 10);
+        assert_eq!(stats.writes_failed, 0);
+
+        assert_eq!(recorder.call_count(), 20);
     }
 }

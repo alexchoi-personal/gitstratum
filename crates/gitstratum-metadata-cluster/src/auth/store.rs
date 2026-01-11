@@ -1,64 +1,65 @@
 use std::sync::Arc;
 
 use rocksdb::{ColumnFamily, DB};
+use thiserror::Error;
 
 pub struct AuthStore {
     db: Arc<DB>,
 }
 
-#[derive(Debug, Clone)]
-pub struct AuthStoreError {
-    pub message: String,
-}
+#[derive(Error, Debug, Clone)]
+pub enum AuthStoreError {
+    #[error("column family not found: {0}")]
+    ColumnFamilyNotFound(String),
 
-impl std::fmt::Display for AuthStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
+    #[error("rocksdb error: {0}")]
+    RocksDb(String),
 }
-
-impl std::error::Error for AuthStoreError {}
 
 impl AuthStore {
     pub fn new(db: Arc<DB>) -> Result<Self, AuthStoreError> {
         if db.cf_handle("auth").is_none() {
-            return Err(AuthStoreError {
-                message: "auth column family not found".to_string(),
-            });
+            return Err(AuthStoreError::ColumnFamilyNotFound("auth".to_string()));
         }
         if db.cf_handle("acl").is_none() {
-            return Err(AuthStoreError {
-                message: "acl column family not found".to_string(),
-            });
+            return Err(AuthStoreError::ColumnFamilyNotFound("acl".to_string()));
         }
         Ok(Self { db })
     }
 
-    fn cf_auth(&self) -> &ColumnFamily {
+    fn cf_auth(&self) -> Result<&ColumnFamily, AuthStoreError> {
         self.db
             .cf_handle("auth")
-            .expect("auth column family validated in constructor")
+            .ok_or_else(|| AuthStoreError::ColumnFamilyNotFound("auth".to_string()))
     }
 
-    fn cf_acl(&self) -> &ColumnFamily {
+    fn cf_acl(&self) -> Result<&ColumnFamily, AuthStoreError> {
         self.db
             .cf_handle("acl")
-            .expect("acl column family validated in constructor")
+            .ok_or_else(|| AuthStoreError::ColumnFamilyNotFound("acl".to_string()))
     }
 
-    pub fn create_user(&self, user_id: &str, data: &[u8]) -> Result<(), rocksdb::Error> {
+    pub fn create_user(&self, user_id: &str, data: &[u8]) -> Result<(), AuthStoreError> {
         let key = format!("user/{}", user_id);
-        self.db.put_cf(self.cf_auth(), key.as_bytes(), data)
+        self.db
+            .put_cf(self.cf_auth()?, key.as_bytes(), data)
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
-    pub fn get_user(&self, user_id: &str) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+    pub fn get_user(&self, user_id: &str) -> Result<Option<Vec<u8>>, AuthStoreError> {
         let key = format!("user/{}", user_id);
-        self.db.get_cf(self.cf_auth(), key.as_bytes())
+        self.db
+            .get_cf(self.cf_auth()?, key.as_bytes())
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
-    pub fn get_user_by_email(&self, email: &str) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+    pub fn get_user_by_email(&self, email: &str) -> Result<Option<Vec<u8>>, AuthStoreError> {
         let key = format!("email/{}", email);
-        if let Some(user_id) = self.db.get_cf(self.cf_auth(), key.as_bytes())? {
+        if let Some(user_id) = self
+            .db
+            .get_cf(self.cf_auth()?, key.as_bytes())
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))?
+        {
             let user_id = String::from_utf8_lossy(&user_id);
             self.get_user(&user_id)
         } else {
@@ -66,34 +67,46 @@ impl AuthStore {
         }
     }
 
-    pub fn add_ssh_key(&self, fingerprint: &str, data: &[u8]) -> Result<(), rocksdb::Error> {
+    pub fn add_ssh_key(&self, fingerprint: &str, data: &[u8]) -> Result<(), AuthStoreError> {
         let key = format!("sshkey/{}", fingerprint);
-        self.db.put_cf(self.cf_auth(), key.as_bytes(), data)
+        self.db
+            .put_cf(self.cf_auth()?, key.as_bytes(), data)
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
-    pub fn get_ssh_key(&self, fingerprint: &str) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+    pub fn get_ssh_key(&self, fingerprint: &str) -> Result<Option<Vec<u8>>, AuthStoreError> {
         let key = format!("sshkey/{}", fingerprint);
-        self.db.get_cf(self.cf_auth(), key.as_bytes())
+        self.db
+            .get_cf(self.cf_auth()?, key.as_bytes())
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
-    pub fn delete_ssh_key(&self, fingerprint: &str) -> Result<(), rocksdb::Error> {
+    pub fn delete_ssh_key(&self, fingerprint: &str) -> Result<(), AuthStoreError> {
         let key = format!("sshkey/{}", fingerprint);
-        self.db.delete_cf(self.cf_auth(), key.as_bytes())
+        self.db
+            .delete_cf(self.cf_auth()?, key.as_bytes())
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
-    pub fn store_token(&self, hash: &str, data: &[u8]) -> Result<(), rocksdb::Error> {
+    pub fn store_token(&self, hash: &str, data: &[u8]) -> Result<(), AuthStoreError> {
         let key = format!("pat/{}", hash);
-        self.db.put_cf(self.cf_auth(), key.as_bytes(), data)
+        self.db
+            .put_cf(self.cf_auth()?, key.as_bytes(), data)
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
-    pub fn get_token(&self, hash: &str) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+    pub fn get_token(&self, hash: &str) -> Result<Option<Vec<u8>>, AuthStoreError> {
         let key = format!("pat/{}", hash);
-        self.db.get_cf(self.cf_auth(), key.as_bytes())
+        self.db
+            .get_cf(self.cf_auth()?, key.as_bytes())
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
-    pub fn delete_token(&self, hash: &str) -> Result<(), rocksdb::Error> {
+    pub fn delete_token(&self, hash: &str) -> Result<(), AuthStoreError> {
         let key = format!("pat/{}", hash);
-        self.db.delete_cf(self.cf_auth(), key.as_bytes())
+        self.db
+            .delete_cf(self.cf_auth()?, key.as_bytes())
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
     pub fn set_permission(
@@ -101,25 +114,30 @@ impl AuthStore {
         repo_id: &str,
         user_id: &str,
         perm: u8,
-    ) -> Result<(), rocksdb::Error> {
+    ) -> Result<(), AuthStoreError> {
         let key = format!("{}/acl/{}", repo_id, user_id);
-        self.db.put_cf(self.cf_acl(), key.as_bytes(), [perm])
+        self.db
+            .put_cf(self.cf_acl()?, key.as_bytes(), [perm])
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
     pub fn get_permission(
         &self,
         repo_id: &str,
         user_id: &str,
-    ) -> Result<Option<u8>, rocksdb::Error> {
+    ) -> Result<Option<u8>, AuthStoreError> {
         let key = format!("{}/acl/{}", repo_id, user_id);
         self.db
-            .get_cf(self.cf_acl(), key.as_bytes())
+            .get_cf(self.cf_acl()?, key.as_bytes())
             .map(|opt| opt.and_then(|v| v.first().copied()))
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 
-    pub fn delete_permission(&self, repo_id: &str, user_id: &str) -> Result<(), rocksdb::Error> {
+    pub fn delete_permission(&self, repo_id: &str, user_id: &str) -> Result<(), AuthStoreError> {
         let key = format!("{}/acl/{}", repo_id, user_id);
-        self.db.delete_cf(self.cf_acl(), key.as_bytes())
+        self.db
+            .delete_cf(self.cf_acl()?, key.as_bytes())
+            .map_err(|e| AuthStoreError::RocksDb(e.to_string()))
     }
 }
 
@@ -235,5 +253,108 @@ mod tests {
 
         assert_eq!(store.get_permission("repo1", "user1").unwrap(), Some(0x01));
         assert_eq!(store.get_permission("repo2", "user1").unwrap(), Some(0x07));
+    }
+
+    #[test]
+    fn test_auth_store_error_display() {
+        let cf_error = AuthStoreError::ColumnFamilyNotFound("auth".to_string());
+        assert_eq!(cf_error.to_string(), "column family not found: auth");
+
+        let rocksdb_error = AuthStoreError::RocksDb("connection failed".to_string());
+        assert_eq!(
+            rocksdb_error.to_string(),
+            "rocksdb error: connection failed"
+        );
+    }
+
+    #[test]
+    fn test_auth_store_error_debug() {
+        let cf_error = AuthStoreError::ColumnFamilyNotFound("acl".to_string());
+        let debug_str = format!("{:?}", cf_error);
+        assert!(debug_str.contains("ColumnFamilyNotFound"));
+        assert!(debug_str.contains("acl"));
+
+        let rocksdb_error = AuthStoreError::RocksDb("io error".to_string());
+        let debug_str = format!("{:?}", rocksdb_error);
+        assert!(debug_str.contains("RocksDb"));
+        assert!(debug_str.contains("io error"));
+    }
+
+    #[test]
+    fn test_auth_store_error_clone() {
+        let cf_error = AuthStoreError::ColumnFamilyNotFound("auth".to_string());
+        let cloned = cf_error.clone();
+        assert_eq!(cf_error.to_string(), cloned.to_string());
+
+        let rocksdb_error = AuthStoreError::RocksDb("disk full".to_string());
+        let cloned = rocksdb_error.clone();
+        assert_eq!(rocksdb_error.to_string(), cloned.to_string());
+    }
+
+    fn create_db_without_auth_cf() -> (TempDir, Arc<DB>) {
+        let tmp_dir = TempDir::new().unwrap();
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let cf_descriptors = vec![rocksdb::ColumnFamilyDescriptor::new(
+            "acl",
+            Options::default(),
+        )];
+        let db = DB::open_cf_descriptors(&opts, tmp_dir.path(), cf_descriptors).unwrap();
+        (tmp_dir, Arc::new(db))
+    }
+
+    fn create_db_without_acl_cf() -> (TempDir, Arc<DB>) {
+        let tmp_dir = TempDir::new().unwrap();
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        let cf_descriptors = vec![rocksdb::ColumnFamilyDescriptor::new(
+            "auth",
+            Options::default(),
+        )];
+        let db = DB::open_cf_descriptors(&opts, tmp_dir.path(), cf_descriptors).unwrap();
+        (tmp_dir, Arc::new(db))
+    }
+
+    #[test]
+    fn test_auth_store_new_missing_auth_cf() {
+        let (_tmp, db) = create_db_without_auth_cf();
+        let result = AuthStore::new(db);
+
+        assert!(result.is_err());
+        match result {
+            Err(AuthStoreError::ColumnFamilyNotFound(cf_name)) => {
+                assert_eq!(cf_name, "auth");
+            }
+            Err(_) => panic!("expected ColumnFamilyNotFound error"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_auth_store_new_missing_acl_cf() {
+        let (_tmp, db) = create_db_without_acl_cf();
+        let result = AuthStore::new(db);
+
+        assert!(result.is_err());
+        match result {
+            Err(AuthStoreError::ColumnFamilyNotFound(cf_name)) => {
+                assert_eq!(cf_name, "acl");
+            }
+            Err(_) => panic!("expected ColumnFamilyNotFound error"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_get_user_by_email_not_found() {
+        let (_tmp, db) = create_test_db();
+        let store = AuthStore::new(db).unwrap();
+
+        let result = store.get_user_by_email("nonexistent@example.com").unwrap();
+        assert!(result.is_none());
     }
 }

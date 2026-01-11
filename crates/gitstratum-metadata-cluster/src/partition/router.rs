@@ -134,6 +134,21 @@ impl PartitionRouter {
         }
     }
 
+    pub fn remove_replica(&self, partition_id: PartitionId, node_id: &str) {
+        let mut partitions = self.partitions.write();
+        if let Some(partition) = partitions.get_mut(&partition_id) {
+            let was_present = partition.replica_nodes.contains(&node_id.to_string());
+            partition.replica_nodes.retain(|n| n != node_id);
+
+            if was_present {
+                let mut node_partitions = self.node_partitions.write();
+                if let Some(pids) = node_partitions.get_mut(node_id) {
+                    pids.retain(|&pid| pid != partition_id);
+                }
+            }
+        }
+    }
+
     pub fn remove_node(&self, node_id: &str) {
         let partition_ids: Vec<PartitionId> = self
             .node_partitions
@@ -520,5 +535,155 @@ mod tests {
         assert!(partitions.contains(&1));
         assert!(partitions.contains(&2));
         assert!(partitions.contains(&3));
+    }
+
+    #[test]
+    fn test_remove_replica_existing() {
+        let router = PartitionRouter::default();
+        let partition_id = 0;
+
+        router.assign_primary(partition_id, "node1".to_string());
+        router.add_replica(partition_id, "node2".to_string());
+        router.add_replica(partition_id, "node3".to_string());
+
+        let partition = router.get_partition(partition_id).unwrap();
+        assert_eq!(partition.replica_nodes.len(), 2);
+        assert!(partition.replica_nodes.contains(&"node2".to_string()));
+
+        router.remove_replica(partition_id, "node2");
+
+        let partition = router.get_partition(partition_id).unwrap();
+        assert_eq!(partition.replica_nodes.len(), 1);
+        assert!(!partition.replica_nodes.contains(&"node2".to_string()));
+        assert!(partition.replica_nodes.contains(&"node3".to_string()));
+    }
+
+    #[test]
+    fn test_remove_replica_nonexistent() {
+        let router = PartitionRouter::default();
+        let partition_id = 0;
+
+        router.assign_primary(partition_id, "node1".to_string());
+        router.add_replica(partition_id, "node2".to_string());
+
+        let partition_before = router.get_partition(partition_id).unwrap();
+        assert_eq!(partition_before.replica_nodes.len(), 1);
+
+        router.remove_replica(partition_id, "node_not_exists");
+
+        let partition_after = router.get_partition(partition_id).unwrap();
+        assert_eq!(partition_after.replica_nodes.len(), 1);
+        assert!(partition_after.replica_nodes.contains(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_remove_replica_updates_node_partitions() {
+        let router = PartitionRouter::default();
+        let partition_id = 0;
+
+        router.add_replica(partition_id, "node1".to_string());
+        router.add_replica(1, "node1".to_string());
+
+        let partitions = router.get_partitions_for_node("node1");
+        assert_eq!(partitions.len(), 2);
+        assert!(partitions.contains(&partition_id));
+        assert!(partitions.contains(&1));
+
+        router.remove_replica(partition_id, "node1");
+
+        let partitions = router.get_partitions_for_node("node1");
+        assert_eq!(partitions.len(), 1);
+        assert!(!partitions.contains(&partition_id));
+        assert!(partitions.contains(&1));
+    }
+
+    #[test]
+    fn test_remove_replica_invalid_partition() {
+        let router = PartitionRouter::new(PartitionConfig {
+            partition_count: 4,
+            replication_factor: 2,
+        });
+
+        router.add_replica(0, "node1".to_string());
+        let partitions_before = router.get_partitions_for_node("node1");
+        assert_eq!(partitions_before.len(), 1);
+
+        router.remove_replica(999, "node1");
+
+        let partitions_after = router.get_partitions_for_node("node1");
+        assert_eq!(partitions_after.len(), 1);
+
+        let partition = router.get_partition(0).unwrap();
+        assert!(partition.replica_nodes.contains(&"node1".to_string()));
+    }
+
+    #[test]
+    fn test_remove_replica_multiple() {
+        let router = PartitionRouter::default();
+        let partition_id = 0;
+
+        router.assign_primary(partition_id, "primary".to_string());
+        router.add_replica(partition_id, "replica1".to_string());
+        router.add_replica(partition_id, "replica2".to_string());
+        router.add_replica(partition_id, "replica3".to_string());
+
+        let partition = router.get_partition(partition_id).unwrap();
+        assert_eq!(partition.replica_nodes.len(), 3);
+
+        router.remove_replica(partition_id, "replica1");
+        router.remove_replica(partition_id, "replica3");
+
+        let partition = router.get_partition(partition_id).unwrap();
+        assert_eq!(partition.replica_nodes.len(), 1);
+        assert!(!partition.replica_nodes.contains(&"replica1".to_string()));
+        assert!(partition.replica_nodes.contains(&"replica2".to_string()));
+        assert!(!partition.replica_nodes.contains(&"replica3".to_string()));
+    }
+
+    #[test]
+    fn test_remove_replica_not_primary() {
+        let router = PartitionRouter::default();
+        let partition_id = 0;
+
+        router.assign_primary(partition_id, "primary_node".to_string());
+        router.add_replica(partition_id, "replica_node".to_string());
+
+        router.remove_replica(partition_id, "replica_node");
+
+        let partition = router.get_partition(partition_id).unwrap();
+        assert_eq!(partition.primary_node, Some("primary_node".to_string()));
+        assert!(partition.replica_nodes.is_empty());
+
+        router.remove_replica(partition_id, "primary_node");
+
+        let partition = router.get_partition(partition_id).unwrap();
+        assert_eq!(partition.primary_node, Some("primary_node".to_string()));
+    }
+
+    #[test]
+    fn test_remove_replica_idempotent() {
+        let router = PartitionRouter::default();
+        let partition_id = 0;
+
+        router.add_replica(partition_id, "node1".to_string());
+        router.add_replica(partition_id, "node2".to_string());
+
+        let partitions = router.get_partitions_for_node("node1");
+        assert_eq!(partitions.len(), 1);
+
+        router.remove_replica(partition_id, "node1");
+
+        let partition = router.get_partition(partition_id).unwrap();
+        assert!(!partition.replica_nodes.contains(&"node1".to_string()));
+        let partitions = router.get_partitions_for_node("node1");
+        assert!(partitions.is_empty());
+
+        router.remove_replica(partition_id, "node1");
+
+        let partition = router.get_partition(partition_id).unwrap();
+        assert!(!partition.replica_nodes.contains(&"node1".to_string()));
+        assert!(partition.replica_nodes.contains(&"node2".to_string()));
+        let partitions = router.get_partitions_for_node("node1");
+        assert!(partitions.is_empty());
     }
 }

@@ -37,7 +37,7 @@ crossbeam-channel = "0.5"
 flate2 = { workspace = true }
 
 # Caching
-lru = { workspace = true }
+moka = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }

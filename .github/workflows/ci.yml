@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -98,18 +100,43 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Run security audit
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2026-0001 \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2025-0141 \
+            --ignore RUSTSEC-2025-0134 \
+            --ignore RUSTSEC-2026-0002
+
   ci:
     name: CI
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [test, clippy, fmt]
+    needs: [test, clippy, fmt, audit]
     if: always()
     steps:
       - name: Check all jobs passed
         run: |
           if [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.clippy.result }}" != "success" ]] || \
-             [[ "${{ needs.fmt.result }}" != "success" ]]; then
+             [[ "${{ needs.fmt.result }}" != "success" ]] || \
+             [[ "${{ needs.audit.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi
