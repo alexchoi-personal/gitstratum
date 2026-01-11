@@ -74,6 +74,9 @@ pub enum ObjectStoreError {
 
     #[error("already started")]
     AlreadyStarted,
+
+    #[error("config error: {0}")]
+    Config(#[from] crate::replication::writer::ConfigError),
 }
 
 impl From<ObjectStoreError> for tonic::Status {
@@ -88,6 +91,7 @@ impl From<ObjectStoreError> for tonic::Status {
             ObjectStoreError::AllReplicasFailed => {
                 tonic::Status::unavailable("all replicas failed")
             }
+            ObjectStoreError::Config(e) => tonic::Status::invalid_argument(e.to_string()),
             _ => tonic::Status::internal(err.to_string()),
         }
     }

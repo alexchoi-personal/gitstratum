@@ -15,6 +15,18 @@ use tracing::{debug, error, warn};
 
 use crate::error::{ObjectStoreError, Result};
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("quorum_size ({quorum}) exceeds available nodes ({nodes})")]
+    QuorumExceedsNodes { quorum: usize, nodes: usize },
+    #[error("quorum_size cannot be zero")]
+    ZeroQuorum,
+    #[error("replication_factor cannot be zero")]
+    ZeroReplicationFactor,
+    #[error("timeout cannot be zero")]
+    ZeroTimeout,
+}
+
 #[derive(Debug, Clone)]
 pub struct WriteConfig {
     pub replication_factor: usize,
@@ -230,6 +242,27 @@ impl Default for QuorumWriteConfig {
     }
 }
 
+impl QuorumWriteConfig {
+    pub fn validate(&self, node_count: usize) -> std::result::Result<(), ConfigError> {
+        if self.quorum_size == 0 {
+            return Err(ConfigError::ZeroQuorum);
+        }
+        if self.replication_factor == 0 {
+            return Err(ConfigError::ZeroReplicationFactor);
+        }
+        if self.timeout_ms == 0 {
+            return Err(ConfigError::ZeroTimeout);
+        }
+        if self.quorum_size > node_count {
+            return Err(ConfigError::QuorumExceedsNodes {
+                quorum: self.quorum_size,
+                nodes: node_count,
+            });
+        }
+        Ok(())
+    }
+}
+
 pub struct QuorumWriter {
     nodes: Vec<NodeClient>,
     quorum_size: usize,
@@ -257,6 +290,7 @@ impl QuorumWriter {
             replication_factor,
             ..Default::default()
         };
+        default_config.validate(nodes.len())?;
         let connection_timeout = Duration::from_millis(default_config.timeout_ms);
         Ok(Self {
             nodes,
@@ -288,12 +322,13 @@ impl QuorumWriter {
         self
     }
 
-    pub fn with_config(mut self, config: QuorumWriteConfig) -> Self {
+    pub fn with_config(mut self, config: QuorumWriteConfig) -> crate::Result<Self> {
+        config.validate(self.nodes.len())?;
         self.quorum_size = config.quorum_size;
         self.replication_factor = config.replication_factor;
         self.connection_timeout = Duration::from_millis(config.timeout_ms);
         self.config = config;
-        self
+        Ok(self)
     }
 
     pub fn with_repair_channel(mut self, tx: mpsc::Sender<(Oid, Vec<String>)>) -> Self {
@@ -778,7 +813,10 @@ mod tests {
             timeout_ms: 1000,
             async_replication: false,
         };
-        let writer = QuorumWriter::new(nodes, 2).unwrap().with_config(config);
+        let writer = QuorumWriter::new(nodes, 2)
+            .unwrap()
+            .with_config(config)
+            .unwrap();
         assert_eq!(writer.quorum_size(), 1);
         assert_eq!(writer.replication_factor(), 2);
     }
@@ -798,11 +836,9 @@ mod tests {
     }
 
     #[test]
-    fn test_quorum_writer_select_nodes_empty() {
-        let writer = QuorumWriter::new(vec![], 3).unwrap();
-        let oid = Oid::hash(b"test");
-        let selected = writer.select_nodes(&oid);
-        assert!(selected.is_empty());
+    fn test_quorum_writer_new_with_empty_nodes_fails() {
+        let result = QuorumWriter::new(vec![], 3);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -828,18 +864,10 @@ mod tests {
         assert_eq!(stats.writes_failed, 0);
     }
 
-    #[tokio::test]
-    async fn test_quorum_writer_write_no_nodes() {
-        let writer = QuorumWriter::new(vec![], 3).unwrap();
-        let oid = Oid::hash(b"test");
-        let data = b"test data";
-
-        let result = writer.write(&oid, data).await;
+    #[test]
+    fn test_quorum_writer_create_with_no_nodes_fails_validation() {
+        let result = QuorumWriter::new(vec![], 3);
         assert!(result.is_err());
-
-        let stats = writer.stats();
-        assert_eq!(stats.writes_attempted, 1);
-        assert_eq!(stats.writes_failed, 1);
     }
 
     #[test]
@@ -1089,7 +1117,8 @@ mod tests {
         let writer = QuorumWriter::new(nodes, 5)
             .unwrap()
             .with_ring(empty_ring)
-            .with_config(config);
+            .with_config(config)
+            .unwrap();
 
         let oid = Oid::hash(b"test");
         let result = writer.write(&oid, b"data").await;
@@ -1127,7 +1156,8 @@ mod tests {
         let writer = QuorumWriter::new(nodes, 3)
             .unwrap()
             .with_ring(empty_ring)
-            .with_config(config);
+            .with_config(config)
+            .unwrap();
 
         let oid = Oid::hash(b"test");
         let result = writer.write(&oid, b"data").await;
@@ -1360,6 +1390,7 @@ mod tests {
         let writer = QuorumWriter::new(nodes, 2)
             .unwrap()
             .with_config(config)
+            .unwrap()
             .with_real_writes();
 
         let oid = Oid::hash(b"timeout-test");
@@ -1419,6 +1450,7 @@ mod tests {
             .unwrap()
             .with_ring(empty_ring)
             .with_config(config)
+            .unwrap()
             .with_repair_channel(tx);
 
         let oid = Oid::hash(b"test");
@@ -1494,5 +1526,151 @@ mod tests {
         assert_eq!(stats.writes_attempted, 10);
         assert_eq!(stats.writes_succeeded, 10);
         assert_eq!(stats.writes_failed, 0);
+    }
+
+    #[test]
+    fn test_config_error_zero_quorum() {
+        let config = QuorumWriteConfig {
+            quorum_size: 0,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let result = config.validate(3);
+        assert!(matches!(result, Err(ConfigError::ZeroQuorum)));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("quorum_size cannot be zero"));
+    }
+
+    #[test]
+    fn test_config_error_zero_replication_factor() {
+        let config = QuorumWriteConfig {
+            quorum_size: 2,
+            replication_factor: 0,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let result = config.validate(3);
+        assert!(matches!(result, Err(ConfigError::ZeroReplicationFactor)));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("replication_factor cannot be zero"));
+    }
+
+    #[test]
+    fn test_config_error_zero_timeout() {
+        let config = QuorumWriteConfig {
+            quorum_size: 2,
+            replication_factor: 3,
+            timeout_ms: 0,
+            async_replication: true,
+        };
+        let result = config.validate(3);
+        assert!(matches!(result, Err(ConfigError::ZeroTimeout)));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("timeout cannot be zero"));
+    }
+
+    #[test]
+    fn test_config_error_quorum_exceeds_nodes() {
+        let config = QuorumWriteConfig {
+            quorum_size: 5,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let result = config.validate(3);
+        assert!(matches!(
+            result,
+            Err(ConfigError::QuorumExceedsNodes {
+                quorum: 5,
+                nodes: 3
+            })
+        ));
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("5"));
+        assert!(err_msg.contains("3"));
+    }
+
+    #[test]
+    fn test_config_validate_success() {
+        let config = QuorumWriteConfig::default();
+        let result = config.validate(3);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_validate_exact_quorum_equals_nodes() {
+        let config = QuorumWriteConfig {
+            quorum_size: 3,
+            replication_factor: 3,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let result = config.validate(3);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_error_debug() {
+        let err = ConfigError::ZeroQuorum;
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("ZeroQuorum"));
+
+        let err = ConfigError::QuorumExceedsNodes {
+            quorum: 5,
+            nodes: 3,
+        };
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("QuorumExceedsNodes"));
+    }
+
+    #[test]
+    fn test_quorum_writer_new_validates_config() {
+        let nodes = vec![NodeClient::new("node-1", "127.0.0.1:9001")];
+        let result = QuorumWriter::new(nodes, 3);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_quorum_writer_with_config_validates() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+        ];
+        let config = QuorumWriteConfig {
+            quorum_size: 5,
+            replication_factor: 2,
+            timeout_ms: 5000,
+            async_replication: true,
+        };
+        let writer = QuorumWriter::new(nodes, 2).unwrap();
+        let result = writer.with_config(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_quorum_writer_with_config_success() {
+        let nodes = vec![
+            NodeClient::new("node-1", "127.0.0.1:9001"),
+            NodeClient::new("node-2", "127.0.0.1:9002"),
+        ];
+        let config = QuorumWriteConfig {
+            quorum_size: 1,
+            replication_factor: 2,
+            timeout_ms: 1000,
+            async_replication: false,
+        };
+        let writer = QuorumWriter::new(nodes, 2).unwrap();
+        let result = writer.with_config(config);
+        assert!(result.is_ok());
+        let writer = result.unwrap();
+        assert_eq!(writer.quorum_size(), 1);
+        assert_eq!(writer.replication_factor(), 2);
     }
 }
