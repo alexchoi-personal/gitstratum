@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use gitstratum_core::{Blob, Oid};
 use gitstratum_hashring::{ConsistentHashRing, NodeInfo};
 use gitstratum_proto::object_service_client::ObjectServiceClient;
@@ -14,6 +15,18 @@ use tonic::transport::Channel;
 use tracing::{debug, error, warn};
 
 use crate::error::{ObjectStoreError, Result};
+
+#[derive(Debug, Clone)]
+pub struct WriteRecord {
+    pub node_id: String,
+    pub oid: Oid,
+    pub data_len: usize,
+}
+
+#[async_trait]
+pub trait NodeWriter: Send + Sync {
+    async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool;
+}
 
 #[derive(Debug, Clone)]
 pub struct WriteConfig {
@@ -592,6 +605,149 @@ pub struct QuorumWriterStats {
 mod tests {
     use super::*;
     use gitstratum_hashring::HashRingBuilder;
+
+    #[derive(Debug, Clone, Default)]
+    pub enum NodeBehavior {
+        #[default]
+        Success,
+        Fail,
+        Timeout(Duration),
+        SlowSuccess(Duration),
+        FailAfter {
+            successes: usize,
+        },
+        Sequence(Vec<bool>),
+    }
+
+    pub struct MockNodeWriter {
+        behaviors: std::collections::HashMap<String, NodeBehavior>,
+        records: Mutex<Vec<WriteRecord>>,
+        call_counts: Mutex<std::collections::HashMap<String, usize>>,
+        default_behavior: NodeBehavior,
+    }
+
+    impl MockNodeWriter {
+        pub fn new() -> Self {
+            Self {
+                behaviors: std::collections::HashMap::new(),
+                records: Mutex::new(Vec::new()),
+                call_counts: Mutex::new(std::collections::HashMap::new()),
+                default_behavior: NodeBehavior::Success,
+            }
+        }
+
+        pub fn with_behavior(mut self, node_id: &str, behavior: NodeBehavior) -> Self {
+            self.behaviors.insert(node_id.to_string(), behavior);
+            self
+        }
+
+        pub fn with_default_behavior(mut self, behavior: NodeBehavior) -> Self {
+            self.default_behavior = behavior;
+            self
+        }
+
+        pub async fn get_writes(&self) -> Vec<WriteRecord> {
+            self.records.lock().await.clone()
+        }
+
+        pub async fn call_count(&self, node_id: &str) -> usize {
+            self.call_counts
+                .lock()
+                .await
+                .get(node_id)
+                .copied()
+                .unwrap_or(0)
+        }
+
+        pub async fn total_calls(&self) -> usize {
+            self.call_counts.lock().await.values().sum()
+        }
+    }
+
+    #[async_trait]
+    impl NodeWriter for MockNodeWriter {
+        async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool {
+            {
+                let mut counts = self.call_counts.lock().await;
+                *counts.entry(node.node_id.clone()).or_insert(0) += 1;
+            }
+
+            self.records.lock().await.push(WriteRecord {
+                node_id: node.node_id.clone(),
+                oid: *oid,
+                data_len: data.len(),
+            });
+
+            let behavior = self
+                .behaviors
+                .get(&node.node_id)
+                .unwrap_or(&self.default_behavior);
+            let call_count = self
+                .call_counts
+                .lock()
+                .await
+                .get(&node.node_id)
+                .copied()
+                .unwrap_or(1);
+
+            match behavior {
+                NodeBehavior::Success => true,
+                NodeBehavior::Fail => false,
+                NodeBehavior::Timeout(d) => {
+                    tokio::time::sleep(*d).await;
+                    true
+                }
+                NodeBehavior::SlowSuccess(d) => {
+                    tokio::time::sleep(*d).await;
+                    true
+                }
+                NodeBehavior::FailAfter { successes } => call_count <= *successes,
+                NodeBehavior::Sequence(seq) => seq.get(call_count - 1).copied().unwrap_or(true),
+            }
+        }
+    }
+
+    // DEPRECATED: Use MockNodeWriter instead
+    #[allow(dead_code)]
+    pub struct RecordingNodeWriter {
+        records: Mutex<Vec<WriteRecord>>,
+    }
+
+    #[allow(dead_code)]
+    impl RecordingNodeWriter {
+        pub fn new() -> Self {
+            Self {
+                records: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub async fn get_writes(&self) -> Vec<WriteRecord> {
+            self.records.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl NodeWriter for RecordingNodeWriter {
+        async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool {
+            self.records.lock().await.push(WriteRecord {
+                node_id: node.node_id.clone(),
+                oid: *oid,
+                data_len: data.len(),
+            });
+            true
+        }
+    }
+
+    // DEPRECATED: Use MockNodeWriter::new().with_default_behavior(NodeBehavior::Fail) instead
+    #[allow(dead_code)]
+    pub struct FailingNodeWriter;
+
+    #[async_trait]
+    impl NodeWriter for FailingNodeWriter {
+        async fn write_to_node(&self, _node: &NodeClient, _oid: &Oid, _data: &[u8]) -> bool {
+            false
+        }
+    }
 
     fn create_test_ring() -> Arc<ConsistentHashRing> {
         Arc::new(
@@ -1494,5 +1650,295 @@ mod tests {
         assert_eq!(stats.writes_attempted, 10);
         assert_eq!(stats.writes_succeeded, 10);
         assert_eq!(stats.writes_failed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_success() {
+        let mock = Arc::new(MockNodeWriter::new());
+        let node = NodeClient::new("node-1", "127.0.0.1:9001");
+        let oid = Oid::hash(b"test");
+        let data = b"test data";
+
+        let result = mock.write_to_node(&node, &oid, data).await;
+        assert!(result);
+
+        let writes = mock.get_writes().await;
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].node_id, "node-1");
+        assert_eq!(writes[0].oid, oid);
+        assert_eq!(writes[0].data_len, data.len());
+
+        assert_eq!(mock.call_count("node-1").await, 1);
+        assert_eq!(mock.total_calls().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_per_node_behavior() {
+        let mock = Arc::new(
+            MockNodeWriter::new()
+                .with_behavior("node-1", NodeBehavior::Success)
+                .with_behavior("node-2", NodeBehavior::Fail),
+        );
+
+        let node1 = NodeClient::new("node-1", "127.0.0.1:9001");
+        let node2 = NodeClient::new("node-2", "127.0.0.1:9002");
+        let oid = Oid::hash(b"test");
+
+        let result1 = mock.write_to_node(&node1, &oid, b"data").await;
+        let result2 = mock.write_to_node(&node2, &oid, b"data").await;
+
+        assert!(result1);
+        assert!(!result2);
+
+        let writes = mock.get_writes().await;
+        assert_eq!(writes.len(), 2);
+        assert_eq!(mock.call_count("node-1").await, 1);
+        assert_eq!(mock.call_count("node-2").await, 1);
+        assert_eq!(mock.total_calls().await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_fail_after() {
+        let mock = Arc::new(
+            MockNodeWriter::new().with_behavior("node-1", NodeBehavior::FailAfter { successes: 2 }),
+        );
+
+        let node = NodeClient::new("node-1", "127.0.0.1:9001");
+        let oid = Oid::hash(b"test");
+
+        let result1 = mock.write_to_node(&node, &oid, b"data").await;
+        let result2 = mock.write_to_node(&node, &oid, b"data").await;
+        let result3 = mock.write_to_node(&node, &oid, b"data").await;
+        let result4 = mock.write_to_node(&node, &oid, b"data").await;
+
+        assert!(result1);
+        assert!(result2);
+        assert!(!result3);
+        assert!(!result4);
+
+        assert_eq!(mock.call_count("node-1").await, 4);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_sequence() {
+        let mock = Arc::new(
+            MockNodeWriter::new()
+                .with_behavior("node-1", NodeBehavior::Sequence(vec![true, false, true])),
+        );
+
+        let node = NodeClient::new("node-1", "127.0.0.1:9001");
+        let oid = Oid::hash(b"test");
+
+        let result1 = mock.write_to_node(&node, &oid, b"data").await;
+        let result2 = mock.write_to_node(&node, &oid, b"data").await;
+        let result3 = mock.write_to_node(&node, &oid, b"data").await;
+        let result4 = mock.write_to_node(&node, &oid, b"data").await;
+
+        assert!(result1);
+        assert!(!result2);
+        assert!(result3);
+        assert!(result4);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_default_behavior() {
+        let mock = Arc::new(MockNodeWriter::new().with_default_behavior(NodeBehavior::Fail));
+
+        let node1 = NodeClient::new("node-1", "127.0.0.1:9001");
+        let node2 = NodeClient::new("node-2", "127.0.0.1:9002");
+        let oid = Oid::hash(b"test");
+
+        let result1 = mock.write_to_node(&node1, &oid, b"data").await;
+        let result2 = mock.write_to_node(&node2, &oid, b"data").await;
+
+        assert!(!result1);
+        assert!(!result2);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_slow_success() {
+        let mock = Arc::new(MockNodeWriter::new().with_behavior(
+            "node-1",
+            NodeBehavior::SlowSuccess(Duration::from_millis(50)),
+        ));
+
+        let node = NodeClient::new("node-1", "127.0.0.1:9001");
+        let oid = Oid::hash(b"test");
+
+        let start = Instant::now();
+        let result = mock.write_to_node(&node, &oid, b"data").await;
+        let elapsed = start.elapsed();
+
+        assert!(result);
+        assert!(elapsed >= Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_timeout() {
+        let mock = Arc::new(
+            MockNodeWriter::new()
+                .with_behavior("node-1", NodeBehavior::Timeout(Duration::from_millis(100))),
+        );
+
+        let node = NodeClient::new("node-1", "127.0.0.1:9001");
+        let oid = Oid::hash(b"test");
+
+        let start = Instant::now();
+        let result = mock.write_to_node(&node, &oid, b"data").await;
+        let elapsed = start.elapsed();
+
+        assert!(result);
+        assert!(elapsed >= Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_with_slow_node() {
+        let mock = Arc::new(
+            MockNodeWriter::new()
+                .with_behavior("node-1", NodeBehavior::Success)
+                .with_behavior("node-2", NodeBehavior::Success)
+                .with_behavior(
+                    "node-3",
+                    NodeBehavior::SlowSuccess(Duration::from_millis(500)),
+                ),
+        );
+
+        let node1 = NodeClient::new("node-1", "127.0.0.1:9001");
+        let node2 = NodeClient::new("node-2", "127.0.0.1:9002");
+        let node3 = NodeClient::new("node-3", "127.0.0.1:9003");
+        let oid = Oid::hash(b"test");
+
+        let start = Instant::now();
+        let result1 = mock.write_to_node(&node1, &oid, b"data").await;
+        let result2 = mock.write_to_node(&node2, &oid, b"data").await;
+        let elapsed_fast = start.elapsed();
+
+        assert!(result1);
+        assert!(result2);
+        assert!(elapsed_fast < Duration::from_millis(100));
+
+        let result3 = mock.write_to_node(&node3, &oid, b"data").await;
+        assert!(result3);
+    }
+
+    #[tokio::test]
+    async fn test_quorum_writer_node_dies_mid_operation() {
+        let mock = Arc::new(
+            MockNodeWriter::new().with_behavior("node-1", NodeBehavior::FailAfter { successes: 1 }),
+        );
+
+        let node = NodeClient::new("node-1", "127.0.0.1:9001");
+        let oid1 = Oid::hash(b"test1");
+        let oid2 = Oid::hash(b"test2");
+
+        let result1 = mock.write_to_node(&node, &oid1, b"data").await;
+        assert!(result1);
+
+        let result2 = mock.write_to_node(&node, &oid2, b"data").await;
+        assert!(!result2);
+
+        let writes = mock.get_writes().await;
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].oid, oid1);
+        assert_eq!(writes[1].oid, oid2);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_multiple_nodes_mixed_behavior() {
+        let mock = Arc::new(
+            MockNodeWriter::new()
+                .with_behavior("node-1", NodeBehavior::Success)
+                .with_behavior("node-2", NodeBehavior::Fail)
+                .with_behavior("node-3", NodeBehavior::FailAfter { successes: 1 })
+                .with_behavior("node-4", NodeBehavior::Sequence(vec![false, true, false])),
+        );
+
+        let node1 = NodeClient::new("node-1", "127.0.0.1:9001");
+        let node2 = NodeClient::new("node-2", "127.0.0.1:9002");
+        let node3 = NodeClient::new("node-3", "127.0.0.1:9003");
+        let node4 = NodeClient::new("node-4", "127.0.0.1:9004");
+        let oid = Oid::hash(b"test");
+
+        assert!(mock.write_to_node(&node1, &oid, b"data").await);
+        assert!(mock.write_to_node(&node1, &oid, b"data").await);
+        assert!(mock.write_to_node(&node1, &oid, b"data").await);
+
+        assert!(!mock.write_to_node(&node2, &oid, b"data").await);
+        assert!(!mock.write_to_node(&node2, &oid, b"data").await);
+
+        assert!(mock.write_to_node(&node3, &oid, b"data").await);
+        assert!(!mock.write_to_node(&node3, &oid, b"data").await);
+
+        assert!(!mock.write_to_node(&node4, &oid, b"data").await);
+        assert!(mock.write_to_node(&node4, &oid, b"data").await);
+        assert!(!mock.write_to_node(&node4, &oid, b"data").await);
+
+        assert_eq!(mock.call_count("node-1").await, 3);
+        assert_eq!(mock.call_count("node-2").await, 2);
+        assert_eq!(mock.call_count("node-3").await, 2);
+        assert_eq!(mock.call_count("node-4").await, 3);
+        assert_eq!(mock.total_calls().await, 10);
+    }
+
+    #[test]
+    fn test_node_behavior_default() {
+        let behavior = NodeBehavior::default();
+        assert!(matches!(behavior, NodeBehavior::Success));
+    }
+
+    #[test]
+    fn test_node_behavior_clone() {
+        let behavior = NodeBehavior::FailAfter { successes: 3 };
+        let cloned = behavior.clone();
+        assert!(matches!(cloned, NodeBehavior::FailAfter { successes: 3 }));
+
+        let timeout = NodeBehavior::Timeout(Duration::from_millis(100));
+        let cloned_timeout = timeout.clone();
+        assert!(matches!(
+            cloned_timeout,
+            NodeBehavior::Timeout(d) if d == Duration::from_millis(100)
+        ));
+    }
+
+    #[test]
+    fn test_node_behavior_debug() {
+        let behavior = NodeBehavior::Success;
+        let debug = format!("{:?}", behavior);
+        assert!(debug.contains("Success"));
+
+        let fail = NodeBehavior::Fail;
+        let debug_fail = format!("{:?}", fail);
+        assert!(debug_fail.contains("Fail"));
+    }
+
+    #[test]
+    fn test_write_record_debug_clone() {
+        let record = WriteRecord {
+            node_id: "node-1".to_string(),
+            oid: Oid::hash(b"test"),
+            data_len: 42,
+        };
+        let debug = format!("{:?}", record);
+        assert!(debug.contains("WriteRecord"));
+        assert!(debug.contains("node-1"));
+
+        let cloned = record.clone();
+        assert_eq!(cloned.node_id, "node-1");
+        assert_eq!(cloned.data_len, 42);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_call_count_nonexistent_node() {
+        let mock = MockNodeWriter::new();
+        let count = mock.call_count("nonexistent").await;
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mock_node_writer_empty_writes() {
+        let mock = MockNodeWriter::new();
+        let writes = mock.get_writes().await;
+        assert!(writes.is_empty());
+        assert_eq!(mock.total_calls().await, 0);
     }
 }
