@@ -388,11 +388,8 @@ where
                 continue;
             }
 
-            if update.ref_name.contains("..") {
-                results.push(RefUpdateResult::error(
-                    update.ref_name.clone(),
-                    "ref name cannot contain ..".to_string(),
-                ));
+            if let Some(error) = validate_ref_name(&update.ref_name) {
+                results.push(RefUpdateResult::error(update.ref_name.clone(), error));
                 continue;
             }
 
@@ -401,6 +398,60 @@ where
 
         Ok(results)
     }
+}
+
+#[allow(dead_code)]
+fn is_valid_ref_name(ref_name: &str) -> bool {
+    validate_ref_name(ref_name).is_none()
+}
+
+fn validate_ref_name(ref_name: &str) -> Option<String> {
+    if ref_name.len() > 255 {
+        return Some("ref name exceeds maximum length of 255 characters".to_string());
+    }
+
+    if ref_name.contains("..") {
+        return Some("ref name cannot contain ..".to_string());
+    }
+
+    for c in ref_name.chars() {
+        if c == '\0' || c == '\n' || c == '\r' || c == ' ' || c == '\t' {
+            return Some("ref name cannot contain control characters or whitespace".to_string());
+        }
+    }
+
+    let special_patterns = ["@{", "^", "~", ":", "?", "*", "[", "\\"];
+    for pattern in &special_patterns {
+        if ref_name.contains(pattern) {
+            return Some(format!("ref name cannot contain '{}'", pattern));
+        }
+    }
+
+    if ref_name.starts_with('.') {
+        return Some("ref name cannot start with '.'".to_string());
+    }
+
+    if ref_name.ends_with('.') {
+        return Some("ref name cannot end with '.'".to_string());
+    }
+
+    if ref_name.ends_with('/') {
+        return Some("ref name cannot end with '/'".to_string());
+    }
+
+    if ref_name.contains("/.") {
+        return Some("ref name cannot contain '/.'".to_string());
+    }
+
+    if ref_name.contains("//") {
+        return Some("ref name cannot contain '//'".to_string());
+    }
+
+    if ref_name.ends_with(".lock") {
+        return Some("ref name cannot end with '.lock'".to_string());
+    }
+
+    None
 }
 
 #[derive(Clone)]
