@@ -835,4 +835,94 @@ mod tests {
             .iter()
             .any(|(_, id)| id.as_str() == "node-1"));
     }
+
+    #[test]
+    fn test_nodes_for_key_with_all_nodes_down() {
+        let ring = HashRingBuilder::new()
+            .virtual_nodes(16)
+            .replication_factor(3)
+            .add_node(create_test_node("node-1"))
+            .add_node(create_test_node("node-2"))
+            .add_node(create_test_node("node-3"))
+            .build()
+            .unwrap();
+
+        ring.set_node_state(&NodeId::new("node-1"), NodeState::Down)
+            .unwrap();
+        ring.set_node_state(&NodeId::new("node-2"), NodeState::Down)
+            .unwrap();
+        ring.set_node_state(&NodeId::new("node-3"), NodeState::Down)
+            .unwrap();
+
+        let result = ring.nodes_for_key(b"test-key");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            HashRingError::InsufficientNodes(required, active) => {
+                assert_eq!(required, 3);
+                assert_eq!(active, 0);
+            }
+            _ => panic!("Expected InsufficientNodes error"),
+        }
+    }
+
+    #[test]
+    fn test_nodes_at_position_wraparound() {
+        let ring = HashRingBuilder::new()
+            .virtual_nodes(16)
+            .replication_factor(2)
+            .add_node(create_test_node("node-1"))
+            .add_node(create_test_node("node-2"))
+            .add_node(create_test_node("node-3"))
+            .build()
+            .unwrap();
+
+        let entries = ring.get_ring_entries();
+        let max_position = entries.iter().map(|(pos, _)| *pos).max().unwrap();
+
+        let high_position_key = vec![0xFF; 8];
+        let nodes = ring.nodes_for_key(&high_position_key);
+        assert!(nodes.is_ok());
+        let nodes = nodes.unwrap();
+        assert_eq!(nodes.len(), 2);
+
+        let mut oid_bytes = [0u8; 32];
+        oid_bytes[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let oid = Oid::from_bytes(oid_bytes);
+        let nodes_for_oid = ring.nodes_for_oid(&oid);
+        assert!(nodes_for_oid.is_ok());
+        assert_eq!(nodes_for_oid.unwrap().len(), 2);
+
+        let entries_count = entries.len();
+        assert!(entries_count > 0);
+        let positions_near_max: Vec<_> = entries
+            .iter()
+            .filter(|(pos, _)| *pos > max_position.saturating_sub(1000))
+            .collect();
+        assert!(
+            !positions_near_max.is_empty() || max_position < 1000,
+            "Should have positions in the ring"
+        );
+    }
+
+    #[test]
+    fn test_nodes_at_position_with_position_beyond_all_vnodes() {
+        let ring = HashRingBuilder::new()
+            .virtual_nodes(4)
+            .replication_factor(2)
+            .add_node(create_test_node("node-1"))
+            .add_node(create_test_node("node-2"))
+            .build()
+            .unwrap();
+
+        let entries = ring.get_ring_entries();
+        let max_position = entries.iter().map(|(pos, _)| *pos).max().unwrap();
+
+        let mut high_key = [0xFFu8; 32];
+        high_key[0..8].copy_from_slice(&(max_position.wrapping_add(1)).to_le_bytes());
+
+        let nodes = ring.nodes_for_key(&high_key);
+        assert!(nodes.is_ok());
+        let nodes = nodes.unwrap();
+        assert_eq!(nodes.len(), 2);
+    }
 }
