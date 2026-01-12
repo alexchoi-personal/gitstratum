@@ -295,7 +295,9 @@ pub struct GrpcNodeWriter {
 impl GrpcNodeWriter {
     pub fn new(connection_timeout: Duration, write_timeout: Duration) -> Self {
         Self {
-            client_pool: Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())),
+            client_pool: Mutex::new(LruCache::new(
+                NonZeroUsize::new(100).expect("pool size must be non-zero"),
+            )),
             node_semaphores: DashMap::new(),
             max_concurrent_per_node: 10,
             connection_timeout,
@@ -2103,25 +2105,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_grpc_node_writer_connection_ttl() {
-        let writer = GrpcNodeWriter::new(
-            Duration::from_millis(100),
-            Duration::from_millis(100),
-        )
-        .with_connection_ttl(Duration::from_millis(50));
+        let writer = GrpcNodeWriter::new(Duration::from_millis(100), Duration::from_millis(100))
+            .with_connection_ttl(Duration::from_millis(50));
 
         assert_eq!(writer.connection_ttl, Duration::from_millis(50));
     }
 
     #[tokio::test]
     async fn test_grpc_node_writer_semaphore_per_node() {
-        let writer = GrpcNodeWriter::new(
-            Duration::from_millis(100),
-            Duration::from_millis(100),
-        );
+        let writer = GrpcNodeWriter::new(Duration::from_millis(100), Duration::from_millis(100));
 
-        let sem1 = writer.get_node_semaphore("node-1:9001").await;
-        let sem2 = writer.get_node_semaphore("node-2:9002").await;
-        let sem1_again = writer.get_node_semaphore("node-1:9001").await;
+        let sem1 = writer.get_node_semaphore("node-1:9001");
+        let sem2 = writer.get_node_semaphore("node-2:9002");
+        let sem1_again = writer.get_node_semaphore("node-1:9001");
 
         assert!(Arc::ptr_eq(&sem1, &sem1_again));
         assert!(!Arc::ptr_eq(&sem1, &sem2));
