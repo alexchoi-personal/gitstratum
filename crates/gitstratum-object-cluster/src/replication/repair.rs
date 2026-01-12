@@ -688,4 +688,136 @@ mod tests {
         let debug = format!("{:?}", stats);
         assert!(debug.contains("RepairerStats"));
     }
+
+    #[test]
+    fn test_repair_task_expiration_boundary() {
+        let task = RepairTask::new(vec!["node-1".to_string()]);
+
+        assert!(!task.is_expired(Duration::from_secs(1)));
+        assert!(!task.is_expired(Duration::from_millis(100)));
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        assert!(!task.is_expired(Duration::from_millis(100)));
+        assert!(task.is_expired(Duration::from_millis(50)));
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert!(task.is_expired(Duration::from_millis(100)));
+
+        assert!(!task.is_expired(Duration::from_secs(10)));
+    }
+
+    #[tokio::test]
+    async fn test_repair_batch_respects_batch_size() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
+        let (store, _dir) = create_test_store();
+
+        for i in 0..250 {
+            let blob = Blob::new(format!("data-{}", i).into_bytes());
+            store.put(&blob).await.unwrap();
+        }
+
+        let config = RepairConfig {
+            batch_size: 100,
+            max_attempts: 10,
+            retry_interval: Duration::from_secs(1),
+            max_task_age: Duration::from_secs(3600),
+            queue_size: 10000,
+            batch_timeout: Duration::from_secs(60),
+        };
+        let repairer = ReplicationRepairer::with_config(store.clone(), config);
+
+        for i in 0..250 {
+            let blob = Blob::new(format!("data-{}", i).into_bytes());
+            repairer.queue_repair(blob.oid, vec![format!("node-{}", i % 3)]);
+        }
+
+        assert_eq!(repairer.queue_size(), 250);
+
+        repairer.process_batch().await;
+
+        assert!(
+            repairer.queue_size() <= 150,
+            "Expected queue size <= 150 after processing 100, got {}",
+            repairer.queue_size()
+        );
+
+        let stats = repairer.stats();
+        assert!(
+            stats.repairs_attempted <= 100,
+            "Expected at most 100 repairs attempted in one batch, got {}",
+            stats.repairs_attempted
+        );
+    }
+
+    #[tokio::test]
+    async fn test_repair_task_expiration_removes_from_queue() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
+        let (store, _dir) = create_test_store();
+
+        let config = RepairConfig {
+            batch_size: 100,
+            max_attempts: 10,
+            retry_interval: Duration::from_secs(1),
+            max_task_age: Duration::from_millis(50),
+            queue_size: 10000,
+            batch_timeout: Duration::from_secs(60),
+        };
+        let repairer = ReplicationRepairer::with_config(store, config);
+
+        let oid1 = Oid::hash(b"old-task-1");
+        let oid2 = Oid::hash(b"old-task-2");
+        repairer.queue_repair(oid1, vec!["node-1".to_string()]);
+        repairer.queue_repair(oid2, vec!["node-2".to_string()]);
+
+        assert_eq!(repairer.queue_size(), 2);
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        repairer.process_batch().await;
+
+        assert_eq!(repairer.queue_size(), 0);
+
+        let stats = repairer.stats();
+        assert_eq!(stats.repairs_expired, 2);
+        assert_eq!(stats.repairs_attempted, 0);
+    }
+
+    #[tokio::test]
+    async fn test_repair_max_attempts_exceeded() {
+        #[cfg(feature = "bucketstore")]
+        let (store, _dir) = create_test_store().await;
+        #[cfg(not(feature = "bucketstore"))]
+        let (store, _dir) = create_test_store();
+
+        let config = RepairConfig {
+            batch_size: 100,
+            max_attempts: 2,
+            retry_interval: Duration::from_millis(10),
+            max_task_age: Duration::from_secs(3600),
+            queue_size: 10000,
+            batch_timeout: Duration::from_secs(60),
+        };
+        let repairer = ReplicationRepairer::with_config(store, config);
+
+        let oid = Oid::hash(b"non-existent-blob");
+        repairer.queue_repair(oid, vec!["node-1".to_string()]);
+
+        {
+            let mut task = repairer.repair_queue.get_mut(&oid).unwrap();
+            task.attempts = 2;
+        }
+
+        repairer.process_batch().await;
+
+        assert_eq!(repairer.queue_size(), 0);
+
+        let stats = repairer.stats();
+        assert_eq!(stats.repairs_failed, 1);
+    }
 }

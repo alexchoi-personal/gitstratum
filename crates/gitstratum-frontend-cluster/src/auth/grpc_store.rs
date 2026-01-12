@@ -3,7 +3,9 @@ use tokio::runtime::Handle;
 use tonic::transport::Channel;
 
 use gitstratum_proto::auth_service_client::AuthServiceClient;
-use gitstratum_proto::{ValidateSshKeyRequest, ValidateTokenRequest};
+use gitstratum_proto::{
+    GetUserRequest, UserStatusProto, ValidateSshKeyRequest, ValidateTokenRequest,
+};
 
 use super::error::AuthError;
 use super::types::{SshKey, StoredToken, TokenScopes, User, UserStatus};
@@ -81,11 +83,43 @@ impl GrpcAuthStore {
                 public_key: String::new(),
                 title: String::new(),
                 scopes: TokenScopes {
-                    read: true,
-                    write: true,
-                    admin: false,
+                    read: response.scope_read,
+                    write: response.scope_write,
+                    admin: response.scope_admin,
                 },
                 created_at: 0,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn get_user(&self, user_id: &str) -> Result<Option<User>, AuthError> {
+        let request = GetUserRequest {
+            user_id: user_id.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .get_user(request)
+            .await
+            .map_err(|e| AuthError::Internal(format!("grpc error: {}", e)))?
+            .into_inner();
+
+        if response.found {
+            let status = match response.status() {
+                UserStatusProto::UserStatusActive => UserStatus::Active,
+                UserStatusProto::UserStatusDisabled => UserStatus::Disabled,
+                UserStatusProto::UserStatusUnknown => UserStatus::Active,
+            };
+
+            Ok(Some(User {
+                user_id: response.user_id,
+                name: response.name,
+                email: response.email,
+                password_hash: String::new(),
+                status,
+                created_at: response.created_at,
             }))
         } else {
             Ok(None)
@@ -129,14 +163,13 @@ impl AuthStore for BlockingGrpcAuthStore {
     }
 
     fn get_user(&self, user_id: &str) -> Result<Option<User>, AuthError> {
-        Ok(Some(User {
-            user_id: user_id.to_string(),
-            name: String::new(),
-            email: String::new(),
-            password_hash: String::new(),
-            status: UserStatus::Active,
-            created_at: 0,
-        }))
+        let inner = Arc::clone(&self.inner);
+        let user_id = user_id.to_string();
+
+        tokio::task::block_in_place(|| {
+            self.handle
+                .block_on(async move { inner.get_user(&user_id).await })
+        })
     }
 
     fn get_ssh_key(&self, fingerprint: &str) -> Result<Option<SshKey>, AuthError> {

@@ -139,19 +139,22 @@ impl BucketStore {
         let record = DataRecord::new(oid, value.clone(), timestamp)?;
         let record_size = record.record_size();
 
-        let needs_rotation = {
+        let (needs_rotation, active_file) = {
             let active = self.inner.active_file.read();
-            active.size() + record_size as u64 > self.config.max_data_file_size
+            let needs_rotation =
+                active.size() + record_size as u64 > self.config.max_data_file_size;
+            (needs_rotation, active.clone())
         };
-        if needs_rotation {
-            self.rotate_data_file().await?;
-        }
 
-        let (file_id, offset) = {
-            let active = self.inner.active_file.read().clone();
-            let offset = active.append(&record).await?;
-            (active.file_id(), offset)
+        let active_file = if needs_rotation {
+            self.rotate_data_file().await?;
+            self.inner.active_file.read().clone()
+        } else {
+            active_file
         };
+
+        let offset = active_file.append(&record).await?;
+        let file_id = active_file.file_id();
 
         let entry = CompactEntry::new(
             &oid,
