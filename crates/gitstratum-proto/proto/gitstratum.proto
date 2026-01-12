@@ -590,6 +590,7 @@ message CancelRepairSessionResponse {
 // Authentication and Authorization Service
 service AuthService {
     rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+    rpc GetUser(GetUserRequest) returns (GetUserResponse);
     rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);
     rpc AddSshKey(AddSshKeyRequest) returns (AddSshKeyResponse);
     rpc RemoveSshKey(RemoveSshKeyRequest) returns (RemoveSshKeyResponse);
@@ -655,6 +656,28 @@ message ValidateSshKeyRequest {
 message ValidateSshKeyResponse {
     bool valid = 1;
     string user_id = 2;
+    bool scope_read = 3;
+    bool scope_write = 4;
+    bool scope_admin = 5;
+}
+
+message GetUserRequest {
+    string user_id = 1;
+}
+
+enum UserStatusProto {
+    USER_STATUS_UNKNOWN = 0;
+    USER_STATUS_ACTIVE = 1;
+    USER_STATUS_DISABLED = 2;
+}
+
+message GetUserResponse {
+    bool found = 1;
+    string user_id = 2;
+    string name = 3;
+    string email = 4;
+    UserStatusProto status = 5;
+    int64 created_at = 6;
 }
 
 // Token management
