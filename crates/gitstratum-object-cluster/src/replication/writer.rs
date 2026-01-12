@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use futures::future::join_all;
 use gitstratum_core::{Blob, Oid};
 use gitstratum_hashring::{ConsistentHashRing, NodeInfo};
@@ -285,7 +285,7 @@ const DEFAULT_CONNECTION_TTL_SECS: u64 = 300;
 
 pub struct GrpcNodeWriter {
     client_pool: Mutex<LruCache<String, (ObjectServiceClient<Channel>, Instant)>>,
-    node_semaphores: Mutex<HashMap<String, Arc<Semaphore>>>,
+    node_semaphores: DashMap<String, Arc<Semaphore>>,
     max_concurrent_per_node: usize,
     connection_timeout: Duration,
     connection_ttl: Duration,
@@ -296,7 +296,7 @@ impl GrpcNodeWriter {
     pub fn new(connection_timeout: Duration, write_timeout: Duration) -> Self {
         Self {
             client_pool: Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())),
-            node_semaphores: Mutex::new(HashMap::new()),
+            node_semaphores: DashMap::new(),
             max_concurrent_per_node: 10,
             connection_timeout,
             connection_ttl: Duration::from_secs(DEFAULT_CONNECTION_TTL_SECS),
@@ -309,10 +309,9 @@ impl GrpcNodeWriter {
         self
     }
 
-    async fn get_node_semaphore(&self, endpoint: &str) -> Arc<Semaphore> {
-        let mut semaphores = self.node_semaphores.lock().await;
-        semaphores
-            .entry(endpoint.to_string())
+    fn get_node_semaphore(&self, endpoint: &str) -> Arc<Semaphore> {
+        self.node_semaphores
+            .entry(endpoint.to_owned())
             .or_insert_with(|| Arc::new(Semaphore::new(self.max_concurrent_per_node)))
             .clone()
     }
@@ -374,7 +373,7 @@ impl GrpcNodeWriter {
 #[async_trait]
 impl NodeWriter for GrpcNodeWriter {
     async fn write_to_node(&self, node: &NodeClient, oid: &Oid, data: &[u8]) -> bool {
-        let semaphore = self.get_node_semaphore(&node.endpoint).await;
+        let semaphore = self.get_node_semaphore(&node.endpoint);
         let _permit = match semaphore.acquire().await {
             Ok(permit) => permit,
             Err(_) => {
