@@ -295,7 +295,9 @@ pub struct GrpcNodeWriter {
 impl GrpcNodeWriter {
     pub fn new(connection_timeout: Duration, write_timeout: Duration) -> Self {
         Self {
-            client_pool: Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())),
+            client_pool: Mutex::new(LruCache::new(
+                NonZeroUsize::new(100).expect("pool size must be non-zero"),
+            )),
             node_semaphores: Mutex::new(HashMap::new()),
             max_concurrent_per_node: 10,
             connection_timeout,

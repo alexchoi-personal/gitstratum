@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use gitstratum_core::Oid;
 use tokio::sync::{mpsc, watch};
+use tokio::time::timeout;
 use tracing::{debug, info, instrument, warn};
 
 use crate::store::{ObjectStorage, ObjectStore};
@@ -45,6 +46,7 @@ pub struct RepairConfig {
     pub max_task_age: Duration,
     pub batch_size: usize,
     pub queue_size: usize,
+    pub batch_timeout: Duration,
 }
 
 impl Default for RepairConfig {
@@ -55,6 +57,7 @@ impl Default for RepairConfig {
             max_task_age: Duration::from_secs(3600),
             batch_size: 100,
             queue_size: 10000,
+            batch_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -129,10 +132,12 @@ impl ReplicationRepairer {
     pub async fn run(&mut self) {
         let mut shutdown_rx = self.shutdown_rx.clone();
         let mut rx = self.repair_rx.take();
+        let batch_timeout = self.config.batch_timeout;
 
         info!(
             queue_size = self.config.queue_size,
             batch_size = self.config.batch_size,
+            batch_timeout_secs = batch_timeout.as_secs(),
             "starting replication repairer"
         );
 
@@ -141,10 +146,26 @@ impl ReplicationRepairer {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    self.process_batch().await;
+                    match timeout(batch_timeout, self.process_batch()).await {
+                        Ok(()) => {}
+                        Err(_) => {
+                            warn!(
+                                timeout_secs = batch_timeout.as_secs(),
+                                "batch processing timed out"
+                            );
+                        }
+                    }
                 }
-                Some((oid, nodes)) = async { rx.as_mut()?.recv().await } => {
-                    self.queue_repair(oid, nodes);
+                msg = async {
+                    if let Some(ref mut receiver) = rx {
+                        receiver.recv().await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    if let Some((oid, nodes)) = msg {
+                        self.queue_repair(oid, nodes);
+                    }
                 }
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
